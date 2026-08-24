@@ -43,6 +43,7 @@ from .specs_views import (
     SpecDetailView,
     SpecListView,
     SpecPdfView,
+    SpecRejectView,
     SpecSignView,
 )
 from .profile_views import (
@@ -418,6 +419,15 @@ urlpatterns = [
         "specs/<uuid:sheet_id>/sign/",
         SpecSignView.as_view(),
         name="spec-sign",
+    ),
+    # FINAL-only reject flow: customer sends a reason, spec status
+    # flips to REJECTED, trial-batch cycle reopens so they can order
+    # more samples and iterate. DRAFT rejection is a scientist-side
+    # revert-to-draft flow, not a portal action.
+    path(
+        "specs/<uuid:sheet_id>/reject/",
+        SpecRejectView.as_view(),
+        name="spec-reject",
     ),
 
     # Proposal-level chat — distinct from the per-spec threads

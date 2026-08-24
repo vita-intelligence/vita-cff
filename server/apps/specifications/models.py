@@ -238,6 +238,19 @@ class SpecificationSheet(models.Model):
         ),
     )
 
+    # Customer rejection audit — populated when the customer clicks
+    # Reject on the portal instead of Sign. Stored on the sheet so the
+    # scientist can see both the "what did they say?" reason and the
+    # "when did this happen?" timestamp without walking the
+    # SpecificationTransition log. Only meaningful when ``status ==
+    # rejected``.
+    customer_rejected_at = models.DateTimeField(
+        _("customer rejected at"), null=True, blank=True
+    )
+    customer_rejection_reason = models.TextField(
+        _("customer rejection reason"), blank=True, default=""
+    )
+
     limits_override = models.JSONField(
         _("limits override"),
         default=dict,

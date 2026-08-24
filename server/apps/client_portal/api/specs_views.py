@@ -58,12 +58,21 @@ def _client_proposals_qs(account):
 
 def _serialise_spec(sheet, proposal) -> dict[str, Any]:
     from apps.specifications.services import render_context as spec_render_context
+    from apps.payments.services import compute_final_spec_delta
+
+    # Delta info drives the "Updated price" acknowledgement block on
+    # the portal sign card — ``None`` for DRAFT specs and for FINAL
+    # specs with no commercial fields set. The portal hides the
+    # banner in those cases; the ``requires_acknowledgement`` flag
+    # inside the packet is what forces the checkbox on the sign UI.
+    delta_info = compute_final_spec_delta(sheet)
 
     return {
         "id": str(sheet.id),
         "code": sheet.code or "",
         "document_kind": sheet.document_kind,
         "status": sheet.status,
+        "delta_info": delta_info,
         # ``formulation_id`` lets the marketing-site portal render a
         # "back to project" link on the spec viewer — the parent
         # project detail lives at /portal/projects/<formulation_id>.
@@ -377,7 +386,31 @@ class SpecSignView(PortalAPIView):
             raise NotFound("Specification not found.")
 
         signer_name, signer_email, signer_company = _client_signer_fields(request)
-        signature_image = (request.data or {}).get("signature_image") or ""
+        payload = request.data or {}
+        signature_image = payload.get("signature_image") or ""
+        acknowledged_updated_total = bool(
+            payload.get("acknowledged_updated_total", False)
+        )
+
+        # Delta gate: when the auto-computed final invoice deviates
+        # from the original proposal remainder by more than 15%, the
+        # portal renders an "Updated price" block + acknowledgement
+        # checkbox. Refuse the sign here if the checkbox wasn't
+        # ticked so a hand-crafted POST can't bypass the UI gate.
+        # Belt-and-braces: the FE already disables submit until the
+        # checkbox is checked.
+        from apps.payments.services import compute_final_spec_delta
+
+        delta_info = compute_final_spec_delta(sheet)
+        if (
+            delta_info is not None
+            and delta_info.get("requires_acknowledgement")
+            and not acknowledged_updated_total
+        ):
+            return _err(
+                "acknowledgement_required",
+                status.HTTP_409_CONFLICT,
+            )
 
         try:
             updated = accept_as_customer(
@@ -422,6 +455,121 @@ class SpecSignView(PortalAPIView):
                     else None
                 ),
             },
+        )
+
+
+class SpecRejectView(PortalAPIView):
+    """``POST /api/portal/specs/<sheet_id>/reject/``.
+
+    Customer rejects a FINAL spec instead of signing it. Requires a
+    reason (backend refuses with ``signature_required``-shaped 400
+    when blank). On success:
+
+    * Spec status flips to REJECTED with the reason persisted on the
+      sheet AND on the SpecificationTransition audit row.
+    * Trial-batch cycle is reopened via
+      ``reopen_cycle_for_final_rejection`` — status → IN_PROGRESS,
+      counter resets to 0/0, historical slots move to the
+      "previous samples" panel. Customer's next portal step is to
+      request more samples via the existing top-up flow.
+
+    DRAFT-spec rejection is a separate scientist-side workflow (revert
+    to draft with a reason) — this endpoint is FINAL-only.
+    """
+
+    def post(self, request: Request, sheet_id: str) -> Response:
+        from apps.proposals.models import Proposal, ProposalLine
+        from apps.specifications.models import SpecificationSheet
+        from apps.specifications.services import (
+            InvalidStatusTransition,
+            SignatureRequired,
+            reject_final_spec_as_customer,
+        )
+
+        # Reuse the three-pass ownership walk from SpecSignView by
+        # inlining it — same shape, same rules. Extracting into a
+        # helper would drag ownership resolution into a shared module
+        # and this file already contains the mirror image.
+        sheet: SpecificationSheet | None = None
+        proposal: Proposal | None = None
+        owner_ids = customer_ids_for_account(request.user)
+        line = (
+            ProposalLine.objects
+            .select_related("proposal", "specification_sheet")
+            .filter(
+                specification_sheet_id=sheet_id,
+                proposal__customer_id__in=owner_ids,
+            )
+            .order_by("-proposal__updated_at")
+            .first()
+        )
+        if line is not None:
+            sheet = line.specification_sheet
+            proposal = line.proposal
+        else:
+            legacy = (
+                Proposal.objects
+                .select_related("specification_sheet")
+                .filter(
+                    specification_sheet_id=sheet_id,
+                    customer_id__in=owner_ids,
+                )
+                .first()
+            )
+            if legacy is not None and legacy.specification_sheet is not None:
+                sheet = legacy.specification_sheet
+                proposal = legacy
+        if sheet is None:
+            shared = (
+                SpecificationSheet.objects
+                .select_related("formulation_version__formulation")
+                .filter(
+                    id=sheet_id,
+                    formulation_version__formulation_id__in=(
+                        Proposal.objects
+                        .filter(customer_id__in=owner_ids)
+                        .values("formulation_version__formulation_id")
+                    ),
+                )
+                .first()
+            )
+            if shared is not None:
+                sheet = shared
+
+        if sheet is None:
+            raise NotFound("Specification not found.")
+
+        reason = ((request.data or {}).get("reason") or "").strip()
+        try:
+            updated = reject_final_spec_as_customer(sheet=sheet, reason=reason)
+        except InvalidStatusTransition:
+            return _err("invalid_status_transition", status.HTTP_400_BAD_REQUEST)
+        except SignatureRequired:
+            return _err("reason_required", status.HTTP_400_BAD_REQUEST)
+
+        if proposal is not None:
+            record_portal_event(
+                organization=proposal.organization,
+                proposal=proposal,
+                client_account=request.user,
+                kind=PortalEvent.Kind.SPEC_SIGNED,
+                metadata={
+                    "spec_id": str(updated.id),
+                    "outcome": "rejected",
+                    "reason": reason[:500],
+                },
+                request=request,
+            )
+        return Response(
+            {
+                "id": str(updated.id),
+                "status": updated.status,
+                "customer_rejected_at": (
+                    updated.customer_rejected_at.isoformat()
+                    if updated.customer_rejected_at is not None
+                    else None
+                ),
+            }
         )
 
 

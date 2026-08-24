@@ -115,6 +115,32 @@ def _version_label(version: FormulationVersion | None) -> str:
     return f"v{number}"
 
 
+def _proposal_line_quantity_for_formulation(formulation) -> int | None:
+    """Best-effort lookup of "how many units did the customer order?"
+    from the proposal that spawned this project. Walks ProposalLine
+    → newest customer-signed proposal → per-line quantity. Returns
+    None when the formulation has no signed / accepted proposal.
+    """
+
+    from apps.proposals.models import ProposalLine, ProposalStatus
+    from django.db.models import Q
+
+    line = (
+        ProposalLine.objects.filter(
+            Q(proposal__status=ProposalStatus.ACCEPTED.value)
+            | Q(
+                proposal__status=ProposalStatus.SENT.value,
+                proposal__customer_signed_at__isnull=False,
+            ),
+            formulation_version__formulation=formulation,
+        )
+        .order_by("-proposal__updated_at")
+        .values_list("quantity", flat=True)
+        .first()
+    )
+    return int(line) if line else None
+
+
 def _serialise_cycle_for_scientist(cycle: TrialBatchCycle) -> dict[str, Any]:
     slots = list(cycle.slots.order_by("sequence_no").select_related("formulation_version"))
     active = next(
@@ -202,6 +228,16 @@ def _serialise_cycle_for_scientist(cycle: TrialBatchCycle) -> dict[str, Any]:
             else None
         ),
         "terminated_reason": cycle.terminated_reason or "",
+        # Proposal-line quantity for this formulation, if any. Powers
+        # the "New final spec" modal on the spec-sheets tab: the
+        # scientist should be able to seed the spec's ``quantity``
+        # from the proposal number so the FINAL invoice math matches
+        # what the customer originally quoted. Overridable in the
+        # modal (this is the last chance to change the run size
+        # before the customer signs and it locks).
+        "proposal_line_quantity": _proposal_line_quantity_for_formulation(
+            formulation
+        ),
         "action_needed": action_needed,
         "slots": [_serialise_slot_for_scientist(s) for s in slots],
     }

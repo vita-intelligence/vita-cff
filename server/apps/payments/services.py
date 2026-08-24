@@ -1058,3 +1058,263 @@ def ensure_bundled_deposit_payment_for_formulation(
     )
     schedule_payment_changed_broadcast(payment, "created")
     return payment
+
+
+# ---------------------------------------------------------------------------
+# Final payment (post final-spec-sign)
+# ---------------------------------------------------------------------------
+
+
+# Threshold on the delta between the final-spec-derived invoice and
+# the original proposal remainder. When exceeded, the portal sign
+# flow surfaces an "Updated price" acknowledgement block instead of
+# letting the customer sign against a number they haven't been
+# warned about. 15% mirrors the tolerance the sales team already
+# uses when re-quoting mid-project.
+FINAL_SPEC_DELTA_ACKNOWLEDGEMENT_THRESHOLD_PCT = Decimal("15")
+
+
+def compute_final_spec_delta(sheet) -> dict[str, Any] | None:
+    """Return the "how much has the final invoice moved vs. the
+    original proposal remainder?" packet the portal needs to render
+    the Updated-price banner + acknowledgement checkbox.
+
+    Returns ``None`` when the sheet isn't a FINAL, has no commercial
+    fields set, or has no upstream proposal to compare against —
+    the portal hides the banner in those cases and falls back to the
+    plain sign card.
+
+    Shape (all string-serialised Decimals for wire safety):
+
+    .. code-block:: python
+
+        {
+          "final_spec_total": "12500.00",
+          "deposit_paid": "5000.00",
+          "amount_due": "7500.00",
+          "proposal_remainder": "6250.00",
+          "delta_amount": "1250.00",
+          "delta_percent": "20.00",
+          "requires_acknowledgement": True,
+          "currency": "GBP",
+        }
+    """
+
+    from apps.specifications.models import SpecificationDocumentKind
+
+    if (
+        getattr(sheet, "document_kind", None)
+        != SpecificationDocumentKind.FINAL
+    ):
+        return None
+
+    final_total = _final_spec_total(sheet)
+    if final_total is None:
+        return None
+
+    formulation = getattr(
+        getattr(sheet, "formulation_version", None), "formulation", None
+    )
+    if formulation is None:
+        return None
+
+    proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+    if proposal is None:
+        return None
+    total_excl_vat = Decimal(str(getattr(proposal, "total_excl_vat", None) or 0))
+    deposit_pct = Decimal(str(getattr(proposal, "deposit_percent", None) or 0))
+    if total_excl_vat <= 0:
+        # No proposal number to compare against — nothing meaningful
+        # to render on the banner. Fall back to plain sign.
+        return None
+    remainder_pct = Decimal("100") - deposit_pct
+    proposal_remainder = (
+        total_excl_vat * remainder_pct / Decimal("100")
+    ).quantize(Decimal("0.01"))
+
+    deposit_paid = deposit_paid_amount_for_formulation(formulation)
+    amount_due = (final_total - deposit_paid).quantize(Decimal("0.01"))
+    if amount_due < 0:
+        amount_due = Decimal("0.00")
+
+    delta_amount = (amount_due - proposal_remainder).quantize(Decimal("0.01"))
+    if proposal_remainder == 0:
+        delta_percent = Decimal("0")
+    else:
+        delta_percent = (
+            delta_amount / proposal_remainder * Decimal("100")
+        ).quantize(Decimal("0.01"))
+    requires_ack = (
+        abs(delta_percent) > FINAL_SPEC_DELTA_ACKNOWLEDGEMENT_THRESHOLD_PCT
+    )
+    currency = (getattr(sheet, "currency", "GBP") or "GBP").upper()[:3]
+    return {
+        "final_spec_total": str(final_total),
+        "deposit_paid": str(deposit_paid),
+        "amount_due": str(amount_due),
+        "proposal_remainder": str(proposal_remainder),
+        "delta_amount": str(delta_amount),
+        "delta_percent": str(delta_percent),
+        "requires_acknowledgement": bool(requires_ack),
+        "threshold_percent": str(
+            FINAL_SPEC_DELTA_ACKNOWLEDGEMENT_THRESHOLD_PCT
+        ),
+        "currency": currency,
+    }
+
+
+def deposit_paid_amount_for_formulation(formulation) -> Decimal:
+    """Sum of APPROVED deposit Payment amounts on this formulation's
+    accepted / signed proposal. Used as the credit against the
+    final-spec total when generating the final invoice — customer
+    paid £X at deposit, so the final invoice is
+    ``final_spec_total − X``.
+    """
+
+    proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+    if proposal is None:
+        return Decimal("0.00")
+    approved = Payment.objects.filter(
+        proposal=proposal,
+        kind=PaymentKind.DEPOSIT,
+        status=PaymentStatus.APPROVED,
+    )
+    total = sum((p.amount or Decimal("0")) for p in approved)
+    return Decimal(total).quantize(Decimal("0.01"))
+
+
+def is_final_payment_approved_for_formulation(formulation) -> bool:
+    """Mirror of :func:`is_deposit_paid_for_proposal` for the FINAL
+    invoice that lands after the customer signs the final spec.
+    Powers the pipeline "Payment received" state on the portal.
+    """
+
+    return Payment.objects.filter(
+        formulation=formulation,
+        kind=PaymentKind.FINAL,
+        status=PaymentStatus.APPROVED,
+    ).exists()
+
+
+def _final_spec_total(sheet) -> Decimal | None:
+    """Return the final invoice total from the sheet's own commercial
+    fields — ``final_price × quantity``. Returns ``None`` when the
+    scientist hasn't set a price on the spec yet (nothing to invoice).
+    """
+
+    final_price = getattr(sheet, "final_price", None)
+    quantity = getattr(sheet, "quantity", None) or 0
+    if final_price is None or quantity <= 0:
+        return None
+    total = (Decimal(str(final_price)) * Decimal(int(quantity))).quantize(
+        Decimal("0.01")
+    )
+    return total
+
+
+@transaction.atomic
+def ensure_final_payment_for_formulation(
+    *, formulation, sheet, actor=None
+) -> Payment | None:
+    """Idempotently create the FINAL invoice Payment once the customer
+    signs a FINAL spec.
+
+    Called from :func:`apps.specifications.services.accept_as_customer`
+    on a FINAL sign via ``transaction.on_commit`` so a rollback in
+    the sign path doesn't leak a Payment row.
+
+    Amount math:
+
+    * ``final_spec_total = sheet.final_price × sheet.quantity``
+    * ``deposit_paid = sum(approved DEPOSIT amounts on proposal)``
+    * ``amount_due = max(0, final_spec_total − deposit_paid)``
+
+    The deposit-credit split lives in ``notes`` so finance sees the
+    reasoning without having to reconstruct it from two models.
+
+    Guards / no-ops:
+
+    * The sheet has no ``final_price`` / ``quantity > 0`` — nothing
+      to invoice; returns None.
+    * A ``Payment(kind=FINAL, formulation=…)`` already exists —
+      idempotent short-circuit. Handles double-fire (retry, replay).
+    * The sign wasn't on a FINAL spec — caller filters this, but the
+      guard is here defensively.
+    """
+
+    from apps.specifications.models import SpecificationDocumentKind
+
+    if (
+        getattr(sheet, "document_kind", None)
+        != SpecificationDocumentKind.FINAL
+    ):
+        return None
+
+    existing = Payment.objects.filter(
+        formulation=formulation,
+        kind=PaymentKind.FINAL,
+    ).first()
+    if existing is not None:
+        return None
+
+    total = _final_spec_total(sheet)
+    if total is None:
+        logger.error(
+            "Final spec %s has no final_price × quantity set — cannot "
+            "auto-create the FINAL Payment.",
+            getattr(sheet, "id", None),
+        )
+        return None
+
+    deposit_paid = deposit_paid_amount_for_formulation(formulation)
+    amount_due = (total - deposit_paid).quantize(Decimal("0.01"))
+    if amount_due < 0:
+        # Customer paid more at deposit than the final spec now says —
+        # log so finance can process a credit / refund, but still
+        # create a zero-amount row so the pipeline advances and
+        # finance has a place to record their decision.
+        logger.warning(
+            "Final invoice for formulation %s would be negative "
+            "(deposit %s > final %s). Creating at 0.00; finance to "
+            "process credit manually.",
+            getattr(formulation, "id", None),
+            deposit_paid,
+            total,
+        )
+        amount_due = Decimal("0.00")
+
+    currency = (getattr(sheet, "currency", "GBP") or "GBP").upper()[:3]
+    proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+    customer = (
+        getattr(proposal, "customer", None)
+        or getattr(formulation, "customer", None)
+    )
+    recorded_by = (
+        actor
+        or getattr(formulation, "updated_by", None)
+        or getattr(formulation, "created_by", None)
+    )
+
+    notes_parts = [
+        f"Auto-created on customer signature of final spec {sheet.code or sheet.id}.",
+        f"Final spec total ({sheet.quantity} × {sheet.final_price} {currency}) "
+        f"= {total} {currency}.",
+        f"Deposit already paid = {deposit_paid} {currency}.",
+        f"Amount due on this invoice: {amount_due} {currency}.",
+    ]
+
+    payment = Payment.objects.create(
+        organization=formulation.organization,
+        kind=PaymentKind.FINAL,
+        formulation=formulation,
+        customer=customer,
+        amount=amount_due,
+        currency=currency,
+        method=PaymentMethod.BANK_TRANSFER,
+        paid_at=timezone.now(),
+        recorded_by=recorded_by,
+        status=PaymentStatus.PENDING,
+        notes="\n".join(notes_parts),
+    )
+    schedule_payment_changed_broadcast(payment, "created")
+    return payment
