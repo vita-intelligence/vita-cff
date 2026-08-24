@@ -24,7 +24,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.formulations.api.permissions import HasFormulationsPermission
-from apps.formulations.models import ProjectType
+from apps.formulations.models import Formulation, ProjectType
 from apps.organizations.modules import FormulationsCapability
 from apps.payments.constants import PaymentKind, PaymentStatus
 from apps.payments.models import Payment
@@ -33,6 +33,7 @@ from apps.specifications.models import (
     SpecificationSheet,
     SpecificationStatus,
 )
+from apps.trial_batches.models import TrialBatchCycle
 
 
 def _serialise_sheet(
@@ -50,6 +51,7 @@ def _serialise_sheet(
     customer = getattr(formulation, "customer", None)
     payment = payment_by_formulation.get(formulation.id)
     return {
+        "card_kind": "sheet",
         "id": str(sheet.id),
         "code": sheet.code or "",
         "status": sheet.status,
@@ -106,35 +108,116 @@ def _serialise_sheet(
     }
 
 
-def _bucket_sheet(sheet: SpecificationSheet, payment_by_formulation: dict) -> str:
+def _bucket_sheet(sheet: SpecificationSheet) -> str:
     """Which kanban column does this FINAL spec belong to?
 
-    * ``needs_click`` — status=``approved``. Team has signed off
-      internally; the scientist owes the customer a Send.
-    * ``in_flight`` — status=``sent`` (customer's turn to sign) OR
-      status=``accepted`` with no APPROVED FINAL payment yet
-      (finance's turn).
-    * ``closed`` — status=``accepted`` with APPROVED FINAL payment
-      OR status=``rejected``.
+    * ``in_flight`` — status=``approved`` (waiting on us to Send)
+      OR status=``sent`` (waiting on the customer to sign).
+      "Final spec exists but the customer hasn't given a decision"
+      is one column: the scientist can tell whose turn it is from
+      the status pill on the card.
+    * ``closed_signed`` — status=``accepted`` (customer signed).
+      Payment sub-state (pending / approved) surfaces on the card
+      but doesn't change the column.
+    * ``closed_rejected`` — status=``rejected`` (customer sent us
+      back to trial batches).
+
+    ``needs_click`` cards come from a separate query — projects
+    where the customer confirmed trial-batches done but no FINAL
+    sheet exists yet. See :func:`_awaiting_final_projects`.
 
     ``draft`` / ``in_review`` sheets don't show on this page — those
     are the scientist's private workspace and belong on the per-
-    project spec-sheets tab. This kanban is about deals we're
-    actively pushing customer-side.
+    project spec-sheets tab.
     """
 
-    if sheet.status == SpecificationStatus.APPROVED.value:
-        return "needs_click"
-    if sheet.status == SpecificationStatus.SENT.value:
+    if sheet.status in (
+        SpecificationStatus.APPROVED.value,
+        SpecificationStatus.SENT.value,
+    ):
         return "in_flight"
     if sheet.status == SpecificationStatus.ACCEPTED.value:
-        payment = payment_by_formulation.get(sheet.formulation_version.formulation_id)
-        if payment is not None and payment.status == PaymentStatus.APPROVED:
-            return "closed"
-        return "in_flight"
+        return "closed_signed"
     if sheet.status == SpecificationStatus.REJECTED.value:
-        return "closed"
+        return "closed_rejected"
     return "hidden"
+
+
+def _awaiting_final_projects(
+    org_id: str, sheets_by_formulation: dict
+) -> list[dict[str, Any]]:
+    """Projects where the customer confirmed trial-batches done but
+    no FINAL SpecificationSheet exists on the formulation yet. These
+    are the scientist's "you owe the customer a FINAL" queue — the
+    "Needs your click" column on the kanban.
+
+    Includes formulations where the customer previously rejected a
+    FINAL and the cycle has been re-satisfied (rejection is a
+    project-restart signal; once the customer confirms done a
+    second time they're waiting on a fresh FINAL against the new
+    version).
+
+    Filters:
+    * Custom-formulation only (RTG projects don't go through this
+      pipeline).
+    * ``customer_confirmed_done_at IS NOT NULL`` on the cycle.
+    * No FINAL sheet at ``approved`` / ``sent`` / ``accepted`` on
+      the formulation. A ``rejected`` FINAL doesn't count — the
+      customer already sent us back once, and if they've now
+      re-confirmed done we owe them a fresh sheet.
+    """
+
+    cycles = (
+        TrialBatchCycle.objects.filter(
+            organization_id=org_id,
+            customer_confirmed_done_at__isnull=False,
+            formulation__project_type=ProjectType.CUSTOM.value,
+        )
+        .select_related("formulation", "formulation__customer")
+    )
+    out: list[dict[str, Any]] = []
+    for cycle in cycles:
+        formulation = cycle.formulation
+        # Does an *active* FINAL sheet exist? (Ignore rejected —
+        # rejection means "start again", so a rejected FINAL doesn't
+        # cover the current confirmation.)
+        active_final = any(
+            s.status
+            in (
+                SpecificationStatus.APPROVED.value,
+                SpecificationStatus.SENT.value,
+                SpecificationStatus.ACCEPTED.value,
+            )
+            for s in sheets_by_formulation.get(formulation.id, [])
+        )
+        if active_final:
+            continue
+        customer = getattr(formulation, "customer", None)
+        out.append(
+            {
+                "card_kind": "awaiting_final",
+                "id": str(cycle.id),
+                "formulation": {
+                    "id": str(formulation.id),
+                    "code": (getattr(formulation, "code", "") or "").strip(),
+                    "name": (getattr(formulation, "name", "") or "").strip(),
+                },
+                "customer": (
+                    {
+                        "id": str(customer.id),
+                        "name": (getattr(customer, "name", "") or "").strip(),
+                    }
+                    if customer is not None
+                    else None
+                ),
+                "confirmed_done_at": cycle.customer_confirmed_done_at.isoformat(),
+                "updated_at": cycle.updated_at.isoformat(),
+            }
+        )
+    # Newest confirmations first so the freshest work sits at the top
+    # of the column.
+    out.sort(key=lambda c: c["confirmed_done_at"], reverse=True)
+    return out
 
 
 class FinalSpecsPipelineView(APIView):
@@ -158,11 +241,7 @@ class FinalSpecsPipelineView(APIView):
         # Custom-formulation projects ONLY — Ready-to-Go (RTG) projects
         # skip trial batches entirely and their "final spec" is created
         # per-order at the storefront checkout, not through the
-        # deposit → trials → final-spec pipeline this page tracks. If
-        # RTG rows landed here every RTG order would clutter the
-        # kanban and the scientist would have no way to distinguish
-        # "customer's about to sign the bespoke product spec" from
-        # "someone bought a stock SKU we've been shipping for years."
+        # deposit → trials → final-spec pipeline this page tracks.
         sheets = list(
             SpecificationSheet.objects.filter(
                 organization_id=org_id,
@@ -186,11 +265,14 @@ class FinalSpecsPipelineView(APIView):
         formulation_ids = {
             s.formulation_version.formulation_id for s in sheets
         }
+        # Index sheets by formulation for the awaiting-final lookup.
+        sheets_by_formulation: dict = {}
+        for s in sheets:
+            sheets_by_formulation.setdefault(
+                s.formulation_version.formulation_id, []
+            ).append(s)
+
         # One query for every FINAL payment on these formulations.
-        # We want the most recent (usually only one exists — the BE
-        # enforces one FINAL per project — but a REJECTED-then-
-        # restart flow could produce a second Payment row when the
-        # first Payment is voided, so we defensively pick newest).
         payments = list(
             Payment.objects.filter(
                 formulation_id__in=formulation_ids,
@@ -202,12 +284,15 @@ class FinalSpecsPipelineView(APIView):
             payment_by_formulation.setdefault(p.formulation_id, p)
 
         columns: dict[str, list] = {
-            "needs_click": [],
+            "needs_click": _awaiting_final_projects(
+                org_id=org_id, sheets_by_formulation=sheets_by_formulation
+            ),
             "in_flight": [],
-            "closed": [],
+            "closed_signed": [],
+            "closed_rejected": [],
         }
         for sheet in sheets:
-            bucket = _bucket_sheet(sheet, payment_by_formulation)
+            bucket = _bucket_sheet(sheet)
             if bucket == "hidden":
                 continue
             columns[bucket].append(
