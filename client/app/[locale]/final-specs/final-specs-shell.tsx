@@ -2,7 +2,6 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
-  AlertCircle,
   CheckCircle2,
   ChevronRight,
   Clock,
@@ -281,29 +280,6 @@ function SpecKanbanCard({ card }: { card: FinalSpecCard }) {
       ) : null}
 
       <MetaLine card={card} />
-
-      {card.status === "rejected" && card.customer_rejection_reason ? (
-        <div className="mt-1 rounded-lg border border-red-200 bg-red-50 p-2">
-          <p className="flex items-center justify-between gap-1 text-[10px] font-semibold uppercase tracking-wider text-red-800">
-            <span className="flex items-center gap-1">
-              <AlertCircle className="h-3 w-3" /> Customer rejection reason
-            </span>
-            {card.customer_rejection_reason.length > 180 ? (
-              <span className="font-normal normal-case text-[9px] text-red-600/80">
-                open card for full text →
-              </span>
-            ) : null}
-          </p>
-          {/* ``line-clamp-3`` fades a long rejection reason after a
-              few lines so a customer who paste-bombed a paragraph
-              doesn't blow the card height apart. Full text lives on
-              the spec detail page — the card is clickable already. */}
-          <p className="mt-1 line-clamp-3 whitespace-pre-line text-xs leading-snug text-red-900">
-            {card.customer_rejection_reason}
-          </p>
-        </div>
-      ) : null}
-
       <ChevronRight className="h-3 w-3 self-end text-ink-300 group-hover:text-ink-500" />
     </Link>
   );
