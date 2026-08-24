@@ -23,13 +23,20 @@ import {
   ChevronDown,
   Circle,
   Clock,
+  Download,
+  Eye,
+  FileText,
   FlaskConical,
   Loader2,
   Plus,
+  ShieldCheck,
   Truck,
+  X,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiClient } from "@/lib/api";
 import { portalErrorMessage } from "@/services/portal/errors";
@@ -112,6 +119,24 @@ interface Slot {
    *  the building. ``null`` until PSP marks it ``picked_up`` — the
    *  card is hidden in that case rather than showing a placeholder. */
   readonly dispatch: SlotDispatch | null;
+  /** Final Product Release documents attached on PSP (COA / BMR /
+   *  micro / label proof / retain-sample photos). Empty array
+   *  until the release ceremony has landed on PSP — the card is
+   *  hidden in that case. */
+  readonly release_documents: readonly ReleaseDocument[];
+}
+
+
+interface ReleaseDocument {
+  readonly uuid: string;
+  /** One of `coa`, `bmr`, `micro`, `label_proof`, `retain_sample`
+   *  — the five required file kinds on PSP's Final Product Release
+   *  ceremony. Extra kinds render as prettified enum values. */
+  readonly kind: string;
+  readonly filename: string;
+  readonly mime: string;
+  readonly byte_size: number;
+  readonly uploaded_at: string;
 }
 
 
@@ -155,34 +180,95 @@ interface Cycle {
   readonly total_slots: number;
   readonly slots_used: number;
   readonly slots: readonly Slot[];
+  /** Meaningful samples from a previous run — the cycle was closed
+   *  by the team and the customer ordered more, resetting the
+   *  current-run counter. These are shipped / delivered / verdict-
+   *  landed samples the customer should still be able to look
+   *  back on, but they don't count against the new "0 of N" run
+   *  counter. Empty on a fresh cycle. */
+  readonly previous_run_slots: readonly Slot[];
   readonly active_slot_id: string | null;
   readonly additional_requests: readonly AdditionalRequest[];
+  /** ISO timestamp — set when the customer clicks "No, we're done"
+   *  at the terminal choice prompt. Once populated the cycle can't
+   *  slide back into an in-progress state; it's the signal the
+   *  final-spec stage unlocks off. */
+  readonly customer_confirmed_done_at: string | null;
+  /** True while any AdditionalSampleRequest is still in
+   *  ``awaiting_finance``. The terminal-choice prompt is suppressed
+   *  in this state — the cycle waits for the finance decision
+   *  before offering the customer the "more or done" choice again. */
+  readonly has_pending_top_up: boolean;
+  /** True while any slot is still in flight (awaiting scientist /
+   *  in production / delivered without verdict). The terminal
+   *  choice only surfaces once every paid-for sample has landed
+   *  a verdict. */
+  readonly has_active_slots: boolean;
+  /** Server-computed: no pending top-up, no active slots, customer
+   *  hasn't already answered — i.e. the terminal-choice prompt is
+   *  the honest thing to render right now. */
+  readonly can_finalise: boolean;
+}
+
+
+// Query-key factory so mutations across the file can invalidate
+// this cycle consistently without stringly-typed keys.
+function cycleQueryKey(projectId: string) {
+  return ["portal", "trial-batch-cycle", projectId] as const;
 }
 
 
 export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
   const router = useRouter();
-  const [cycle, setCycle] = useState<Cycle | null>(null);
-  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Modal gates on the two consequential actions. `null` = closed.
+  // Extra step prevents an accidental single click from spawning a
+  // finance invoice or locking the cycle prematurely. Both modals
+  // dismiss on Escape / backdrop click; only the primary button
+  // fires the mutation.
+  const [requestModalOpen, setRequestModalOpen] = useState(false);
+  const [confirmDoneOpen, setConfirmDoneOpen] = useState(false);
 
-  const refetch = useCallback(async () => {
-    try {
+  // React Query owns the fetch so re-opening the project tab hits
+  // the cache instead of round-tripping NPD + PSP for every slot's
+  // dispatch and release documents. ``staleTime`` short enough that
+  // a live PSP transition (delivery / release ceremony) surfaces on
+  // the next natural refetch, long enough that quick tab-switching
+  // stays instant. Mutations below explicitly invalidate on success.
+  const cycleQuery = useQuery<Cycle, Error>({
+    queryKey: cycleQueryKey(projectId),
+    queryFn: async () => {
       const { data } = await apiClient.get<{ cycle: Cycle }>(
         `/api/portal/projects/${projectId}/trial-batches/`,
       );
-      setCycle(data.cycle);
-      setPhase("ready");
-    } catch (err: unknown) {
-      setError(portalErrorMessage(err));
-      setPhase("error");
-    }
-  }, [projectId]);
+      return data.cycle;
+    },
+    staleTime: 60_000,
+    // Keep the previous cycle payload visible while a background
+    // refetch runs — no "Loading your samples…" flash between
+    // navigations for a customer who already opened this card.
+    placeholderData: (prev) => prev,
+    retry: 1,
+  });
+
+  const invalidateCycle = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: cycleQueryKey(projectId) });
+  }, [queryClient, projectId]);
+
+  const cycle = cycleQuery.data ?? null;
+  const phase: "loading" | "ready" | "error" = cycleQuery.isPending
+    ? "loading"
+    : cycleQuery.isError
+      ? "error"
+      : "ready";
 
   useEffect(() => {
-    void refetch();
-  }, [refetch]);
+    if (cycleQuery.isError) {
+      setError(portalErrorMessage(cycleQuery.error));
+    }
+  }, [cycleQuery.isError, cycleQuery.error]);
 
   if (phase === "loading") {
     return (
@@ -226,8 +312,25 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
   );
   const cycleClosedStatus =
     cycle.status === "satisfied" || cycle.status === "terminated_by_team";
-  const cycleDone = cycleClosedStatus && !hasRemainingSamples;
-  const finishingRemaining = cycleClosedStatus && hasRemainingSamples;
+  const teamOverride = cycle.status === "terminated_by_team";
+  const customerConfirmedDone = cycle.customer_confirmed_done_at !== null;
+  // "Confirmed done" — customer explicitly picked "No, we're done"
+  // at the terminal prompt. Team-close ALONE no longer counts: the
+  // team can wrap up their side but the customer still owes an
+  // answer (more or done) before the pipeline advances. See
+  // ``product_detail_views._build_pipeline`` for the mirrored gate.
+  const confirmedDone = customerConfirmedDone;
+  // Waiting on finance to approve/reject a top-up request. While
+  // true, the terminal-choice prompt is suppressed — the customer
+  // already asked for more and we're waiting on the finance loop.
+  const awaitingTopUpDecision =
+    cycle.has_pending_top_up && !hasRemainingSamples && !confirmedDone;
+  // Terminal-choice state: every paid-for slot has resolved, no
+  // top-up is pending, and the customer hasn't answered "more or
+  // done" yet. This is when we show the explicit Yes/No prompt.
+  const needsTerminalChoice = cycle.can_finalise && !confirmedDone;
+  const finishingRemaining =
+    cycleClosedStatus && hasRemainingSamples && !confirmedDone;
   const maxReached = cycle.status === "max_reached";
 
   return (
@@ -241,31 +344,68 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
             Trial batches
           </p>
           <p className="mt-1 text-lg font-black uppercase leading-tight">
-            {cycleDone
-              ? "You're happy — final spec incoming."
-              : finishingRemaining
-                ? "Recipe approved — remaining samples still coming"
-                : maxReached
-                  ? `All ${cycle.total_slots} samples sent — what next?`
-                  : `${cycle.slots_used} of ${cycle.total_slots} samples sent`}
+            {confirmedDone
+              ? "Trial batches complete — final spec on its way"
+              : awaitingTopUpDecision
+                ? "Waiting on finance to approve your top-up"
+                : needsTerminalChoice
+                  ? teamOverride
+                    ? "Our team wrapped your trial-batch run — what next?"
+                    : `All ${cycle.total_slots} samples done — what next?`
+                  : finishingRemaining
+                    ? "Recipe approved — remaining samples still coming"
+                    : maxReached
+                      ? `All ${cycle.total_slots} samples sent — what next?`
+                      : `${cycle.slots_used} of ${cycle.total_slots} samples sent`}
           </p>
-          {!cycleDone && !maxReached && activeSlot ? (
+          {!confirmedDone &&
+          !awaitingTopUpDecision &&
+          !needsTerminalChoice &&
+          !maxReached &&
+          activeSlot ? (
             <p className="mt-0.5 text-xs uppercase tracking-widest text-black">
               Sample #{activeSlot.sequence_no}
               {sampleHeaderSuffix(activeSlot)}
             </p>
           ) : null}
           <p className="mt-1 text-sm text-neutral-800">
-            {cycleDone
-              ? "We're preparing the final specification. Sign it to authorise full production."
-              : finishingRemaining
-                ? "You approved the recipe and asked us to keep sending the remaining samples. The final specification unlocks after every sample lands."
-                : maxReached
-                  ? "Let us know if you're satisfied, or request another sample below."
-                  : "One sample at a time. Give feedback on each and we'll iterate until it's right."}
+            {confirmedDone
+              ? "Our team is preparing your final specification based on the recipe you approved. We'll email you the moment it's ready to sign — no action needed from you until then."
+              : awaitingTopUpDecision
+                ? "Finance is reviewing the invoice for your extra samples. Once they approve, we'll produce them right away — or if they reject it we'll ask again what you'd like to do."
+                : needsTerminalChoice
+                  ? teamOverride
+                    ? "Our team closed the current run. If you'd like more samples we'll start a fresh batch — otherwise we'll lock the recipe in and move on to the final spec."
+                    : "Want to try a few more variations, or are you happy with what you've got?"
+                  : finishingRemaining
+                    ? "You approved the recipe and asked us to keep sending the remaining samples. The final specification unlocks after every sample lands."
+                    : maxReached
+                      ? "Let us know if you're satisfied, or request another sample below."
+                      : "One sample at a time. Give feedback on each and we'll iterate until it's right."}
           </p>
         </div>
       </div>
+
+      {/* Previous-run history — samples the customer received on
+          an earlier run before the team closed the cycle and they
+          ordered more. Shown compact + collapsed by default so the
+          current-run ladder stays the focus. */}
+      {cycle.previous_run_slots.length > 0 ? (
+        <div className="mt-5 border-2 border-dashed border-black bg-white/60 p-3">
+          <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-neutral-700">
+            Previous samples ({cycle.previous_run_slots.length})
+          </p>
+          <p className="mt-0.5 text-xs text-neutral-600">
+            Samples from your earlier run — kept so you can look back on
+            what we sent and what you thought.
+          </p>
+          <ul className="mt-3 flex flex-col gap-2">
+            {cycle.previous_run_slots.map((slot) => (
+              <SlotRow key={slot.id} slot={slot} defaultOpen={false} />
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <ul className="mt-5 flex flex-col gap-2">
         {cycle.slots.map((slot) => (
@@ -294,7 +434,7 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
                   keep_producing_remaining: keepProducing,
                 },
               );
-              await refetch();
+              invalidateCycle();
               router.refresh();
             } catch (err: unknown) {
               setError(portalErrorMessage(err));
@@ -324,7 +464,7 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
                 await apiClient.post(
                   `/api/portal/trial-batches/slots/${activeSlot.id}/confirm-delivery/`,
                 );
-                await refetch();
+                invalidateCycle();
                 router.refresh();
               } catch (err: unknown) {
                 setError(portalErrorMessage(err));
@@ -346,28 +486,72 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
         </div>
       ) : null}
 
-      {(maxReached || cycleDone) && cycle.status !== "terminated_by_team" ? (
-        <RequestMoreControl
-          currency={cycle.additional_requests[0]?.currency_code ?? "GBP"}
+      {needsTerminalChoice ? (
+        <TerminalChoicePanel
           busy={busy}
-          onRequested={async (qty) => {
-            setBusy(true);
-            setError(null);
-            try {
-              await apiClient.post(
-                `/api/portal/projects/${projectId}/trial-batches/request-more/`,
-                { quantity: qty },
-              );
-              await refetch();
-              router.refresh();
-            } catch (err: unknown) {
-              setError(portalErrorMessage(err));
-            } finally {
-              setBusy(false);
-            }
-          }}
+          onOpenRequestMore={() => setRequestModalOpen(true)}
+          onOpenConfirmDone={() => setConfirmDoneOpen(true)}
         />
       ) : null}
+
+      {/* Waiting on finance to approve/reject a pending top-up. No
+          choice buttons here — the customer already asked; they can
+          only wait for the finance decision (approve → new slots
+          seeded, reject → back to the terminal-choice prompt). */}
+      {awaitingTopUpDecision ? (
+        <div className="mt-4 border-2 border-black bg-white p-4">
+          <div className="flex items-start gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center border-2 border-black bg-amber-100 text-amber-700">
+              <Clock className="h-5 w-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-amber-700">
+                Awaiting finance approval
+              </p>
+              <p className="mt-1 text-sm text-neutral-800">
+                We can&rsquo;t move on to the final spec yet — your extra-
+                samples invoice is with finance. As soon as they approve
+                it we&rsquo;ll produce the new samples and the cycle
+                continues. If it&rsquo;s rejected we&rsquo;ll bring the
+                choice back.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Mid-cycle "request more" — available while the cycle is still
+          in flight and no top-up is already pending. Lets the customer
+          front-load an extra order without waiting for the terminal
+          prompt (finance approval takes real time). A modal gates
+          the actual submit so a stray click on the trigger doesn't
+          spawn a finance invoice. Hidden in the terminal-choice /
+          waiting-hold / already-done states because those have their
+          own affordances. */}
+      {!confirmedDone &&
+      !awaitingTopUpDecision &&
+      !needsTerminalChoice &&
+      hasRemainingSamples ? (
+        <div className="mt-4 border-2 border-black bg-white p-4">
+          <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+            Need extra samples?
+          </p>
+          <p className="mt-1 text-xs text-neutral-600">
+            Order additional samples on top of what you paid for. Finance
+            approves the invoice; we produce as soon as it lands.
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setRequestModalOpen(true)}
+            className="mt-3 inline-flex items-center gap-2 border-2 border-black bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest text-black transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Request additional samples
+          </button>
+        </div>
+      ) : null}
+
 
       {cycle.additional_requests.length > 0 ? (
         <div className="mt-4 border-t-2 border-black pt-4">
@@ -408,6 +592,56 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
           {error}
         </p>
       ) : null}
+
+      {/* Modals live at the card root so they can be triggered from
+          both the mid-cycle affordance and the terminal-choice panel
+          without duplicating handlers. Portal'd to the body so the
+          overlay escapes the card's stacking context. */}
+      <RequestMoreModal
+        open={requestModalOpen}
+        currency={cycle.additional_requests[0]?.currency_code ?? "GBP"}
+        busy={busy}
+        onClose={() => (busy ? undefined : setRequestModalOpen(false))}
+        onConfirm={async (qty) => {
+          setBusy(true);
+          setError(null);
+          try {
+            await apiClient.post(
+              `/api/portal/projects/${projectId}/trial-batches/request-more/`,
+              { quantity: qty },
+            );
+            setRequestModalOpen(false);
+            invalidateCycle();
+            router.refresh();
+          } catch (err: unknown) {
+            setError(portalErrorMessage(err));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+      <ConfirmDoneModal
+        open={confirmDoneOpen}
+        totalSlots={cycle.total_slots}
+        busy={busy}
+        onClose={() => (busy ? undefined : setConfirmDoneOpen(false))}
+        onConfirm={async () => {
+          setBusy(true);
+          setError(null);
+          try {
+            await apiClient.post(
+              `/api/portal/projects/${projectId}/trial-batches/confirm-done/`,
+            );
+            setConfirmDoneOpen(false);
+            invalidateCycle();
+            router.refresh();
+          } catch (err: unknown) {
+            setError(portalErrorMessage(err));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
     </section>
   );
 }
@@ -866,6 +1100,20 @@ function SlotStory({ slot }: { slot: Slot }) {
         </div>
       ) : null}
 
+      {/* Final Product Release documents — COA / BMR / micro / label
+          proof / retain-sample photos. Sits above dispatch because
+          the QA sign-off logically precedes the physical shipment,
+          matching what the customer sees on the standalone samples
+          view. */}
+      {slot.release_documents.length > 0 ? (
+        <div className="mt-3">
+          <ReleaseDocumentsCard
+            slotId={slot.id}
+            documents={slot.release_documents}
+          />
+        </div>
+      ) : null}
+
       {/* Shipment details — carrier / vehicle / driver / waybill /
           tracking / seal / temperature + 5-point checklist + loading
           photos. Backend eager-fetches dispatch for every non-
@@ -877,12 +1125,167 @@ function SlotStory({ slot }: { slot: Slot }) {
         </div>
       ) : null}
 
-      {!verdictLabel && !slot.feedback_summary && !slot.dispatch ? (
+      {!verdictLabel
+        && !slot.feedback_summary
+        && !slot.dispatch
+        && slot.release_documents.length === 0 ? (
         <p className="mt-2 text-[11px] italic text-neutral-500">
           No details recorded yet.
         </p>
       ) : null}
     </div>
+  );
+}
+
+
+// Human-readable label for the five required Final Release doc
+// kinds on PSP. Falls back to a prettified enum for anything else.
+const RELEASE_DOC_LABEL: Readonly<Record<string, string>> = {
+  coa: "Certificate of Analysis",
+  bmr: "Batch Manufacturing Record",
+  micro: "Microbiological report",
+  label_proof: "Signed label proof",
+  retain_sample: "Retain-sample record",
+};
+
+function releaseDocLabel(kind: string): string {
+  return RELEASE_DOC_LABEL[kind] ?? kind.replace(/_/g, " ");
+}
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// Renders the Final Product Release documents attached to a slot's
+// PSP CO — COA / BMR / micro / label proof / retain-sample photos.
+// Each row: a Download button + inline Preview for PDF / image
+// types (browser handles rendering natively). Mirrors the
+// storefront samples ReleaseDocumentsCard so both surfaces feel
+// identical to the customer.
+function ReleaseDocumentsCard({
+  slotId,
+  documents,
+}: {
+  slotId: string;
+  documents: readonly ReleaseDocument[];
+}) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  return (
+    <section className="border-2 border-black bg-white p-4">
+      <div className="flex items-center gap-2">
+        <ShieldCheck className="h-4 w-4 text-black" />
+        <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+          Release documents
+        </p>
+      </div>
+      <p className="mt-1 text-xs text-neutral-600">
+        QA-signed documents released with your sample. Keep them with
+        your compliance records.
+      </p>
+      <ul className="mt-3 flex flex-col gap-2">
+        {documents.map((doc) => {
+          const mime = (doc.mime || "").toLowerCase();
+          const filename = (doc.filename || "").toLowerCase();
+          // Filename-extension fallback: some PSP records upload the
+          // BMR without a mime (or with a stale ``application/octet-
+          // stream``), which used to fall through to the ``<img>``
+          // branch and show a broken-image icon on the preview.
+          const isPdf =
+            mime.startsWith("application/pdf") || filename.endsWith(".pdf");
+          const isImage =
+            mime.startsWith("image/") ||
+            /\.(png|jpe?g|gif|webp|avif)$/.test(filename);
+          const isPreviewable = isPdf || isImage;
+          const href =
+            `/api/portal/trial-batches/slots/${encodeURIComponent(slotId)}` +
+            `/release-documents/${encodeURIComponent(doc.uuid)}/`;
+          const isOpen = expanded === doc.uuid;
+          const uploaded = doc.uploaded_at
+            ? new Date(doc.uploaded_at).toLocaleString()
+            : "—";
+          return (
+            <li key={doc.uuid} className="border-2 border-black bg-white p-3">
+              <div className="flex items-start gap-3">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center border-2 border-black bg-orange-100 text-orange-700">
+                  <FileText className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-black uppercase text-black">
+                    {releaseDocLabel(doc.kind)}
+                  </p>
+                  <p className="mt-0.5 truncate font-mono text-xs text-neutral-600">
+                    {doc.filename}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-neutral-500">
+                    {uploaded} · {formatBytes(doc.byte_size)}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  {/* Images preview inline. PDFs open in a new tab —
+                      Chrome's built-in viewer often refuses to render
+                      embedded PDFs (user has "Download instead of
+                      open" set, or the site-wide CSP interferes) and
+                      the mystery broken-icon that leaves behind is
+                      worse than just opening the file directly. */}
+                  {isImage && !isPdf ? (
+                    <button
+                      type="button"
+                      onClick={() => setExpanded(isOpen ? null : doc.uuid)}
+                      aria-label={isOpen ? "Hide preview" : "Preview"}
+                      aria-expanded={isOpen}
+                      title={isOpen ? "Hide preview" : "Preview"}
+                      className="flex h-8 w-8 items-center justify-center border-2 border-black bg-white text-neutral-700 hover:bg-neutral-100"
+                    >
+                      {isOpen ? (
+                        <ChevronDown className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  ) : null}
+                  {isPdf ? (
+                    <a
+                      href={href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={`Open ${doc.filename} in a new tab`}
+                      title="Open in a new tab"
+                      className="flex h-8 w-8 items-center justify-center border-2 border-black bg-white text-neutral-700 hover:bg-neutral-100"
+                    >
+                      <Eye className="h-4 w-4" />
+                    </a>
+                  ) : null}
+                  <a
+                    href={href}
+                    download={doc.filename}
+                    aria-label={`Download ${doc.filename}`}
+                    title="Download"
+                    className="flex h-8 w-8 items-center justify-center border-2 border-black bg-black text-white hover:bg-neutral-800"
+                  >
+                    <Download className="h-4 w-4" />
+                  </a>
+                </div>
+              </div>
+              {isImage && !isPdf && isOpen ? (
+                <div className="mt-3 border-2 border-black bg-white">
+                  {/* eslint-disable-next-line @next/next/no-img-element --
+                     operator-uploaded release evidence served through
+                     an ownership-scoped proxy at unknown resolutions. */}
+                  <img
+                    src={href}
+                    alt={releaseDocLabel(doc.kind)}
+                    className="mx-auto block max-h-[500px] w-auto object-contain"
+                  />
+                </div>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -1237,26 +1640,165 @@ function FeedbackForm({
 }
 
 
-function RequestMoreControl({
-  currency,
+// Terminal-choice panel — surfaces the explicit "more or done"
+// question once every paid-for sample has landed a verdict and no
+// finance decision is pending. Both buttons open a modal so a stray
+// click doesn't spawn a finance invoice or lock the cycle. The
+// panel itself owns nothing beyond the two triggers.
+function TerminalChoicePanel({
   busy,
-  onRequested,
+  onOpenRequestMore,
+  onOpenConfirmDone,
 }: {
-  currency: string;
   busy: boolean;
-  onRequested: (quantity: number) => Promise<void>;
+  onOpenRequestMore: () => void;
+  onOpenConfirmDone: () => void;
 }) {
-  const [quantity, setQuantity] = useState(1);
   return (
     <div className="mt-4 border-2 border-black bg-white p-4">
       <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
-        Request another sample
+        What next?
       </p>
       <p className="mt-1 text-xs text-neutral-600">
-        {currency} per extra sample. Finance approves the invoice; we produce as
-        soon as it lands.
+        Either request another batch to keep iterating, or lock this in
+        and move on to the final specification.
       </p>
-      <div className="mt-3 flex items-center gap-3">
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onOpenRequestMore}
+          className="flex-1 border-2 border-black bg-white p-3 text-left transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <p className="flex items-center gap-2 text-sm font-black uppercase">
+            <Plus className="h-4 w-4" /> Request more samples
+          </p>
+          <p className="mt-1 text-xs text-neutral-600">
+            We&rsquo;ll invoice you for the extras and produce another batch.
+          </p>
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onOpenConfirmDone}
+          className="flex-1 border-2 border-black bg-black p-3 text-left text-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <p className="flex items-center gap-2 text-sm font-black uppercase">
+            <Check className="h-4 w-4" />
+            No, we&rsquo;re done
+          </p>
+          <p className="mt-1 text-xs text-neutral-300">
+            Lock in the recipe and move on to the final specification.
+          </p>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+// Modal shell reused by RequestMoreModal + ConfirmDoneModal. Portal
+// to document.body so the overlay escapes the enclosing card's
+// stacking context. Escape closes (unless mid-submit); backdrop
+// click closes; body scroll is locked while open. Kept local to
+// this file — the shared /components ecosystem doesn't have a
+// dialog primitive that matches the portal card's monochrome style.
+function PortalModal({
+  open,
+  onClose,
+  labelId,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  labelId: string;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, onClose]);
+  if (!open) return null;
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={labelId}
+      className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="relative w-full max-w-md border-2 border-black bg-white p-5 shadow-[6px_6px_0_0_black]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {children}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+
+function RequestMoreModal({
+  open,
+  currency,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean;
+  currency: string;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: (quantity: number) => Promise<void>;
+}) {
+  const [quantity, setQuantity] = useState(1);
+  // Reset the picker back to 1 whenever the modal reopens so a
+  // customer who bailed on 20 last time doesn't unknowingly submit
+  // it a session later.
+  useEffect(() => {
+    if (open) setQuantity(1);
+  }, [open]);
+  return (
+    <PortalModal open={open} onClose={onClose} labelId="request-more-title">
+      <button
+        type="button"
+        onClick={onClose}
+        disabled={busy}
+        aria-label="Close"
+        className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center text-neutral-500 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <X className="h-4 w-4" />
+      </button>
+      <p
+        id="request-more-title"
+        className="text-[10px] font-bold uppercase tracking-[0.3em] text-black"
+      >
+        Request additional samples
+      </p>
+      <p className="mt-2 text-sm text-neutral-800">
+        How many extra samples would you like us to produce?
+      </p>
+      <p className="mt-1 text-xs text-neutral-600">
+        {currency} per extra sample. Finance approves the invoice; we
+        produce as soon as it lands.
+      </p>
+      <div className="mt-4 flex items-center gap-3">
+        <label className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+          Quantity
+        </label>
         <input
           type="number"
           min={1}
@@ -1266,12 +1808,23 @@ function RequestMoreControl({
             const v = Number.parseInt(e.target.value, 10);
             if (Number.isFinite(v)) setQuantity(Math.max(1, Math.min(100, v)));
           }}
-          className="w-20 border-2 border-black bg-white px-3 py-1.5 text-center text-lg font-black focus:outline-none"
+          disabled={busy}
+          className="w-20 border-2 border-black bg-white px-3 py-1.5 text-center text-lg font-black focus:outline-none disabled:opacity-60"
         />
+      </div>
+      <div className="mt-6 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={busy}
+          className="border-2 border-black bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest text-black transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Cancel
+        </button>
         <button
           type="button"
           disabled={busy}
-          onClick={() => onRequested(quantity)}
+          onClick={() => onConfirm(quantity)}
           className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-xs font-bold uppercase tracking-widest text-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? (
@@ -1279,9 +1832,80 @@ function RequestMoreControl({
           ) : (
             <Plus className="h-3.5 w-3.5" />
           )}
-          Request {quantity} more
+          Confirm — request {quantity}
         </button>
       </div>
-    </div>
+    </PortalModal>
+  );
+}
+
+
+function ConfirmDoneModal({
+  open,
+  totalSlots,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean;
+  totalSlots: number;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  return (
+    <PortalModal open={open} onClose={onClose} labelId="confirm-done-title">
+      <button
+        type="button"
+        onClick={onClose}
+        disabled={busy}
+        aria-label="Close"
+        className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center text-neutral-500 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <X className="h-4 w-4" />
+      </button>
+      <p
+        id="confirm-done-title"
+        className="text-[10px] font-bold uppercase tracking-[0.3em] text-black"
+      >
+        Sure you don&rsquo;t want more samples?
+      </p>
+      <p className="mt-2 text-sm text-neutral-800">
+        You&rsquo;ve had <strong>{totalSlots}</strong> sample
+        {totalSlots === 1 ? "" : "s"}. If you say we&rsquo;re done, we&rsquo;ll
+        take the last approved recipe as final and start preparing your final
+        specification for sign-off.
+      </p>
+      <p className="mt-2 border-2 border-amber-500 bg-amber-50 p-3 text-xs text-amber-900">
+        <strong>Heads up:</strong> if you don&rsquo;t approve the final
+        specification once we send it, changing the recipe means starting a
+        fresh round of samples — which has to be paid for again before we
+        can revise the spec. So make sure you&rsquo;re happy before locking
+        it in.
+      </p>
+      <div className="mt-6 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={busy}
+          className="border-2 border-black bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest text-black transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Not yet
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onConfirm}
+          className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-xs font-bold uppercase tracking-widest text-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Check className="h-3.5 w-3.5" />
+          )}
+          Yes, we&rsquo;re done
+        </button>
+      </div>
+    </PortalModal>
   );
 }

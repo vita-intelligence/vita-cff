@@ -404,6 +404,31 @@ class TrialBatchCycle(models.Model):
     )
     closed_at = models.DateTimeField(_("closed at"), null=True, blank=True)
 
+    #: Set when the customer explicitly answers "no more samples" at
+    #: the terminal-choice prompt. Distinct from ``closed_at`` because
+    #: a cycle can be at a terminal status (satisfied / max_reached /
+    #: terminated_by_team) while still awaiting the customer's
+    #: explicit "we're done" decision — the final-spec stage only
+    #: unlocks once this is populated. Also the gate that prevents
+    #: the cycle from advancing while a top-up request is still
+    #: awaiting finance approval.
+    customer_confirmed_done_at = models.DateTimeField(
+        _("customer confirmed done at"), null=True, blank=True,
+    )
+
+    #: Portal-display offset for slot counts. Bumped to the current
+    #: slot count whenever a top-up request is approved AFTER the
+    #: team closed the cycle (``TERMINATED_BY_TEAM``) — the customer
+    #: should see the newly-ordered samples counted from zero, not
+    #: appended to the pre-close history. Slots with
+    #: ``sequence_no <= offset`` are hidden from the portal ladder
+    #: and excluded from the ``total_slots`` / ``slots_used``
+    #: display; internal scientist views ignore the offset and
+    #: continue to see the full slot history.
+    slots_display_offset = models.PositiveIntegerField(
+        _("slots display offset"), default=0,
+    )
+
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 

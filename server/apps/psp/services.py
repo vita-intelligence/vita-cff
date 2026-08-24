@@ -6230,6 +6230,59 @@ def confirm_psp_dispatch_delivery_for_co(
         return None
 
 
+def list_psp_release_documents_for_co(
+    *, organization: Any, co_uuid: Any
+) -> list[dict]:
+    """List Final Product Release documents for a CO by uuid.
+
+    Payment-agnostic counterpart to
+    :func:`list_psp_release_documents_for_payment` — used by the
+    cycle-slot portal path where the Sample CO on PSP is keyed by
+    ``slot.id`` (not a payment id). Silent-degrade: ``[]`` on any
+    failure / integration off / release ceremony not yet done.
+    """
+
+    if organization is None or not is_psp_live(organization):
+        return []
+    cleaned = str(co_uuid or "").strip()
+    if not cleaned:
+        return []
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return []
+    client = _client_factory(config)
+    try:
+        return client.list_customer_order_release_documents(cleaned)
+    except PspError:
+        return []
+
+
+def fetch_psp_release_document_for_co(
+    *, organization: Any, co_uuid: Any, file_uuid: Any
+) -> tuple[bytes, str, str] | None:
+    """Proxy-download one release document by CO uuid + file uuid.
+    Same silent-degrade contract as
+    :func:`fetch_psp_dispatch_photo_for_co`. Callers upstream enforce
+    ownership before hitting this.
+    """
+
+    if organization is None or not is_psp_live(organization):
+        return None
+    cleaned = str(co_uuid or "").strip()
+    if not cleaned:
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.fetch_customer_order_release_document(cleaned, file_uuid)
+    except PspError:
+        return None
+
+
 def fetch_psp_dispatch_photo_for_co(
     *, organization: Any, co_uuid: Any, file_uuid: Any
 ) -> tuple[bytes, str, str] | None:

@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import {
+  AlertTriangle,
   ArrowRight,
   Check,
   Circle,
@@ -57,6 +58,19 @@ interface TimelineEntry {
 }
 
 
+interface Cancellation {
+  readonly source: "proposal_declined" | "payment_voided";
+  readonly reason: string;
+  readonly at: string | null;
+  readonly reference_code: string;
+  readonly payment_kind?: string;
+  readonly payment_kind_label?: string;
+  readonly amount?: string;
+  readonly currency?: string;
+  readonly invoice_number?: string;
+}
+
+
 interface ProductDetail {
   readonly product: {
     readonly id: string;
@@ -64,6 +78,7 @@ interface ProductDetail {
     readonly name: string;
     readonly project_status: string;
   };
+  readonly cancellation: Cancellation | null;
   readonly pipeline: ReadonlyArray<PipelineStage>;
   readonly next_action: NextAction | null;
   readonly documents: ReadonlyArray<DocumentEntry>;
@@ -114,6 +129,15 @@ export default async function PortalProductDetailPage({
         subtitle={headlineStage?.detail ?? ""}
         back={{ href: "/portal/products", label: "All products" }}
       />
+
+      {/* Cancellation banner — surfaces when the project stopped
+          moving because the customer declined the proposal OR
+          finance voided a project-cancelling payment (deposit /
+          final). Additional-samples voids don't flow here — they're
+          filtered server-side because a rejected top-up doesn't
+          kill the project, it just drops the trial cycle back to
+          the terminal-choice prompt. */}
+      {data.cancellation ? <CancellationBanner cancellation={data.cancellation} /> : null}
 
       {/* Universal next-step CTA. Always sits above the stepper so
           the customer never has to hunt for "where do I click next?".
@@ -432,5 +456,63 @@ function StageDot({ state }: { state: StageState }) {
     <span className={`${base} border-neutral-300 bg-white text-neutral-400`}>
       <Circle className="h-3 w-3" />
     </span>
+  );
+}
+
+
+// Cancellation banner — surfaces above the pipeline when the
+// project stopped moving. Names the specific artefact ("Deposit
+// invoice voided" / "Final invoice voided" / "You declined the
+// proposal") rather than the mystery "Payment voided" the older
+// FE used to render. Amount + invoice ref included so finance
+// follow-up conversations have a hook to point at.
+function CancellationBanner({ cancellation }: { cancellation: Cancellation }) {
+  const sourceLabel =
+    cancellation.source === "proposal_declined"
+      ? "You declined the proposal"
+      : `${cancellation.payment_kind_label ?? "Invoice"} voided`;
+  const amountLine =
+    cancellation.source === "payment_voided" && cancellation.amount
+      ? `${cancellation.currency ?? "GBP"} ${cancellation.amount}`
+      : null;
+  return (
+    <div className="mt-6 flex items-start gap-3 border-2 border-red-700 bg-red-50 p-4">
+      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-700" aria-hidden />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-black uppercase text-red-900">
+          {sourceLabel}
+          {cancellation.reference_code ? (
+            <span className="ml-2 font-mono text-[11px] font-normal text-red-800/80">
+              {cancellation.reference_code}
+            </span>
+          ) : null}
+        </p>
+        {amountLine ? (
+          <p className="mt-1 text-xs font-bold text-red-900">{amountLine}</p>
+        ) : null}
+        {cancellation.reason ? (
+          <p className="mt-1 whitespace-pre-wrap text-sm text-red-900">
+            {cancellation.reason}
+          </p>
+        ) : (
+          <p className="mt-1 text-sm italic text-red-800/80">
+            {cancellation.source === "payment_voided"
+              ? "No void reason recorded — please get in touch and we'll clarify."
+              : "No reason recorded."}
+          </p>
+        )}
+        {cancellation.at ? (
+          <p className="mt-1.5 text-[11px] text-red-800/70">
+            {new Date(cancellation.at).toLocaleString("en-GB", {
+              day: "numeric",
+              month: "short",
+              year: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </p>
+        ) : null}
+      </div>
+    </div>
   );
 }

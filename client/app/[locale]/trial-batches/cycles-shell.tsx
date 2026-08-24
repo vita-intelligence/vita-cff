@@ -570,10 +570,13 @@ function CycleDetailsModal({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // Show the footer (and its Close cycle button) for anything that
+  // isn't already team-terminated. ``satisfied`` cycles can still
+  // have keep_producing_remaining slots in flight — the scientist
+  // needs to close mid-flight so the customer gets the terminal
+  // choice instead of waiting on stragglers.
   const hasFooterActions =
-    cycle.can_open_next_slot ||
-    cycle.status === "in_progress" ||
-    cycle.status === "max_reached";
+    cycle.can_open_next_slot || cycle.status !== "terminated_by_team";
 
   return (
     <div
@@ -660,8 +663,15 @@ function CycleDetailsModal({
                 <Sparkles className="h-3 w-3" /> Open next slot
               </button>
             ) : null}
-            {cycle.status === "in_progress" ||
-            cycle.status === "max_reached" ? (
+            {/* ``satisfied`` cycles CAN still have active slots — the
+                customer picked a recipe but opted to keep receiving
+                the remaining paid samples (``keep_producing_remaining``).
+                The scientist should be able to close in that state
+                too, so the customer gets the terminal "more or done"
+                prompt without waiting on stragglers. Only
+                ``terminated_by_team`` (already closed) hides the
+                button. */}
+            {cycle.status !== "terminated_by_team" ? (
               <button
                 type="button"
                 onClick={() => setCloseOpen(true)}

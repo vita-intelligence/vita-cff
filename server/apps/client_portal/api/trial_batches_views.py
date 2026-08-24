@@ -47,14 +47,18 @@ from apps.client_portal.queries import (
 )
 from apps.formulations.models import Formulation
 from apps.trial_batches.cycle_services import (
+    CycleHasActiveSlots,
+    CycleHasPendingTopUp,
     InvalidAdditionalSampleQuantity,
     SlotNotActive,
+    confirm_trial_batches_done,
     mark_slot_delivered,
     record_slot_verdict,
     request_additional_samples,
 )
 from apps.trial_batches.models import (
     AdditionalSampleRequest,
+    AdditionalSampleRequestStatus,
     TrialBatchCycle,
     TrialBatchSlot,
     TrialBatchSlotStatus,
@@ -65,6 +69,7 @@ from apps.trial_batches.models import (
 def _serialise_slot(
     slot: TrialBatchSlot,
     production: dict | None = None,
+    sequence_offset: int = 0,
 ) -> dict[str, Any]:
     """Portal-side snapshot of a single slot.
 
@@ -92,7 +97,11 @@ def _serialise_slot(
     phase = (production.get("phase") or "").strip()
     return {
         "id": str(slot.id),
-        "sequence_no": slot.sequence_no,
+        # Sequence number as the customer should see it — shifted by
+        # ``sequence_offset`` when the cycle was restarted after a
+        # team-close so the ladder starts from #1 for the current
+        # run rather than continuing #4, #5, #6 from history.
+        "sequence_no": slot.sequence_no - sequence_offset,
         "status": slot.status,
         "verdict": slot.verdict,
         "verdict_at": (
@@ -122,6 +131,12 @@ def _serialise_slot(
         # storefront sample-detail view so both portals speak the
         # same wire.
         "dispatch": production.get("dispatch"),
+        # PSP Final Product Release documents (COA / BMR / micro /
+        # label proof / retain-sample photos). Empty list when the
+        # release ceremony hasn't landed yet OR when PSP is off / the
+        # CO uuid isn't recognised. Portal FE hides the section on
+        # empty; same shape as the storefront sample-detail view.
+        "release_documents": production.get("release_documents") or [],
         "created_at": slot.created_at.isoformat(),
         "updated_at": slot.updated_at.isoformat(),
     }
@@ -160,6 +175,7 @@ def _fetch_production_summary(
         get_psp_customer_order_snapshot,
         get_psp_dispatch_for_co,
         get_psp_manufacturing_order_chain,
+        list_psp_release_documents_for_co,
     )
     from apps.trial_batches.models import TrialBatch
 
@@ -170,6 +186,7 @@ def _fetch_production_summary(
             "done": 0,
             "phase": "",
             "dispatch": None,
+            "release_documents": [],
         }
     tb = TrialBatch.objects.only("psp_manufacturing_order_uuid").filter(
         id=slot.trial_batch_id
@@ -182,6 +199,7 @@ def _fetch_production_summary(
             "done": 0,
             "phase": "",
             "dispatch": None,
+            "release_documents": [],
         }
 
     # Phase (rich signal). Independent from the MO chain fetch so a
@@ -212,6 +230,16 @@ def _fetch_production_summary(
     except Exception:  # noqa: BLE001 — same posture as the snapshot fetch
         dispatch = None
 
+    # Final Product Release documents — COA / BMR / micro / label
+    # proof / retain-sample photos. Empty list until the release
+    # ceremony has landed on PSP; the FE hides the card on empty.
+    try:
+        release_documents = list_psp_release_documents_for_co(
+            organization=organization, co_uuid=slot.id
+        )
+    except Exception:  # noqa: BLE001 — silent-degrade
+        release_documents = []
+
     # Chain (coarse signal). Preserved for wire back-compat with FE
     # revisions that haven't picked up the phase field yet.
     try:
@@ -225,6 +253,7 @@ def _fetch_production_summary(
             "done": 0,
             "phase": phase,
             "dispatch": dispatch,
+            "release_documents": release_documents,
         }
     chain = (chain_response or {}).get("chain") or []
     if not chain:
@@ -234,6 +263,7 @@ def _fetch_production_summary(
             "done": 0,
             "phase": phase,
             "dispatch": dispatch,
+            "release_documents": release_documents,
         }
     total = len(chain)
     done = sum(1 for row in chain if row.get("status") == "completed")
@@ -244,6 +274,7 @@ def _fetch_production_summary(
         "done": done,
         "phase": phase,
         "dispatch": dispatch,
+        "release_documents": release_documents,
     }
 
 
@@ -269,6 +300,26 @@ def _fetch_dispatch_only(
         )
     except Exception:  # noqa: BLE001 — mirrors the active-slot posture
         return None
+
+
+def _fetch_release_documents_only(
+    slot: TrialBatchSlot, organization: Any
+) -> list[dict]:
+    """Per-slot release-documents fetch for non-active (historical)
+    slots. Mirrors ``_fetch_dispatch_only`` so the collapsible slot-
+    story renders COA / BMR / micro / label proof / retain-sample
+    photos on prior samples too — not just the active one. Silent-
+    degrade to ``[]`` on any transport / integration failure.
+    """
+
+    from apps.psp.services import list_psp_release_documents_for_co
+
+    try:
+        return list_psp_release_documents_for_co(
+            organization=organization, co_uuid=slot.id
+        )
+    except Exception:  # noqa: BLE001 — mirrors the active-slot posture
+        return []
 
 
 def _maybe_auto_deliver_slot(
@@ -323,7 +374,37 @@ def _serialise_additional_request(
 
 
 def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
-    slots = list(cycle.slots.order_by("sequence_no"))
+    # ``slots_display_offset`` hides current-run counter noise —
+    # set when a top-up reactivates a TERMINATED_BY_TEAM cycle so
+    # the portal ladder shows only the freshly-ordered run (see
+    # ``apply_additional_samples_on_payment_approved``). Internal
+    # scientist views never call through this serializer so their
+    # full-history read is unaffected.
+    #
+    # But we DON'T want to erase the customer's memory of samples
+    # they already received — meaningful past-run slots (anything
+    # they got, gave feedback on, or that closed with a verdict)
+    # go into ``previous_run_slots`` so the portal card can render
+    # a compact "Previous samples" section above the current
+    # ladder. Cancelled + awaiting-scientist historical slots ARE
+    # filtered out — those never produced anything the customer
+    # can meaningfully look back on.
+    offset = cycle.slots_display_offset or 0
+    slots = list(
+        cycle.slots.filter(sequence_no__gt=offset).order_by("sequence_no")
+    )
+    previous_run_slots: list[TrialBatchSlot] = []
+    if offset > 0:
+        previous_run_slots = list(
+            cycle.slots.filter(sequence_no__lte=offset)
+            .exclude(
+                status__in=(
+                    TrialBatchSlotStatus.AWAITING_SCIENTIST,
+                    TrialBatchSlotStatus.CLOSED_CANCELLED,
+                )
+            )
+            .order_by("sequence_no")
+        )
     active = next(
         (
             s
@@ -355,7 +436,9 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
         # on the very next render without waiting on the customer to
         # click "I've received it".
         active = _maybe_auto_deliver_slot(active, summary)
-        slots = list(cycle.slots.order_by("sequence_no"))
+        slots = list(
+            cycle.slots.filter(sequence_no__gt=offset).order_by("sequence_no")
+        )
 
     # Historical dispatch snapshots for closed slots — powers the
     # "story" expand on the portal so customers can review every
@@ -390,6 +473,9 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
         if _tb is None or not getattr(_tb, "psp_manufacturing_order_uuid", None):
             continue
         dispatch_payload = _fetch_dispatch_only(slot_row, cycle.organization)
+        release_docs_payload = _fetch_release_documents_only(
+            slot_row, cycle.organization
+        )
         # Reconcile stuck rows: if NPD says the slot has been
         # delivered / feedback_pending / closed_* but PSP's dispatch
         # is still at ``picked_up``, PSP never got the customer's
@@ -421,6 +507,7 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
             "done": 0,
             "phase": "",
             "dispatch": dispatch_payload,
+            "release_documents": release_docs_payload,
         }
     # ``slots_used`` counts slots the customer has actually been sent
     # a sample for (or is currently being sent one for) — anything past
@@ -437,17 +524,82 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
             TrialBatchSlotStatus.CLOSED_CANCELLED,
         )
     )
+
+    # Terminal-choice flags for the portal card.
+    #
+    # ``has_pending_top_up`` — any AdditionalSampleRequest still
+    # awaiting a finance decision. While true, the card renders a
+    # "waiting on finance" hold state and the terminal-choice prompt
+    # is suppressed. Prevents the "customer closes → top-up lands
+    # approved" race that would strand a paid-for set of slots.
+    #
+    # ``has_active_slots`` — any slot still in flight (awaiting
+    # scientist / in production / delivered without verdict). The
+    # terminal-choice prompt only surfaces once every paid-for
+    # sample has landed a verdict.
+    #
+    # ``can_finalise`` — the composite flag the FE keys on to render
+    # the "Yes, request more / No, we're done" prompt. Equivalent to
+    # `not customer_confirmed_done_at AND not has_pending_top_up AND
+    # not has_active_slots`.
+    has_pending_top_up = any(
+        r.status == AdditionalSampleRequestStatus.AWAITING_FINANCE
+        for r in cycle.additional_sample_requests.all()
+    )
+    has_active_slots = any(
+        s.status
+        in (
+            TrialBatchSlotStatus.AWAITING_SCIENTIST,
+            TrialBatchSlotStatus.IN_PRODUCTION,
+            TrialBatchSlotStatus.SHIPPED,
+            TrialBatchSlotStatus.DELIVERED,
+            TrialBatchSlotStatus.FEEDBACK_PENDING,
+        )
+        for s in slots
+    )
+    customer_confirmed_done_at = (
+        cycle.customer_confirmed_done_at.isoformat()
+        if cycle.customer_confirmed_done_at is not None
+        else None
+    )
+    can_finalise = (
+        customer_confirmed_done_at is None
+        and not has_pending_top_up
+        and not has_active_slots
+    )
+    # Portal-facing total_slots is the current run's slot count —
+    # ``total_slots`` on the row still counts everything ever
+    # allocated (finance sums against it, scientist views show the
+    # full history) but the customer should only see the current
+    # run after a team-close-then-restart.
+    total_slots_displayed = max(0, cycle.total_slots - offset)
+    # Previous-run slots keep their original sequence numbers so the
+    # customer sees the historical labels intact ("Sample #2 —
+    # delivered 3 days ago"). No offset math on the wire because
+    # they aren't part of the current-run counter.
+    previous_run_payload = [
+        _serialise_slot(s, production_by_slot.get(str(s.id)))
+        for s in previous_run_slots
+    ]
     return {
         "id": str(cycle.id),
         "status": cycle.status,
-        "total_slots": cycle.total_slots,
+        "total_slots": total_slots_displayed,
         "slots_used": slots_worked,
         "closed_at": (
             cycle.closed_at.isoformat() if cycle.closed_at is not None else None
         ),
+        "customer_confirmed_done_at": customer_confirmed_done_at,
+        "has_pending_top_up": has_pending_top_up,
+        "has_active_slots": has_active_slots,
+        "can_finalise": can_finalise,
         "slots": [
-            _serialise_slot(s, production_by_slot.get(str(s.id))) for s in slots
+            _serialise_slot(
+                s, production_by_slot.get(str(s.id)), sequence_offset=offset
+            )
+            for s in slots
         ],
+        "previous_run_slots": previous_run_payload,
         "active_slot_id": str(active.id) if active is not None else None,
         "additional_requests": [
             _serialise_additional_request(r)
@@ -671,6 +823,58 @@ class PortalTrialBatchSlotDispatchPhotoView(PortalAPIView):
         return response
 
 
+class PortalTrialBatchSlotReleaseDocumentView(PortalAPIView):
+    """``GET /api/portal/trial-batches/slots/<slot_id>/release-documents/<file_uuid>/``
+
+    Proxy-download one Final Product Release document (COA / BMR /
+    micro / label proof / retain-sample photo) for a cycle-slot
+    sample. Payment-agnostic counterpart to
+    :class:`PortalSampleReleaseDocumentView` — cycle slots don't map
+    to a Payment, so we key the CO lookup by ``slot.id`` (matches
+    how the Sample CO on PSP is created).
+
+    Ownership: the slot's cycle must belong to a formulation the
+    account can read through — reuses ``_load_owned_slot`` so a
+    leaked file uuid from another account 404s cleanly at that
+    layer. Bytes stream from PSP through NPD to the browser.
+
+    Content-Disposition is ``inline`` for images / PDFs (browser
+    previews) and ``attachment`` for anything else. Cache-Control
+    is content-addressed so re-uploads bust automatically.
+    """
+
+    def get(self, request: Request, slot_id, file_uuid) -> Response:
+        from apps.psp.services import fetch_psp_release_document_for_co
+        from django.http import HttpResponse
+
+        slot = _load_owned_slot(request, slot_id)
+        organization = slot.cycle.organization
+
+        result = fetch_psp_release_document_for_co(
+            organization=organization,
+            co_uuid=slot.id,
+            file_uuid=file_uuid,
+        )
+        if result is None:
+            raise NotFound("release_document_not_found")
+
+        body, mime, filename = result
+        response = HttpResponse(body, content_type=mime)
+        # Inline for browser-previewable types, attachment otherwise
+        # — matches the storefront sample release-doc behaviour.
+        disposition = "inline" if _is_inline_previewable(mime) else "attachment"
+        response["Content-Disposition"] = (
+            f'{disposition}; filename="{filename}"'
+        )
+        response["Cache-Control"] = "private, max-age=86400, immutable"
+        return response
+
+
+def _is_inline_previewable(mime: str) -> bool:
+    m = (mime or "").lower()
+    return m.startswith("image/") or m == "application/pdf"
+
+
 class PortalTrialBatchAdditionalRequestView(PortalAPIView):
     """``POST /api/portal/projects/<formulation_id>/trial-batches/request-more/``.
 
@@ -707,3 +911,37 @@ class PortalTrialBatchAdditionalRequestView(PortalAPIView):
             {"request": _serialise_additional_request(new_request)},
             status=status.HTTP_201_CREATED,
         )
+
+
+class PortalTrialBatchConfirmDoneView(PortalAPIView):
+    """``POST /api/portal/projects/<formulation_id>/trial-batches/confirm-done/``.
+
+    Customer picks "No, we're done" at the terminal-choice prompt.
+    Stamps ``TrialBatchCycle.customer_confirmed_done_at`` which is
+    the signal the final-spec stage keys off to unlock.
+
+    Refuses when a top-up request is still awaiting finance approval
+    (409 ``pending_top_up``) or a slot is still in flight (409
+    ``active_slots``) — both cases mean the customer hasn't actually
+    landed on a terminal choice yet.
+    """
+
+    def post(self, request: Request, formulation_id) -> Response:
+        formulation = _load_owned_formulation(request, formulation_id)
+        cycle = TrialBatchCycle.objects.filter(formulation=formulation).first()
+        if cycle is None:
+            raise NotFound()
+        try:
+            confirm_trial_batches_done(cycle=cycle, actor=request.user)
+        except CycleHasPendingTopUp as exc:
+            return Response(
+                {"code": "pending_top_up", "detail": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except CycleHasActiveSlots as exc:
+            return Response(
+                {"code": "active_slots", "detail": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        cycle_after = TrialBatchCycle.objects.get(pk=cycle.pk)
+        return Response({"cycle": _serialise_cycle(cycle_after)})

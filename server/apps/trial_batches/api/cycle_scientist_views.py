@@ -49,6 +49,8 @@ from apps.trial_batches.cycle_services import (
     open_next_slot_iterated,
 )
 from apps.trial_batches.models import (
+    AdditionalSampleRequest,
+    AdditionalSampleRequestStatus,
     BatchKind,
     TrialBatchCycle,
     TrialBatchCycleStatus,
@@ -190,6 +192,16 @@ def _serialise_cycle_for_scientist(cycle: TrialBatchCycle) -> dict[str, Any]:
             else None
         ),
         "can_open_next_slot": can_open_next,
+        # Set when the customer clicks "No, we're done" on the portal
+        # terminal-choice prompt. The spec-sheets tab uses this as the
+        # signal to surface a "Final spec is ready to be created"
+        # banner + trial-batch history summary.
+        "customer_confirmed_done_at": (
+            cycle.customer_confirmed_done_at.isoformat()
+            if cycle.customer_confirmed_done_at is not None
+            else None
+        ),
+        "terminated_reason": cycle.terminated_reason or "",
         "action_needed": action_needed,
         "slots": [_serialise_slot_for_scientist(s) for s in slots],
     }
@@ -279,13 +291,15 @@ def _stage_predicate(qs, stage: str):
     """Filter a base cycles queryset down to one kanban column.
 
     "Genuinely closed" means either (a) the cycle's status is one of
-    the terminal statuses AND no slot on it is still active. A
-    ``SATISFIED`` cycle where the customer opted into
-    ``keep_producing_remaining`` still has ``AWAITING_SCIENTIST``
-    slots (locked to the approved version) — the scientist has to
-    stay on top of them until every last one ships. Treating that as
-    "closed" hides in-flight work from the pipeline and is the exact
-    bug the customer bumped into.
+    the terminal statuses AND no slot on it is still active AND no
+    top-up request is still awaiting finance approval AND the
+    customer has explicitly confirmed the cycle is done (or the team
+    override closed it). A ``SATISFIED`` cycle where the customer
+    opted into ``keep_producing_remaining`` still has
+    ``AWAITING_SCIENTIST`` slots (locked to the approved version) —
+    the scientist has to stay on top of them until every last one
+    ships. Treating that as "closed" hides in-flight work from the
+    pipeline and is the exact bug the customer bumped into.
 
     ``needs_click`` — NOT genuinely closed AND either (a) has an
     ``AWAITING_SCIENTIST`` slot, or (b) has no active slot at all but
@@ -296,6 +310,9 @@ def _stage_predicate(qs, stage: str):
     ``in_flight`` — NOT genuinely closed AND has active work AND no
     scientist action pending. Samples are being produced / shipped /
     awaiting feedback but the scientist has nothing to click yet.
+    Also catches cycles waiting on a finance decision for a top-up
+    request — the scientist has nothing to click but the cycle
+    hasn't landed a terminal outcome either.
 
     ``closed`` — genuinely closed as defined above.
     """
@@ -312,15 +329,32 @@ def _stage_predicate(qs, stage: str):
             status__in=_ACTIVE_SLOT_STATUSES,
         )
     )
+    has_pending_top_up = Exists(
+        AdditionalSampleRequest.objects.filter(
+            cycle_id=OuterRef("pk"),
+            status=AdditionalSampleRequestStatus.AWAITING_FINANCE,
+        )
+    )
 
     if stage == "closed":
-        # Terminal status AND no active slot. The has_active guard is
-        # what keeps SATISFIED-with-remaining cycles OUT of this column
-        # while their scientist-locked slots are still working through
-        # production + shipping.
-        return qs.filter(status__in=_CLOSED_STATUSES).annotate(
+        # Terminal status AND no active slot AND no pending top-up.
+        # ``TERMINATED_BY_TEAM`` is the team-override path — the cycle
+        # closes even without the customer's explicit confirmation.
+        # For ``SATISFIED`` / ``MAX_REACHED`` the customer must have
+        # answered "we're done" (or the ``keep_producing_remaining``
+        # slots must have all finished, which the active-slot guard
+        # already covers). Without the customer-confirmed guard a
+        # cycle would fall into ``closed`` the instant the last slot
+        # wrapped, hiding it from the pipeline before the customer
+        # got to choose "more or done".
+        annotated = qs.filter(status__in=_CLOSED_STATUSES).annotate(
             _has_active=has_any_active,
-        ).filter(_has_active=False)
+            _has_pending_top_up=has_pending_top_up,
+        ).filter(_has_active=False, _has_pending_top_up=False)
+        customer_confirmed = Q(customer_confirmed_done_at__isnull=False) | Q(
+            status=TrialBatchCycleStatus.TERMINATED_BY_TEAM
+        )
+        return annotated.filter(customer_confirmed)
 
     if stage == "needs_click":
         # Anything with an awaiting slot gets flagged directly. The
@@ -340,14 +374,19 @@ def _stage_predicate(qs, stage: str):
         )
         return annotated.filter(awaiting_branch | no_active_in_progress_branch)
 
-    # in_flight: has active work AND no scientist action pending. Both
+    # in_flight: has active work AND no scientist action pending, OR
+    # a top-up request is waiting on finance approval. Both
     # IN_PROGRESS and SATISFIED-with-remaining cycles land here — the
-    # column shows every cycle that's still shipping samples, whatever
-    # the top-level status.
-    return qs.annotate(
+    # column shows every cycle that's still shipping samples OR
+    # awaiting a finance decision on a customer top-up.
+    annotated = qs.annotate(
         _has_awaiting=has_awaiting,
         _has_active=has_any_active,
-    ).filter(_has_awaiting=False, _has_active=True)
+        _has_pending_top_up=has_pending_top_up,
+    )
+    active_no_click = Q(_has_awaiting=False, _has_active=True)
+    finance_pending = Q(_has_pending_top_up=True)
+    return annotated.filter(active_no_click | finance_pending)
 
 
 def _encode_cursor(row: TrialBatchCycle) -> str:
@@ -693,6 +732,42 @@ class TrialBatchCycleTeamOverrideCloseView(APIView):
 
         close_cycle_by_team_override(cycle=cycle, actor=request.user, reason=reason)
         cycle.refresh_from_db()
+        return Response(
+            {"cycle": _serialise_cycle_for_scientist(cycle)},
+            status=status.HTTP_200_OK,
+        )
+
+
+class TrialBatchCycleByFormulationView(APIView):
+    """``GET /api/organizations/<org>/formulations/<formulation_id>/trial-batch-cycle/``.
+
+    Returns the single cycle attached to this formulation (they're
+    one-to-one) with the full scientist-shape payload. Powers the
+    spec-sheets tab's "Final spec is ready to be created" banner and
+    the trial-batch history summary that lists every sample +
+    verdict + feedback the customer left.
+
+    Returns 404 when no cycle exists yet (deposit hasn't been
+    approved). The FE hides the banner in that case rather than
+    error-toasting.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def get(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        cycle = (
+            TrialBatchCycle.objects.filter(
+                organization_id=org_id, formulation_id=formulation_id,
+            )
+            .select_related("formulation", "formulation__customer")
+            .prefetch_related("slots__formulation_version")
+            .first()
+        )
+        if cycle is None:
+            raise NotFound()
         return Response(
             {"cycle": _serialise_cycle_for_scientist(cycle)},
             status=status.HTTP_200_OK,

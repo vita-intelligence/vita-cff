@@ -13,6 +13,7 @@ from apps.trial_batches.api.views import (
 )
 from apps.trial_batches.api.samples_views import PendingSamplePaymentsView
 from apps.trial_batches.api.cycle_scientist_views import (
+    TrialBatchCycleByFormulationView,
     TrialBatchCycleCreateAndLinkBatchView,
     TrialBatchCycleFormulationVersionsView,
     TrialBatchCycleListView,
@@ -72,6 +73,14 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/trial-batches/",
         TrialBatchListCreateView.as_view(),
         name="trial-batch-list",
+    ),
+    # Single-cycle lookup by formulation id. The scientist spec-
+    # sheets tab uses this to render the "Final spec is ready" banner
+    # + trial-batch history once the customer confirms done.
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/trial-batch-cycle/",
+        TrialBatchCycleByFormulationView.as_view(),
+        name="trial-batch-cycle-by-formulation",
     ),
     path(
         "organizations/<uuid:org_id>/trial-batches/<uuid:batch_id>/",

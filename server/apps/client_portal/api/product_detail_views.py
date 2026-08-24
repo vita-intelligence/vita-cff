@@ -394,10 +394,24 @@ def _build_pipeline(
                 TrialBatchSlotStatus.FEEDBACK_PENDING,
             )
         ).count()
-        if cycle.status in (
-            TrialBatchCycleStatus.SATISFIED,
-            TrialBatchCycleStatus.TERMINATED_BY_TEAM,
-        ) and remaining_open == 0:
+        # Trial-batch stage completes only when the CUSTOMER has
+        # signed off. SATISFIED (verdict path) is a customer signal
+        # by definition. TERMINATED_BY_TEAM alone isn't — the team
+        # can close the cycle but the customer still owes an answer
+        # via the portal's terminal-choice prompt ("more or done").
+        # Gate on ``customer_confirmed_done_at`` for the team-close
+        # branch so the pipeline holds until they answer.
+        team_closed_and_customer_confirmed = (
+            cycle.status == TrialBatchCycleStatus.TERMINATED_BY_TEAM
+            and cycle.customer_confirmed_done_at is not None
+        )
+        if (
+            (
+                cycle.status == TrialBatchCycleStatus.SATISFIED
+                or team_closed_and_customer_confirmed
+            )
+            and remaining_open == 0
+        ):
             trial_stage = {
                 "key": "trial",
                 "label": (
@@ -429,6 +443,25 @@ def _build_pipeline(
                 "detail": (
                     "You've received every sample you paid for. Confirm "
                     "you're happy or request another sample."
+                ),
+            }
+        elif (
+            cycle.status == TrialBatchCycleStatus.TERMINATED_BY_TEAM
+            and cycle.customer_confirmed_done_at is None
+        ):
+            # Team-closed but the customer hasn't answered "more or
+            # done" yet — same "waiting on you" posture as
+            # MAX_REACHED, but the copy names the team-close so the
+            # customer isn't confused about how the cycle ended.
+            trial_stage = {
+                "key": "trial",
+                "label": "Trial batches wrapped — waiting on you",
+                "state": "current",
+                "completed_at": None,
+                "detail": (
+                    "Our team closed your trial-batch run. Let us know "
+                    "if you'd like more samples or you're happy to move "
+                    "on to the final specification."
                 ),
             }
         else:
@@ -491,6 +524,14 @@ def _build_pipeline(
     # ---- Stage 5: Final spec signed -------------------------------------
     final_signed = _first_signed(_final_specs(sheets))
     final_sent = _first_sent_unsigned(_final_specs(sheets))
+    # Bridge state: trial-batch stage completed but our team hasn't
+    # prepared the final spec yet. Without this the roadmap looks
+    # frozen — trial is ``done`` but final_spec sits at ``future``
+    # and the customer feels stuck. Marking final_spec ``current``
+    # with a "we're preparing it" copy shows the pipeline still
+    # advancing, and the label flips to "awaiting signature" the
+    # moment we send the spec.
+    trial_is_done = trial_stage.get("state") == "done"
     if final_signed is not None:
         final_stage = {
             "key": "final_spec",
@@ -507,6 +548,18 @@ def _build_pipeline(
             "completed_at": None,
             "detail": (
                 f"Final spec {final_sent.code} is ready — signing authorises production."
+            ),
+        }
+    elif trial_is_done:
+        final_stage = {
+            "key": "final_spec",
+            "label": "Final specification — our team is preparing it",
+            "state": "current",
+            "completed_at": None,
+            "detail": (
+                "Trial batches complete. Our team is now writing your final "
+                "specification based on the recipe you approved. We'll email "
+                "you the moment it's ready to sign."
             ),
         }
     else:
@@ -1259,9 +1312,17 @@ def _build_cancellation(
             "at": _iso(rejected.customer_rejected_at),
             "reference_code": rejected.code,
         }
+    # Only DEPOSIT / FINAL voids are project-cancelling. An
+    # ADDITIONAL_SAMPLES void is a routine finance rejection of a
+    # customer top-up request — it drops the trial-batch cycle
+    # back into its terminal-choice prompt (see
+    # ``reject_additional_samples_on_payment_voided``) and mustn't
+    # nuke the whole project card with a fatal red banner.
     voided = (
         Payment.objects.filter(
-            formulation_id=formulation_id, status=PaymentStatus.VOIDED
+            formulation_id=formulation_id,
+            status=PaymentStatus.VOIDED,
+            kind__in=(PaymentKind.DEPOSIT, PaymentKind.FINAL),
         )
         .order_by("-updated_at")
         .first()
@@ -1273,10 +1334,26 @@ def _build_cancellation(
         # pre-existing notes body.
         raw = voided.notes or ""
         reason = raw.split("--- voided ---", 1)[-1].strip() if raw else ""
+        # Human-readable label for the payment kind — the portal
+        # customer knows "deposit" and "final invoice", not the
+        # internal enum values.
+        kind_label = {
+            PaymentKind.DEPOSIT: "Deposit invoice",
+            PaymentKind.FINAL: "Final invoice",
+        }.get(voided.kind, "Invoice")
         return {
             "source": "payment_voided",
+            "payment_kind": voided.kind,
+            "payment_kind_label": kind_label,
+            "amount": str(voided.amount),
+            "currency": voided.currency or "GBP",
+            "invoice_number": (voided.invoice_number or "").strip(),
             "reason": reason,
             "at": _iso(voided.updated_at),
-            "reference_code": str(voided.id),
+            # Prefer the finance-facing invoice number when set; fall
+            # back to the payment uuid for uniqueness.
+            "reference_code": (
+                (voided.invoice_number or "").strip() or str(voided.id)
+            ),
         }
     return None

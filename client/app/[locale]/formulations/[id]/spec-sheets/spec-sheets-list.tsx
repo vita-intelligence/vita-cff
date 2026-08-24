@@ -1,8 +1,18 @@
 "use client";
 
-import { CheckCircle2, ExternalLink, FileText } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import {
+  CheckCircle2,
+  ChevronDown,
+  ExternalLink,
+  FileText,
+  MessageSquare,
+  Sparkles,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useState } from "react";
 
+import { apiClient } from "@/lib/api";
 import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link } from "@/i18n/navigation";
 import {
@@ -26,6 +36,32 @@ import { NewSpecSheetButton } from "../new-spec-sheet-button";
  * against a real :class:`FormulationVersion` without the page
  * redirecting somewhere else.
  */
+// Cycle payload for the spec-sheets banner. Mirrors
+// ``_serialise_cycle_for_scientist`` on the server. Kept local
+// because the wire is tab-specific and threading it through the
+// shared /services layer would drag half the trial-batches domain
+// into every spec-sheets consumer.
+interface TrialCycleForSpecTab {
+  readonly id: string;
+  readonly status: string;
+  readonly total_slots: number;
+  readonly slots_used: number;
+  readonly customer_confirmed_done_at: string | null;
+  readonly terminated_reason: string;
+  readonly slots: readonly {
+    readonly id: string;
+    readonly sequence_no: number;
+    readonly status: string;
+    readonly verdict: "satisfied" | "needs_iteration" | null;
+    readonly verdict_at: string | null;
+    readonly feedback_summary: string;
+    readonly trial_batch_id: string | null;
+    readonly formulation_version_id: string;
+    readonly formulation_version_label: string;
+  }[];
+}
+
+
 export function SpecSheetsList({
   orgId,
   formulationId,
@@ -50,10 +86,47 @@ export function SpecSheetsList({
   const versions: readonly FormulationVersionDto[] =
     versionsQuery.data ?? [];
 
+  // Cycle lookup — 404 is expected (deposit not yet approved) so we
+  // treat any error as "no cycle" and hide the banner rather than
+  // showing an error state on a tab where the cycle is optional
+  // context, not the main content.
+  const cycleQuery = useQuery<TrialCycleForSpecTab | null>({
+    queryKey: ["trial-batch-cycle-by-formulation", orgId, formulationId],
+    queryFn: async () => {
+      try {
+        const { data } = await apiClient.get<{ cycle: TrialCycleForSpecTab }>(
+          `/api/organizations/${orgId}/formulations/${formulationId}/trial-batch-cycle/`,
+        );
+        return data.cycle;
+      } catch {
+        return null;
+      }
+    },
+    staleTime: 30_000,
+  });
+  const cycle = cycleQuery.data ?? null;
+
   const sheets = initialPage.results;
+  // A "final" spec sheet exists once the scientist creates one after
+  // the customer confirms done. While that's absent, the banner
+  // nudges the scientist to create it.
+  const hasFinalSheet = sheets.some((s) => s.document_kind === "final");
+  const customerConfirmedDone = cycle?.customer_confirmed_done_at != null;
+  const showFinalSpecBanner = customerConfirmedDone && !hasFinalSheet;
 
   return (
     <section className="flex flex-col gap-4">
+      {showFinalSpecBanner && cycle ? (
+        <FinalSpecReadyBanner
+          cycle={cycle}
+          canWrite={canWrite}
+          orgId={orgId}
+          projectCode={projectCode}
+          versions={versions}
+          sheets={sheets}
+        />
+      ) : null}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-ink-1000">
@@ -83,6 +156,184 @@ export function SpecSheetsList({
         </ul>
       )}
     </section>
+  );
+}
+
+
+// Banner + trial-batch history summary. Renders when the customer
+// has clicked "No, we're done" on the portal terminal-choice prompt
+// AND no ``final`` spec sheet exists yet. The scientist sees a
+// prominent nudge to build the final spec + a compact list of every
+// sample worked with, the recipe version, the verdict, and the
+// verbatim feedback text — everything they need to decide which
+// version becomes the final spec's basis.
+function FinalSpecReadyBanner({
+  cycle,
+  canWrite,
+  orgId,
+  projectCode,
+  versions,
+  sheets,
+}: {
+  cycle: TrialCycleForSpecTab;
+  canWrite: boolean;
+  orgId: string;
+  projectCode: string;
+  versions: readonly FormulationVersionDto[];
+  sheets: readonly SpecificationSheetDto[];
+}) {
+  // Only slots the customer actually received or gave a verdict on
+  // — awaiting_scientist + closed_cancelled don't have meaningful
+  // history for the final-spec decision.
+  const meaningfulSlots = cycle.slots.filter((s) =>
+    s.status !== "awaiting_scientist" && s.status !== "closed_cancelled",
+  );
+  const satisfiedSlot = meaningfulSlots.find(
+    (s) => s.verdict === "satisfied",
+  );
+  return (
+    <div className="rounded-2xl border border-emerald-500/40 bg-emerald-50/70 p-5 shadow-sm">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white">
+          <Sparkles className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-800">
+            Final spec ready to be created
+          </p>
+          <p className="mt-1 text-sm text-emerald-950">
+            The customer confirmed they&rsquo;re done with trial batches
+            {satisfiedSlot ? (
+              <>
+                {" "}
+                and approved{" "}
+                <strong>
+                  Sample #{satisfiedSlot.sequence_no} (
+                  {satisfiedSlot.formulation_version_label})
+                </strong>
+              </>
+            ) : null}
+            . Review the samples + feedback below, then create the
+            final spec sheet against the version they liked.
+          </p>
+          {canWrite ? (
+            <div className="mt-3">
+              <NewSpecSheetButton
+                orgId={orgId}
+                projectCode={projectCode}
+                versions={versions}
+                existingSheets={sheets}
+                documentKind="final"
+              />
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {meaningfulSlots.length > 0 ? (
+        <div className="mt-4 border-t border-emerald-500/30 pt-4">
+          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-800">
+            Trial-batch history ({meaningfulSlots.length} sample
+            {meaningfulSlots.length === 1 ? "" : "s"})
+          </p>
+          <ul className="mt-2 flex flex-col gap-2">
+            {meaningfulSlots.map((slot) => (
+              <TrialHistoryRow key={slot.id} slot={slot} />
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
+function TrialHistoryRow({
+  slot,
+}: {
+  slot: TrialCycleForSpecTab["slots"][number];
+}) {
+  // Collapsed by default so a long feedback text on one slot
+  // doesn't push the whole banner off screen. Only expand when
+  // there's something meaningful (feedback text) behind the fold —
+  // rows without feedback stay non-interactive.
+  const hasFeedback = Boolean(slot.feedback_summary?.trim());
+  const [open, setOpen] = useState(false);
+  const verdictTone =
+    slot.verdict === "satisfied"
+      ? "bg-emerald-500/15 text-emerald-800 ring-emerald-500/30"
+      : slot.verdict === "needs_iteration"
+        ? "bg-amber-500/15 text-amber-800 ring-amber-500/30"
+        : "bg-ink-100 text-ink-600 ring-ink-200";
+  const verdictLabel =
+    slot.verdict === "satisfied"
+      ? "Satisfied"
+      : slot.verdict === "needs_iteration"
+        ? "Needs iteration"
+        : slot.status.replace(/_/g, " ");
+  const verdictAt = slot.verdict_at
+    ? new Date(slot.verdict_at).toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      })
+    : null;
+  return (
+    <li className="rounded-xl border border-emerald-500/20 bg-white">
+      <button
+        type="button"
+        onClick={() => hasFeedback && setOpen((v) => !v)}
+        aria-expanded={hasFeedback ? open : undefined}
+        disabled={!hasFeedback}
+        className={
+          "flex w-full items-center gap-3 p-3 text-left " +
+          (hasFeedback ? "hover:bg-emerald-50/50" : "cursor-default")
+        }
+      >
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-ink-1000">
+            Sample #{slot.sequence_no}{" "}
+            <span className="font-mono text-xs text-ink-500">
+              {slot.formulation_version_label}
+            </span>
+          </p>
+          {verdictAt ? (
+            <p className="mt-0.5 text-[11px] text-ink-500">
+              Recorded {verdictAt}
+              {hasFeedback ? " · click to read feedback" : ""}
+            </p>
+          ) : hasFeedback ? (
+            <p className="mt-0.5 text-[11px] text-ink-500">
+              click to read feedback
+            </p>
+          ) : null}
+        </div>
+        <span
+          className={
+            "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 " +
+            verdictTone
+          }
+        >
+          {verdictLabel}
+        </span>
+        {hasFeedback ? (
+          <ChevronDown
+            className={
+              "h-4 w-4 shrink-0 text-ink-400 transition-transform " +
+              (open ? "rotate-180" : "")
+            }
+          />
+        ) : null}
+      </button>
+      {open && hasFeedback ? (
+        <div className="border-t border-emerald-500/10 px-3 pb-3 pt-2">
+          <div className="flex items-start gap-2 rounded-lg bg-ink-50 p-2 text-xs text-ink-700">
+            <MessageSquare className="mt-0.5 h-3 w-3 shrink-0 text-ink-400" />
+            <p className="whitespace-pre-line">{slot.feedback_summary}</p>
+          </div>
+        </div>
+      ) : null}
+    </li>
   );
 }
 
