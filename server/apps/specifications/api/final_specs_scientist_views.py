@@ -24,6 +24,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.formulations.api.permissions import HasFormulationsPermission
+from apps.formulations.models import ProjectType
 from apps.organizations.modules import FormulationsCapability
 from apps.payments.constants import PaymentKind, PaymentStatus
 from apps.payments.models import Payment
@@ -154,10 +155,21 @@ class FinalSpecsPipelineView(APIView):
     required_capability = FormulationsCapability.EDIT
 
     def get(self, request: Request, org_id: str) -> Response:
+        # Custom-formulation projects ONLY — Ready-to-Go (RTG) projects
+        # skip trial batches entirely and their "final spec" is created
+        # per-order at the storefront checkout, not through the
+        # deposit → trials → final-spec pipeline this page tracks. If
+        # RTG rows landed here every RTG order would clutter the
+        # kanban and the scientist would have no way to distinguish
+        # "customer's about to sign the bespoke product spec" from
+        # "someone bought a stock SKU we've been shipping for years."
         sheets = list(
             SpecificationSheet.objects.filter(
                 organization_id=org_id,
                 document_kind=SpecificationDocumentKind.FINAL,
+                formulation_version__formulation__project_type=(
+                    ProjectType.CUSTOM.value
+                ),
             )
             .exclude(
                 status__in=(
