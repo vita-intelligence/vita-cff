@@ -323,6 +323,8 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "customer_company",
             "customer_signed_at",
             "customer_signature_image",
+            "customer_rejected_at",
+            "customer_rejection_reason",
             "sent_at",
             "sent_delivery_method",
             "sent_recipient",

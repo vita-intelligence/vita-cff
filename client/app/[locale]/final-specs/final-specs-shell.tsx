@@ -281,6 +281,29 @@ function SpecKanbanCard({ card }: { card: FinalSpecCard }) {
       ) : null}
 
       <MetaLine card={card} />
+
+      {card.status === "rejected" && card.customer_rejection_reason ? (
+        <div className="mt-1 rounded-lg border border-red-200 bg-red-50 p-2">
+          <p className="flex items-center justify-between gap-1 text-[10px] font-semibold uppercase tracking-wider text-red-800">
+            <span className="flex items-center gap-1">
+              <AlertCircle className="h-3 w-3" /> Customer rejection reason
+            </span>
+            {card.customer_rejection_reason.length > 180 ? (
+              <span className="font-normal normal-case text-[9px] text-red-600/80">
+                open card for full text →
+              </span>
+            ) : null}
+          </p>
+          {/* ``line-clamp-3`` fades a long rejection reason after a
+              few lines so a customer who paste-bombed a paragraph
+              doesn't blow the card height apart. Full text lives on
+              the spec detail page — the card is clickable already. */}
+          <p className="mt-1 line-clamp-3 whitespace-pre-line text-xs leading-snug text-red-900">
+            {card.customer_rejection_reason}
+          </p>
+        </div>
+      ) : null}
+
       <ChevronRight className="h-3 w-3 self-end text-ink-300 group-hover:text-ink-500" />
     </Link>
   );
@@ -362,15 +385,6 @@ function MetaLine({ card }: { card: FinalSpecCard }) {
           {bit}
         </span>
       ))}
-      {card.status === "rejected" && card.customer_rejection_reason ? (
-        <span
-          className="ml-auto flex items-center gap-1 rounded-full bg-red-50 px-1.5 py-0.5 text-[9px] font-semibold text-red-700"
-          title={card.customer_rejection_reason}
-        >
-          <AlertCircle className="h-2.5 w-2.5" />
-          Reason
-        </span>
-      ) : null}
     </div>
   );
 }
