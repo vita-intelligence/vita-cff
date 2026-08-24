@@ -149,6 +149,21 @@ export function NewSpecSheetButton({
     }
   }, [eligibleVersions, versionId]);
 
+  // ``defaultQuantity`` is threaded through from the trial-batch
+  // cycle payload which is fetched by React Query on the spec-sheets
+  // tab — asynchronous. When the button first mounts the prop is
+  // ``undefined``; the ``useState`` initialiser only fires once so
+  // the quantity input stayed empty even after the cycle resolved,
+  // and submitting without a value silently defaulted the sheet to
+  // ``quantity=1`` on the server. Sync when the prop lands (only
+  // when the user hasn't already typed a value, so we don't
+  // stomp mid-edit).
+  useEffect(() => {
+    if (defaultQuantity == null) return;
+    if (quantity.trim().length > 0) return;
+    setQuantity(String(defaultQuantity));
+  }, [defaultQuantity, quantity]);
+
   const reset = () => {
     setVersionId(eligibleVersions[0]?.id ?? "");
     setCode(projectCode ?? "");
