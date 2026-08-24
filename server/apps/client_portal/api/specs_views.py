@@ -100,6 +100,17 @@ def _serialise_spec(sheet, proposal) -> dict[str, Any]:
             if sheet.customer_signed_at is not None
             else None
         ),
+        # Customer rejection audit — powers the "You rejected this
+        # on [date]" banner on the portal spec view. The portal FE
+        # keys off ``status === "rejected"`` for the block, but the
+        # timestamp + reason give the customer their own words back
+        # so they know the note we captured.
+        "customer_rejected_at": (
+            sheet.customer_rejected_at.isoformat()
+            if sheet.customer_rejected_at is not None
+            else None
+        ),
+        "customer_rejection_reason": sheet.customer_rejection_reason or "",
         "proposal": {
             "id": str(proposal.id),
             "code": proposal.code or "",
