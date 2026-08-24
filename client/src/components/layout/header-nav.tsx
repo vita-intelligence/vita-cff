@@ -24,6 +24,7 @@ export type HeaderNavHref =
   | "/labelling"
   | "/samples"
   | "/trial-batches"
+  | "/final-specs"
   | "/finance/payments";
 
 
