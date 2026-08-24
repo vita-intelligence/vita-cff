@@ -2613,6 +2613,34 @@ def transition_status(
 
         transaction.on_commit(_fire_final_spec_email)
 
+    # Any FINAL spec transition (sent, accepted, rejected, back to
+    # draft) shifts the PSP mirror: the kanban's :awaiting_final_spec
+    # → :production_planning gate is driven by the six ``npd_final_*``
+    # columns on CustomerOrder, and those columns are re-computed off
+    # the current FINAL sheet's status. Fire the sync so PSP doesn't
+    # stare at yesterday's state.
+    if (
+        sheet.document_kind == SpecificationDocumentKind.FINAL
+        and previous_status != next_status
+    ):
+        _formulation = sheet.formulation_version.formulation
+
+        def _fire_final_spec_psp_sync() -> None:
+            from apps.payments.services import (
+                _sync_formulation_proposal_to_psp,
+            )
+
+            try:
+                _sync_formulation_proposal_to_psp(_formulation)
+            except Exception:
+                logger.exception(
+                    "final-spec: PSP mirror sync bubbled for "
+                    "formulation %s",
+                    _formulation.pk,
+                )
+
+        transaction.on_commit(_fire_final_spec_psp_sync)
+
     return sheet
 
 
@@ -2899,6 +2927,30 @@ def accept_as_customer(
 
         transaction.on_commit(_create_final_payment)
 
+        # ``accept_as_customer`` bypasses ``transition_status`` (kiosk
+        # signers aren't platform users) so the PSP-mirror hook on
+        # that helper never fires for a customer-sign event. Push the
+        # sync explicitly so PSP sees ``npd_final_spec_signed_at``.
+        def _push_final_sign_to_psp() -> None:
+            from apps.formulations.models import Formulation as _Formulation
+            from apps.payments.services import (
+                _sync_formulation_proposal_to_psp,
+            )
+
+            fresh = _Formulation.objects.filter(pk=formulation_pk).first()
+            if fresh is None:
+                return
+            try:
+                _sync_formulation_proposal_to_psp(fresh)
+            except Exception:
+                logger.exception(
+                    "final-spec sign: PSP mirror sync bubbled for "
+                    "formulation %s",
+                    formulation_pk,
+                )
+
+        transaction.on_commit(_push_final_sign_to_psp)
+
     return sheet
 
 
@@ -2995,6 +3047,34 @@ def reject_final_spec_as_customer(
             )
 
     transaction.on_commit(_reopen_cycle_for_final_rejection)
+
+    # ``reject_final_spec_as_customer`` bypasses ``transition_status``
+    # too. The reopen helper above already pushes to PSP, but only
+    # if the cycle was in a terminal state — an edge-case reject on
+    # an already-in-progress cycle would skip the push and leave PSP
+    # blind to the new ``npd_final_spec_rejected_at`` stamp. Fire an
+    # unconditional push so the mirror always reflects the reject.
+    formulation_pk = sheet.formulation_version.formulation.pk
+
+    def _push_final_reject_to_psp() -> None:
+        from apps.formulations.models import Formulation as _Formulation
+        from apps.payments.services import (
+            _sync_formulation_proposal_to_psp,
+        )
+
+        fresh = _Formulation.objects.filter(pk=formulation_pk).first()
+        if fresh is None:
+            return
+        try:
+            _sync_formulation_proposal_to_psp(fresh)
+        except Exception:
+            logger.exception(
+                "final-spec reject: PSP mirror sync bubbled for "
+                "formulation %s",
+                formulation_pk,
+            )
+
+    transaction.on_commit(_push_final_reject_to_psp)
     return sheet
 
 
