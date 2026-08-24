@@ -383,6 +383,32 @@ def void_payment(*, payment: Payment, actor: Any, notes: str = "") -> Payment:
 
     transaction.on_commit(_resync_sample_on_void)
 
+    # ADDITIONAL_SAMPLES payments — voiding the finance-queue row is
+    # how "reject the top-up request" gets recorded. Mirror it onto
+    # the linked AdditionalSampleRequest so the trial-batch cycle
+    # can drop out of its "waiting on finance" hold and offer the
+    # customer the terminal choice again. Silent-degrade posture
+    # matches the approve path.
+    if payment.kind == PaymentKind.ADDITIONAL_SAMPLES:
+        def _reject_additional_samples() -> None:
+            from apps.trial_batches.cycle_services import (
+                reject_additional_samples_on_payment_voided,
+            )
+
+            fresh = Payment.objects.filter(pk=payment_pk).first()
+            if fresh is None:
+                return
+            try:
+                reject_additional_samples_on_payment_voided(payment=fresh)
+            except Exception:  # noqa: BLE001 — never break payment void
+                logger.exception(
+                    "Failed to reject additional-samples request for voided "
+                    "payment %s",
+                    payment_pk,
+                )
+
+        transaction.on_commit(_reject_additional_samples)
+
     # Live push — moves the row from wherever it was into Voided on
     # every open finance tab. Voided is column 3 on the pipeline
     # board.

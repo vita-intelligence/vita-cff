@@ -76,6 +76,22 @@ class InvalidAdditionalSampleQuantity(Exception):
     """Requested quantity is <= 0 or exceeds the org's per-request cap."""
 
 
+class CycleHasPendingTopUp(Exception):
+    """Cycle can't be finalised — a customer-initiated top-up is
+    still awaiting finance approval. The cycle has to wait for the
+    finance decision (approve → new slots seeded / reject → drops
+    into the terminal choice prompt) before it can move forward.
+    """
+
+
+class CycleHasActiveSlots(Exception):
+    """Cycle can't be finalised — one or more slots are still in
+    flight (awaiting scientist / in production / delivered but no
+    verdict yet). The customer answers the terminal choice only once
+    every paid-for sample has been resolved.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Cycle creation
 # ---------------------------------------------------------------------------
@@ -594,6 +610,12 @@ def request_additional_samples(
     unit_price = Decimal(str(config.price_per_extra_sample))
     total = (unit_price * quantity).quantize(Decimal("0.01"))
 
+    # Payment.paid_at is NOT NULL; recorded_by is a required User FK.
+    # For customer-portal-initiated top-ups the actor is a ClientAccount
+    # (not a platform User), so we attribute the record to the
+    # formulation's creator — same fallback shape the bundled-deposit
+    # auto-create uses. ``paid_at = now()`` mirrors those helpers too;
+    # finance edits the real bank-transfer date when they reconcile.
     payment = Payment.objects.create(
         organization=cycle.organization,
         formulation=cycle.formulation,
@@ -601,6 +623,8 @@ def request_additional_samples(
         status=PaymentStatus.PENDING,
         amount=total,
         currency=(config.currency_code or "GBP").upper(),
+        paid_at=timezone.now(),
+        recorded_by=cycle.formulation.created_by,
         notes=(
             f"Additional samples request: {quantity} × "
             f"{config.currency_code} {unit_price} on trial cycle "
@@ -653,6 +677,23 @@ def apply_additional_samples_on_payment_approved(
         return cycle
 
     used = TrialBatchSlot.objects.filter(cycle=cycle).count()
+
+    # Reactivating a TERMINATED_BY_TEAM cycle is a customer-triggered
+    # restart — the team closed but the customer chose to order more
+    # rather than finalise. The portal display counter should reset
+    # to just the newly-ordered samples (matches the "start from
+    # only number of samples they requested" rule) instead of
+    # accumulating on top of the pre-close history. We stamp the
+    # offset to the CURRENT slot count so every future slot is
+    # counted from zero on the portal ladder. Reactivations from
+    # MAX_REACHED / SATISFIED keep accumulating — those are
+    # continuations, not restarts.
+    was_team_terminated = (
+        cycle.status == TrialBatchCycleStatus.TERMINATED_BY_TEAM
+    )
+    if was_team_terminated:
+        cycle.slots_display_offset = used
+
     for i in range(request.requested_quantity):
         TrialBatchSlot.objects.create(
             cycle=cycle,
@@ -665,14 +706,136 @@ def apply_additional_samples_on_payment_approved(
     if cycle.status in (
         TrialBatchCycleStatus.MAX_REACHED,
         TrialBatchCycleStatus.SATISFIED,
+        TrialBatchCycleStatus.TERMINATED_BY_TEAM,
     ):
         cycle.status = TrialBatchCycleStatus.IN_PROGRESS
         cycle.closed_at = None
-    cycle.save(update_fields=["total_slots", "status", "closed_at", "updated_at"])
+        # Clear the team-close attribution when the customer
+        # restarts — the new run isn't owned by the earlier close.
+        if was_team_terminated:
+            cycle.terminated_by = None
+            cycle.terminated_reason = ""
+    cycle.save(
+        update_fields=[
+            "total_slots",
+            "status",
+            "closed_at",
+            "slots_display_offset",
+            "terminated_by",
+            "terminated_reason",
+            "updated_at",
+        ]
+    )
 
     request.status = AdditionalSampleRequestStatus.APPROVED
     request.approved_at = timezone.now()
     request.save(update_fields=["status", "approved_at", "updated_at"])
+    return cycle
+
+
+@transaction.atomic
+def reject_additional_samples_on_payment_voided(
+    *, payment: Payment
+) -> Optional[AdditionalSampleRequest]:
+    """Hook from :func:`apps.payments.services.void_payment` for
+    :attr:`PaymentKind.ADDITIONAL_SAMPLES`. Mirrors the void onto the
+    linked :class:`AdditionalSampleRequest` so the cycle stops
+    waiting on a finance decision that already landed as "no".
+
+    Idempotent — a request already in ``REJECTED`` short-circuits.
+    An ``APPROVED`` request is left alone (voiding an already-approved
+    payment shouldn't retroactively reverse the sample slots that
+    were seeded on approval; the team-override path is the right
+    tool for that).
+    """
+
+    request = AdditionalSampleRequest.objects.filter(payment=payment).first()
+    if request is None:
+        return None
+    if request.status != AdditionalSampleRequestStatus.AWAITING_FINANCE:
+        return request
+    request.status = AdditionalSampleRequestStatus.REJECTED
+    request.save(update_fields=["status", "updated_at"])
+    return request
+
+
+# ---------------------------------------------------------------------------
+# Customer-confirmed done (terminal-choice endpoint)
+# ---------------------------------------------------------------------------
+
+
+@transaction.atomic
+def confirm_trial_batches_done(
+    *,
+    cycle: TrialBatchCycle,
+    actor: Any = None,
+) -> TrialBatchCycle:
+    """Customer explicitly answers "no more samples, we're done" at
+    the terminal-choice prompt. Stamps ``customer_confirmed_done_at``
+    so the final-spec stage can unlock.
+
+    Refuses when:
+
+    * A :class:`AdditionalSampleRequest` is still ``AWAITING_FINANCE``
+      — finance has to approve or reject before the customer can
+      close the cycle. Prevents the "customer closes, then top-up
+      lands approved" race that would otherwise strand a paid-for
+      set of slots.
+    * Any slot is still in flight (awaiting scientist / in production
+      / delivered without verdict). The customer answers the choice
+      only once every paid-for sample has landed a verdict.
+
+    Idempotent — a second call for an already-confirmed cycle
+    short-circuits and returns the existing row.
+    """
+
+    if cycle.customer_confirmed_done_at is not None:
+        return cycle
+
+    pending = AdditionalSampleRequest.objects.filter(
+        cycle=cycle,
+        status=AdditionalSampleRequestStatus.AWAITING_FINANCE,
+    ).exists()
+    if pending:
+        raise CycleHasPendingTopUp(
+            f"Cycle {cycle.id} has a top-up request awaiting finance approval."
+        )
+
+    active = TrialBatchSlot.objects.filter(
+        cycle=cycle,
+        status__in=(
+            TrialBatchSlotStatus.AWAITING_SCIENTIST,
+            TrialBatchSlotStatus.IN_PRODUCTION,
+            TrialBatchSlotStatus.SHIPPED,
+            TrialBatchSlotStatus.DELIVERED,
+            TrialBatchSlotStatus.FEEDBACK_PENDING,
+        ),
+    ).exists()
+    if active:
+        raise CycleHasActiveSlots(
+            f"Cycle {cycle.id} still has slots in flight."
+        )
+
+    now = timezone.now()
+    cycle.customer_confirmed_done_at = now
+    # Normalise to a terminal cycle status when the row was still
+    # sitting at IN_PROGRESS / MAX_REACHED — customer closing the
+    # cycle is a satisfied-equivalent signal for the pipeline.
+    if cycle.status not in (
+        TrialBatchCycleStatus.SATISFIED,
+        TrialBatchCycleStatus.TERMINATED_BY_TEAM,
+    ):
+        cycle.status = TrialBatchCycleStatus.SATISFIED
+    if cycle.closed_at is None:
+        cycle.closed_at = now
+    cycle.save(
+        update_fields=[
+            "status",
+            "closed_at",
+            "customer_confirmed_done_at",
+            "updated_at",
+        ]
+    )
     return cycle
 
 
@@ -709,15 +872,22 @@ def close_cycle_by_team_override(
     actor: Any,
     reason: str = "",
 ) -> TrialBatchCycle:
-    """Internal user closes the cycle. Same downstream effect as a
-    customer ``SATISFIED`` verdict without ``keep_producing_remaining`` —
-    remaining ``AWAITING_SCIENTIST`` slots auto-cancel.
+    """Internal user closes the cycle. Cancels only slots that
+    haven't produced a physical sample yet — AWAITING_SCIENTIST
+    (no batch drafted) and IN_PRODUCTION (batch in-flight but
+    nothing has shipped). Slots that already SHIPPED / DELIVERED /
+    have a customer VERDICT are preserved as-is so the customer
+    keeps the info about the samples they actually received.
+
+    Closing a ``SATISFIED`` cycle is allowed: the customer may have
+    picked a recipe with ``keep_producing_remaining=True`` (so the
+    remaining paid samples stay open), and the scientist may want
+    to stop that mid-flight and hand the "more or done" choice back
+    to the customer. Only ``TERMINATED_BY_TEAM`` is a no-op — the
+    cycle is already closed.
     """
 
-    if cycle.status in (
-        TrialBatchCycleStatus.SATISFIED,
-        TrialBatchCycleStatus.TERMINATED_BY_TEAM,
-    ):
+    if cycle.status == TrialBatchCycleStatus.TERMINATED_BY_TEAM:
         return cycle
 
     cycle.status = TrialBatchCycleStatus.TERMINATED_BY_TEAM
@@ -734,19 +904,32 @@ def close_cycle_by_team_override(
         ]
     )
 
-    _cancel_awaiting_slots_generic(cycle=cycle, note="Cycle closed by team override.")
+    _cancel_open_slots_on_team_close(
+        cycle=cycle, note="Cycle closed by team override."
+    )
     return cycle
 
 
-def _cancel_awaiting_slots_generic(*, cycle: TrialBatchCycle, note: str) -> int:
-    """Same as :func:`_cancel_awaiting_slots` but without a reason
-    slot — used by team-override closure where no specific slot
-    triggered the cancellation."""
+def _cancel_open_slots_on_team_close(
+    *, cycle: TrialBatchCycle, note: str
+) -> int:
+    """Cancel every slot that hasn't produced a physical sample yet.
+    AWAITING_SCIENTIST (no batch drafted) and IN_PRODUCTION (batch
+    in-flight but not yet shipped) both flip to ``CLOSED_CANCELLED``.
+    SHIPPED / DELIVERED / FEEDBACK_PENDING / CLOSED_ITERATED /
+    CLOSED_SATISFIED are LEFT ALONE — those represent samples the
+    customer either received or gave feedback on, and cancelling
+    them would erase real product-history information.
+    """
 
     now = timezone.now()
     count = 0
     for r in TrialBatchSlot.objects.filter(
-        cycle=cycle, status=TrialBatchSlotStatus.AWAITING_SCIENTIST
+        cycle=cycle,
+        status__in=(
+            TrialBatchSlotStatus.AWAITING_SCIENTIST,
+            TrialBatchSlotStatus.IN_PRODUCTION,
+        ),
     ):
         r.status = TrialBatchSlotStatus.CLOSED_CANCELLED
         r.verdict_at = now

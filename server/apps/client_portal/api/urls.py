@@ -80,10 +80,12 @@ from .sample_selection_views import (
 )
 from .trial_batches_views import (
     PortalTrialBatchAdditionalRequestView,
+    PortalTrialBatchConfirmDoneView,
     PortalTrialBatchCycleView,
     PortalTrialBatchSlotConfirmDeliveryView,
     PortalTrialBatchSlotDispatchPhotoView,
     PortalTrialBatchSlotFeedbackView,
+    PortalTrialBatchSlotReleaseDocumentView,
 )
 from .sample_detail_views import (
     PortalSampleDetailView,
@@ -225,6 +227,11 @@ urlpatterns = [
         name="trial-batches-request-more",
     ),
     path(
+        "projects/<uuid:formulation_id>/trial-batches/confirm-done/",
+        PortalTrialBatchConfirmDoneView.as_view(),
+        name="trial-batches-confirm-done",
+    ),
+    path(
         "trial-batches/slots/<uuid:slot_id>/confirm-delivery/",
         PortalTrialBatchSlotConfirmDeliveryView.as_view(),
         name="trial-batches-slot-confirm-delivery",
@@ -238,6 +245,11 @@ urlpatterns = [
         "trial-batches/slots/<uuid:slot_id>/dispatch-photos/<uuid:file_uuid>/",
         PortalTrialBatchSlotDispatchPhotoView.as_view(),
         name="trial-batches-slot-dispatch-photo",
+    ),
+    path(
+        "trial-batches/slots/<uuid:slot_id>/release-documents/<uuid:file_uuid>/",
+        PortalTrialBatchSlotReleaseDocumentView.as_view(),
+        name="trial-batches-slot-release-document",
     ),
     # Per-sample pipeline detail — the "where is my sample right now?"
     # view. Returns pipeline stages driven by the payment lifecycle

@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, Modal } from "@heroui/react";
-import { FileText } from "lucide-react";
+import { FileText, ShieldCheck } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
@@ -9,6 +9,7 @@ import { Link, useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   useCreateSpecification,
+  type SpecificationDocumentKind,
   type SpecificationSheetDto,
 } from "@/services/specifications";
 import type { FormulationVersionDto } from "@/services/formulations";
@@ -36,6 +37,7 @@ export function NewSpecSheetButton({
   projectCode,
   versions,
   existingSheets = [],
+  documentKind = "draft",
 }: {
   orgId: string;
   //: The project's own ``code`` — auto-seeded into the spec's code
@@ -52,10 +54,19 @@ export function NewSpecSheetButton({
   //: (it's an audit artefact, not a live draft), so a fresh draft
   //: can co-exist alongside a signed one.
   existingSheets?: readonly SpecificationSheetDto[];
+  //: What kind of spec sheet to create. Default ``draft`` matches
+  //: the spec-sheets tab's default surface. Set to ``final`` from
+  //: the trial-batch banner so the button creates the FINAL,
+  //: customer-facing spec once the customer has confirmed done.
+  //: The button copy + gate logic switch accordingly — the draft
+  //: gate becomes a final gate (one FINAL per project, mirroring
+  //: the BE rule).
+  documentKind?: SpecificationDocumentKind;
 }) {
   const tSpecs = useTranslations("specifications");
   const tErrors = useTranslations("errors");
   const router = useRouter();
+  const isFinal = documentKind === "final";
 
   const liveDraft = useMemo(
     () =>
@@ -67,6 +78,14 @@ export function NewSpecSheetButton({
           linked.customer_signed_at !== null || linked.status === "accepted";
         return !signed;
       }),
+    [existingSheets],
+  );
+
+  // Only relevant when documentKind === "final". BE enforces one
+  // FINAL per project (``FinalSpecAlreadyExists``); we mirror that
+  // by disabling the trigger and pointing to the existing sheet.
+  const existingFinal = useMemo(
+    () => existingSheets.find((sheet) => sheet.document_kind === "final"),
     [existingSheets],
   );
 
@@ -125,6 +144,7 @@ export function NewSpecSheetButton({
         formulation_version_id: versionId,
         code: code.trim(),
         cover_notes: coverNotes.trim(),
+        document_kind: documentKind,
       });
       close();
       router.push(`/specifications/${created.id}`);
@@ -156,11 +176,26 @@ export function NewSpecSheetButton({
     );
   }
 
-  // One-live-draft-per-project gate. When the project already has a
-  // regeneratable draft, disable the trigger and point the operator
-  // at the existing sheet — regenerating there preserves the
-  // commercial fields the scientist has already typed.
-  if (liveDraft) {
+  // FINAL variant: one FINAL per project (BE-enforced). When one
+  // exists, link out instead of showing the create trigger.
+  if (isFinal && existingFinal) {
+    return (
+      <Link
+        href={`/specifications/${existingFinal.id}`}
+        title="A final specification already exists for this project"
+        className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+      >
+        <ShieldCheck className="h-4 w-4 text-emerald-600" />
+        Open final specification
+      </Link>
+    );
+  }
+
+  // DRAFT variant: one-live-draft-per-project gate. When the project
+  // already has a regeneratable draft, disable the trigger and point
+  // the operator at the existing sheet — regenerating there
+  // preserves the commercial fields the scientist has already typed.
+  if (!isFinal && liveDraft) {
     const tooltip = tSpecs("new_sheet_live_draft_exists", {
       code: liveDraft.code || `#${liveDraft.id.slice(0, 8)}`,
     });
@@ -186,10 +221,19 @@ export function NewSpecSheetButton({
           type="button"
           variant="primary"
           size="md"
-          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 hover:bg-orange-600"
+          className={
+            "inline-flex h-10 items-center gap-1.5 rounded-lg px-3 text-sm font-medium text-ink-0 " +
+            (isFinal
+              ? "bg-emerald-600 hover:bg-emerald-700"
+              : "bg-orange-500 hover:bg-orange-600")
+          }
         >
-          <FileText className="h-4 w-4" />
-          {tSpecs("new_sheet")}
+          {isFinal ? (
+            <ShieldCheck className="h-4 w-4" />
+          ) : (
+            <FileText className="h-4 w-4" />
+          )}
+          {isFinal ? "Create final specification" : tSpecs("new_sheet")}
         </Button>
       </Modal.Trigger>
       <Modal.Backdrop>
@@ -201,15 +245,49 @@ export function NewSpecSheetButton({
               of the dialog.
             */}
             <form onSubmit={handleSubmit} style={{ display: "contents" }}>
-              <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+              <Modal.Header className="flex items-center justify-between gap-3 border-b border-ink-200 px-6 py-4">
                 <Modal.Heading className="text-base font-semibold text-ink-1000">
-                  {tSpecs("create.title")}
+                  {isFinal
+                    ? "Create final specification sheet"
+                    : tSpecs("create.title")}
                 </Modal.Heading>
+                {/* Explicit badge so the scientist can't mistake this
+                    modal for the ordinary draft-create flow. Green
+                    tone matches the banner it opens from. */}
+                <span
+                  className={
+                    "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 " +
+                    (isFinal
+                      ? "bg-emerald-500/10 text-emerald-800 ring-emerald-500/30"
+                      : "bg-ink-100 text-ink-700 ring-ink-200")
+                  }
+                >
+                  {isFinal ? (
+                    <>
+                      <ShieldCheck className="h-3 w-3" /> Final
+                    </>
+                  ) : (
+                    "Draft"
+                  )}
+                </span>
               </Modal.Header>
               <Modal.Body className="flex flex-col gap-4 px-6 py-6">
-                <p className="text-sm text-ink-500">
-                  {tSpecs("create.subtitle")}
-                </p>
+                {isFinal ? (
+                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-50/70 p-3 text-xs text-emerald-950">
+                    <p className="font-semibold">
+                      This is the customer-facing final specification.
+                    </p>
+                    <p className="mt-1">
+                      Pin the recipe version the customer approved. Once
+                      created, the customer will be asked to sign it —
+                      that signature authorises full production.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-ink-500">
+                    {tSpecs("create.subtitle")}
+                  </p>
+                )}
 
                 <label className="flex flex-col gap-1.5">
                   <span className={LABEL_CLASS}>
@@ -277,10 +355,17 @@ export function NewSpecSheetButton({
                   type="submit"
                   variant="primary"
                   size="md"
-                  className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
+                  className={
+                    "h-10 rounded-lg px-4 text-sm font-medium text-ink-0 " +
+                    (isFinal
+                      ? "bg-emerald-600 hover:bg-emerald-700"
+                      : "bg-orange-500 hover:bg-orange-600")
+                  }
                   isDisabled={isBusy || !versionId}
                 >
-                  {tSpecs("create.submit")}
+                  {isFinal
+                    ? "Create final spec"
+                    : tSpecs("create.submit")}
                 </Button>
               </Modal.Footer>
             </form>
