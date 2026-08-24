@@ -19,18 +19,20 @@ import { Link } from "@/i18n/navigation";
 import { apiClient } from "@/lib/api";
 
 
-type Stage = "needs_click" | "in_flight" | "closed";
+type SheetStatus =
+  | "draft"
+  | "in_review"
+  | "approved"
+  | "sent"
+  | "accepted"
+  | "rejected";
 
-interface FinalSpecCard {
+
+interface SheetCard {
+  readonly card_kind: "sheet";
   readonly id: string;
   readonly code: string;
-  readonly status:
-    | "draft"
-    | "in_review"
-    | "approved"
-    | "sent"
-    | "accepted"
-    | "rejected";
+  readonly status: SheetStatus;
   readonly formulation: {
     readonly id: string;
     readonly code: string;
@@ -54,39 +56,37 @@ interface FinalSpecCard {
 }
 
 
-interface PipelineResponse {
-  readonly columns: Record<Stage, readonly FinalSpecCard[]>;
-  readonly counts: Record<Stage, number>;
+interface AwaitingFinalCard {
+  readonly card_kind: "awaiting_final";
+  readonly id: string;
+  readonly formulation: {
+    readonly id: string;
+    readonly code: string;
+    readonly name: string;
+  };
+  readonly customer: { readonly id: string; readonly name: string } | null;
+  readonly confirmed_done_at: string;
+  readonly updated_at: string;
 }
 
 
-// Column meta — same three-column shape as /trial-batches/ so the
-// two scientist surfaces read as siblings.
-const STAGES: ReadonlyArray<{
-  readonly key: Stage;
-  readonly title: string;
-  readonly blurb: string;
-  readonly tone: "amber" | "sky" | "ink";
-}> = [
-  {
-    key: "needs_click",
-    title: "Needs your click",
-    blurb: "Approved internally — send to the customer to unlock signature.",
-    tone: "amber",
-  },
-  {
-    key: "in_flight",
-    title: "In flight",
-    blurb: "Waiting on the customer to sign, or on finance to approve the invoice.",
-    tone: "sky",
-  },
-  {
-    key: "closed",
-    title: "Closed",
-    blurb: "Signed + paid, or the customer rejected and we're back on trial batches.",
-    tone: "ink",
-  },
-];
+type FinalSpecCard = SheetCard | AwaitingFinalCard;
+
+
+interface PipelineResponse {
+  readonly columns: {
+    readonly needs_click: readonly AwaitingFinalCard[];
+    readonly in_flight: readonly SheetCard[];
+    readonly closed_signed: readonly SheetCard[];
+    readonly closed_rejected: readonly SheetCard[];
+  };
+  readonly counts: {
+    readonly needs_click: number;
+    readonly in_flight: number;
+    readonly closed_signed: number;
+    readonly closed_rejected: number;
+  };
+}
 
 
 export function FinalSpecsShell({ orgId }: { orgId: string }) {
@@ -107,8 +107,10 @@ export function FinalSpecsShell({ orgId }: { orgId: string }) {
 
   const filterCard = (card: FinalSpecCard) => {
     if (!search) return true;
+    const sheetCode =
+      card.card_kind === "sheet" ? card.code.toLowerCase() : "";
     return (
-      card.code.toLowerCase().includes(search) ||
+      sheetCode.includes(search) ||
       card.formulation.code.toLowerCase().includes(search) ||
       card.formulation.name.toLowerCase().includes(search) ||
       (card.customer?.name.toLowerCase().includes(search) ?? false)
@@ -152,26 +154,61 @@ export function FinalSpecsShell({ orgId }: { orgId: string }) {
       </header>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        {STAGES.map((stage) => (
-          <StageColumn
-            key={stage.key}
-            stage={stage}
-            cards={
-              query.data
-                ? query.data.columns[stage.key].filter(filterCard)
-                : []
-            }
-            total={query.data ? query.data.counts[stage.key] : 0}
-            filtered={
-              query.data
-                ? query.data.columns[stage.key].filter(filterCard).length
-                : 0
-            }
-            loading={query.isPending}
-            error={query.isError}
-            search={search}
-          />
-        ))}
+        <StageColumn
+          title="Needs your click"
+          blurb="Customer's ready for a final spec — click through to the project and create one."
+          tone="amber"
+          cards={
+            query.data
+              ? query.data.columns.needs_click.filter(filterCard)
+              : []
+          }
+          total={query.data ? query.data.counts.needs_click : 0}
+          filtered={
+            query.data
+              ? query.data.columns.needs_click.filter(filterCard).length
+              : 0
+          }
+          loading={query.isPending}
+          error={query.isError}
+          search={search}
+        />
+        <StageColumn
+          title="In flight"
+          blurb="Final spec exists — waiting on us to send, or the customer to sign."
+          tone="sky"
+          cards={
+            query.data
+              ? query.data.columns.in_flight.filter(filterCard)
+              : []
+          }
+          total={query.data ? query.data.counts.in_flight : 0}
+          filtered={
+            query.data
+              ? query.data.columns.in_flight.filter(filterCard).length
+              : 0
+          }
+          loading={query.isPending}
+          error={query.isError}
+          search={search}
+        />
+        <SplitClosedColumn
+          signed={
+            query.data
+              ? query.data.columns.closed_signed.filter(filterCard)
+              : []
+          }
+          rejected={
+            query.data
+              ? query.data.columns.closed_rejected.filter(filterCard)
+              : []
+          }
+          totalSigned={query.data ? query.data.counts.closed_signed : 0}
+          totalRejected={query.data ? query.data.counts.closed_rejected : 0}
+          loading={query.isPending}
+          error={query.isError}
+          search={search}
+        />
       </div>
     </section>
   );
@@ -179,7 +216,9 @@ export function FinalSpecsShell({ orgId }: { orgId: string }) {
 
 
 function StageColumn({
-  stage,
+  title,
+  blurb,
+  tone,
   cards,
   total,
   filtered,
@@ -187,7 +226,9 @@ function StageColumn({
   error,
   search,
 }: {
-  stage: (typeof STAGES)[number];
+  title: string;
+  blurb: string;
+  tone: "amber" | "sky" | "ink";
   cards: readonly FinalSpecCard[];
   total: number;
   filtered: number;
@@ -196,9 +237,9 @@ function StageColumn({
   search: string;
 }) {
   const countTone =
-    stage.tone === "amber"
+    tone === "amber"
       ? "bg-amber-100 text-amber-800"
-      : stage.tone === "sky"
+      : tone === "sky"
         ? "bg-sky-100 text-sky-800"
         : "bg-ink-100 text-ink-700";
   return (
@@ -207,7 +248,7 @@ function StageColumn({
         <div>
           <div className="flex items-center gap-2">
             <p className="text-xs font-semibold uppercase tracking-wider text-ink-1000">
-              {stage.title}
+              {title}
             </p>
             <span
               className={
@@ -217,13 +258,13 @@ function StageColumn({
               title={
                 search
                   ? `${filtered} of ${total} matches "${search}"`
-                  : `${total} spec${total === 1 ? "" : "s"}`
+                  : `${total} item${total === 1 ? "" : "s"}`
               }
             >
               {search ? `${filtered}/${total}` : total}
             </span>
           </div>
-          <p className="mt-0.5 text-[11px] text-ink-600">{stage.blurb}</p>
+          <p className="mt-0.5 text-[11px] text-ink-600">{blurb}</p>
         </div>
       </header>
       <div className="flex flex-1 flex-col gap-2 p-3">
@@ -248,10 +289,156 @@ function StageColumn({
 }
 
 
+// Closed column splits into Signed + Rejected sub-groups so the
+// scientist can tell at a glance "how many wins vs. how many sent
+// back to trial batches?" without expanding each card.
+function SplitClosedColumn({
+  signed,
+  rejected,
+  totalSigned,
+  totalRejected,
+  loading,
+  error,
+  search,
+}: {
+  signed: readonly SheetCard[];
+  rejected: readonly SheetCard[];
+  totalSigned: number;
+  totalRejected: number;
+  loading: boolean;
+  error: boolean;
+  search: string;
+}) {
+  const total = totalSigned + totalRejected;
+  const filtered = signed.length + rejected.length;
+  const empty = signed.length === 0 && rejected.length === 0;
+  return (
+    <div className="flex min-h-[400px] flex-col rounded-2xl border border-ink-100 bg-ink-0">
+      <header className="border-b border-ink-100 p-3">
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wider text-ink-1000">
+            Closed
+          </p>
+          <span
+            className="rounded-full bg-ink-100 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink-700"
+            title={
+              search
+                ? `${filtered} of ${total} matches "${search}"`
+                : `${totalSigned} signed · ${totalRejected} rejected`
+            }
+          >
+            {search ? `${filtered}/${total}` : total}
+          </span>
+        </div>
+        <p className="mt-0.5 text-[11px] text-ink-600">
+          Customer decided. Signed above, rejected below.
+        </p>
+      </header>
+      <div className="flex flex-1 flex-col gap-4 p-3">
+        {loading ? (
+          <p className="p-4 text-center text-[11px] text-ink-500">
+            <Loader2 className="mr-1 inline h-3 w-3 animate-spin" /> Loading…
+          </p>
+        ) : error ? (
+          <p className="rounded-lg border border-danger/30 bg-danger/5 p-3 text-xs text-danger">
+            Couldn&rsquo;t load. Refresh to try again.
+          </p>
+        ) : empty ? (
+          <p className="p-4 text-center text-[11px] text-ink-400">
+            {search ? "Nothing matches your search." : "Nothing here."}
+          </p>
+        ) : (
+          <>
+            <SubGroup
+              label="Signed"
+              tone="emerald"
+              icon={<CheckCircle2 className="h-3 w-3" />}
+              cards={signed}
+              totalOverall={totalSigned}
+              search={search}
+            />
+            <SubGroup
+              label="Rejected"
+              tone="red"
+              icon={<XCircle className="h-3 w-3" />}
+              cards={rejected}
+              totalOverall={totalRejected}
+              search={search}
+            />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+function SubGroup({
+  label,
+  tone,
+  icon,
+  cards,
+  totalOverall,
+  search,
+}: {
+  label: string;
+  tone: "emerald" | "red";
+  icon: React.ReactNode;
+  cards: readonly SheetCard[];
+  totalOverall: number;
+  search: string;
+}) {
+  const chipClass =
+    tone === "emerald"
+      ? "bg-emerald-100 text-emerald-800"
+      : "bg-red-100 text-red-800";
+  const dividerClass = tone === "emerald" ? "bg-emerald-200" : "bg-red-200";
+  const filtered = cards.length;
+  if (filtered === 0 && !search) return null;
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center gap-2">
+        <span
+          className={
+            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide " +
+            chipClass
+          }
+        >
+          {icon}
+          {label}
+          <span className="tabular-nums opacity-75">
+            {search ? `${filtered}/${totalOverall}` : totalOverall}
+          </span>
+        </span>
+        <span className={"h-px flex-1 " + dividerClass} />
+      </div>
+      {filtered === 0 ? (
+        <p className="pb-2 pl-1 text-[11px] italic text-ink-400">
+          {search ? "no matches" : "none"}
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {cards.map((card) => (
+            <SpecKanbanCard key={card.id} card={card} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function SpecKanbanCard({ card }: { card: FinalSpecCard }) {
+  // Awaiting-final cards link to the spec-sheets tab so the scientist
+  // can hit the "Create final spec" banner directly. Sheet cards
+  // link to the spec detail page.
+  const href =
+    card.card_kind === "awaiting_final"
+      ? `/formulations/${card.formulation.id}/spec-sheets`
+      : `/specifications/${card.id}`;
   return (
     <Link
-      href={`/specifications/${card.id}`}
+      href={href}
       className="group flex flex-col gap-2 rounded-xl border border-ink-100 bg-ink-0 p-3 shadow-sm transition-shadow hover:border-ink-300 hover:shadow-md"
     >
       <div className="flex items-start justify-between gap-2">
@@ -261,7 +448,7 @@ function SpecKanbanCard({ card }: { card: FinalSpecCard }) {
           </p>
           <p className="mt-0.5 font-mono text-[10px] text-ink-500">
             {card.formulation.code || card.formulation.id.slice(0, 8)}
-            {card.code ? (
+            {card.card_kind === "sheet" && card.code ? (
               <>
                 {" · "}
                 <span className="text-ink-700">{card.code}</span>
@@ -290,6 +477,13 @@ function StatusPill({ card }: { card: FinalSpecCard }) {
   // Status pill combines the sheet status + payment state into one
   // glanceable chip so the scientist can tell "who owes what" at a
   // glance without expanding.
+  if (card.card_kind === "awaiting_final") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-semibold text-amber-900">
+        <Sparkles className="h-3 w-3" /> Create final spec
+      </span>
+    );
+  }
   if (card.status === "rejected") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-800">
@@ -338,6 +532,18 @@ function MetaLine({ card }: { card: FinalSpecCard }) {
   // step + the invoice number when relevant. The scientist should
   // be able to read "sent 3 days ago" without opening the card.
   const bits: string[] = [];
+  if (card.card_kind === "awaiting_final") {
+    bits.push(`Customer confirmed ${formatShortDate(card.confirmed_done_at)}`);
+    return (
+      <div className="flex items-center gap-2 text-[10px] text-ink-500">
+        {bits.map((bit, i) => (
+          <span key={i} className="tabular-nums">
+            {bit}
+          </span>
+        ))}
+      </div>
+    );
+  }
   if (card.status === "approved") {
     bits.push(`Updated ${formatShortDate(card.updated_at)}`);
   } else if (card.status === "sent") {
