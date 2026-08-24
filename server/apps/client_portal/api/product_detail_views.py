@@ -405,6 +405,14 @@ def _build_pipeline(
             cycle.status == TrialBatchCycleStatus.TERMINATED_BY_TEAM
             and cycle.customer_confirmed_done_at is not None
         )
+        # Roadmap label is a plain "Trial batches" across every
+        # sub-state — the accurate slot counts live on the trial-
+        # batch card below and previously trying to embed them in
+        # the stage label produced misleading numbers because the
+        # cycle can have historical previous-run slots, cancelled
+        # slots, and a display offset that all had to be reconciled
+        # per branch. The detail line still names the sub-state so
+        # a customer skimming the roadmap knows where they are.
         if (
             (
                 cycle.status == TrialBatchCycleStatus.SATISFIED
@@ -414,12 +422,7 @@ def _build_pipeline(
         ):
             trial_stage = {
                 "key": "trial",
-                "label": (
-                    "Trial batches complete — you approved slot "
-                    f"{satisfied.sequence_no}"
-                    if satisfied is not None
-                    else "Trial batches complete"
-                ),
+                "label": "Trial batches",
                 "state": "done",
                 "completed_at": (
                     _iso(cycle.closed_at)
@@ -434,10 +437,7 @@ def _build_pipeline(
         elif cycle.status == TrialBatchCycleStatus.MAX_REACHED:
             trial_stage = {
                 "key": "trial",
-                "label": (
-                    f"Trial batches — all {cycle.total_slots} sent, "
-                    "waiting on you"
-                ),
+                "label": "Trial batches",
                 "state": "current",
                 "completed_at": None,
                 "detail": (
@@ -455,7 +455,7 @@ def _build_pipeline(
             # customer isn't confused about how the cycle ended.
             trial_stage = {
                 "key": "trial",
-                "label": "Trial batches wrapped — waiting on you",
+                "label": "Trial batches",
                 "state": "current",
                 "completed_at": None,
                 "detail": (
@@ -467,9 +467,7 @@ def _build_pipeline(
         else:
             trial_stage = {
                 "key": "trial",
-                "label": (
-                    f"Trial batches — {used} of {cycle.total_slots} in flight"
-                ),
+                "label": "Trial batches",
                 "state": "current",
                 "completed_at": None,
                 "detail": (
@@ -491,7 +489,7 @@ def _build_pipeline(
         if passed_validation is not None:
             trial_stage = {
                 "key": "trial",
-                "label": "Trial batch passed",
+                "label": "Trial batches",
                 "state": "done",
                 "completed_at": _iso(passed_validation.updated_at),
                 "detail": "Quality checks all passed — final specification incoming.",
@@ -499,7 +497,7 @@ def _build_pipeline(
         elif failed_validation is not None:
             trial_stage = {
                 "key": "trial",
-                "label": "Trial batch failed — investigating",
+                "label": "Trial batches",
                 "state": "current",
                 "completed_at": None,
                 "detail": "Our team is investigating the failure and will be in touch.",
@@ -507,7 +505,7 @@ def _build_pipeline(
         elif in_progress_validation is not None:
             trial_stage = {
                 "key": "trial",
-                "label": "Trial batch in progress",
+                "label": "Trial batches",
                 "state": "current",
                 "completed_at": None,
                 "detail": "We're producing a trial batch and running quality checks.",
@@ -515,7 +513,7 @@ def _build_pipeline(
         else:
             trial_stage = {
                 "key": "trial",
-                "label": "Trial batch",
+                "label": "Trial batches",
                 "state": "future",
                 "completed_at": None,
                 "detail": "Once the draft spec is signed, we'll produce a trial batch.",
