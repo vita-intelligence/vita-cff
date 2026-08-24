@@ -222,6 +222,12 @@ export function TrialCyclesShell({ orgId }: { orgId: string }) {
   const [pipelineCacheTick, setPipelineCacheTick] = useState(0);
   useEffect(() => {
     const unsub = queryClient.getQueryCache().subscribe((event) => {
+      // Only react to real cache-data changes. ``observerResultsUpdated``
+      // fires on every render an observer performs — bumping state on
+      // that event triggers our own re-render, which triggers another
+      // ``observerResultsUpdated`` on any pipeline observer in the tree,
+      // and we spiral into "Maximum update depth exceeded".
+      if (event?.type !== "updated") return;
       const key = event?.query?.queryKey as unknown as unknown[] | undefined;
       if (
         Array.isArray(key) &&

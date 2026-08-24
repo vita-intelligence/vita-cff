@@ -278,22 +278,27 @@ _ALLOWED_STAGES = ("needs_click", "in_flight", "closed")
 def _stage_predicate(qs, stage: str):
     """Filter a base cycles queryset down to one kanban column.
 
-    ``needs_click`` — cycle is in_progress AND either (a) has an
-    ``AWAITING_SCIENTIST`` slot, or (b) has no active slot at all but
-    still has capacity to open a new one after a ``CLOSED_ITERATED``
-    verdict landed. Mirrors ``action_needed | can_open_next_slot`` on
-    the serialiser.
+    "Genuinely closed" means either (a) the cycle's status is one of
+    the terminal statuses AND no slot on it is still active. A
+    ``SATISFIED`` cycle where the customer opted into
+    ``keep_producing_remaining`` still has ``AWAITING_SCIENTIST``
+    slots (locked to the approved version) — the scientist has to
+    stay on top of them until every last one ships. Treating that as
+    "closed" hides in-flight work from the pipeline and is the exact
+    bug the customer bumped into.
 
-    ``in_flight`` — cycle is in_progress AND does NOT match the
-    needs_click predicate. Samples are being produced / shipped /
+    ``needs_click`` — NOT genuinely closed AND either (a) has an
+    ``AWAITING_SCIENTIST`` slot, or (b) has no active slot at all but
+    the cycle is ``IN_PROGRESS`` with capacity to open a new one
+    after a ``CLOSED_ITERATED`` verdict landed. Mirrors
+    ``action_needed | can_open_next_slot`` on the serialiser.
+
+    ``in_flight`` — NOT genuinely closed AND has active work AND no
+    scientist action pending. Samples are being produced / shipped /
     awaiting feedback but the scientist has nothing to click yet.
 
-    ``closed`` — terminal cycle statuses. Same set the ``status``
-    column already carries so it's a plain filter.
+    ``closed`` — genuinely closed as defined above.
     """
-
-    if stage == "closed":
-        return qs.filter(status__in=_CLOSED_STATUSES)
 
     has_awaiting = Exists(
         TrialBatchSlot.objects.filter(
@@ -308,20 +313,38 @@ def _stage_predicate(qs, stage: str):
         )
     )
 
+    if stage == "closed":
+        # Terminal status AND no active slot. The has_active guard is
+        # what keeps SATISFIED-with-remaining cycles OUT of this column
+        # while their scientist-locked slots are still working through
+        # production + shipping.
+        return qs.filter(status__in=_CLOSED_STATUSES).annotate(
+            _has_active=has_any_active,
+        ).filter(_has_active=False)
+
     if stage == "needs_click":
-        # in_progress cycles with an awaiting slot get flagged directly;
-        # any post-Python bucket filter takes the "no active + iterated
-        # + capacity" branch (rare enough that the small over-fetch is
-        # cheaper than a second subquery here).
-        return qs.filter(status=TrialBatchCycleStatus.IN_PROGRESS).annotate(
+        # Anything with an awaiting slot gets flagged directly. The
+        # ``in_progress + no active`` branch catches the "iterated
+        # verdict landed, need to open next slot" case that IN_PROGRESS
+        # cycles hit briefly between slots. We deliberately don't
+        # surface SATISFIED cycles with no active work — those are
+        # actually done, ``closed`` is the right column.
+        annotated = qs.annotate(
             _has_awaiting=has_awaiting,
             _has_active=has_any_active,
-        ).filter(Q(_has_awaiting=True) | Q(_has_active=False))
+        )
+        awaiting_branch = Q(_has_awaiting=True)
+        no_active_in_progress_branch = Q(
+            _has_active=False,
+            status=TrialBatchCycleStatus.IN_PROGRESS,
+        )
+        return annotated.filter(awaiting_branch | no_active_in_progress_branch)
 
-    # in_flight: in_progress AND has active work AND no scientist
-    # action pending. The has-active guard eliminates the "no active
-    # slots" cycles that belong in needs_click.
-    return qs.filter(status=TrialBatchCycleStatus.IN_PROGRESS).annotate(
+    # in_flight: has active work AND no scientist action pending. Both
+    # IN_PROGRESS and SATISFIED-with-remaining cycles land here — the
+    # column shows every cycle that's still shipping samples, whatever
+    # the top-level status.
+    return qs.annotate(
         _has_awaiting=has_awaiting,
         _has_active=has_any_active,
     ).filter(_has_awaiting=False, _has_active=True)
