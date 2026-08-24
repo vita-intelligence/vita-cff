@@ -2841,6 +2841,132 @@ def _sample_payment_payload(payment: Any) -> dict:
     }
 
 
+def _final_spec_state_for_proposal(proposal: Any) -> dict:
+    """Build the FINAL-spec + FINAL-payment mirror block for the PSP
+    proposal-merge payload.
+
+    Six fields the ``customer_orders`` mirror needs to drive the
+    ``:awaiting_final_spec`` phase and its promotion to
+    ``:production_planning`` on FINAL-payment approve:
+
+    * ``npd_customer_confirmed_done_at`` — set when the customer
+      clicked "we're done" on the trial-batches portal card. Cleared
+      when they later reject a FINAL (the reopen-cycle hook nulls it).
+    * ``npd_final_spec_uuid`` / ``_status`` / ``_signed_at`` —
+      identifies the ACTIVE FINAL sheet on the proposal's formulation
+      (approved / sent / accepted). A rejected sheet is dead weight
+      and contributes nothing — the customer told us to start over.
+    * ``npd_final_spec_rejected_at`` — most recent rejection
+      timestamp (any FINAL) so PSP can render a "customer rejected
+      last time" audit badge on the trial-batches column card.
+    * ``npd_final_payment_approved_at`` — finance approving the
+      FINAL invoice. Its presence promotes PSP from
+      ``:awaiting_final_spec`` to ``:production_planning``
+      ("Need MO created") — production is authorised.
+
+    A bundled proposal spans multiple formulations; the trial-batch /
+    final-spec flow is per-formulation. The primary CO on PSP is the
+    proposal's first line, so we key the lookup off THAT line's
+    formulation to match how the deposit gate is keyed today.
+    """
+
+    from apps.payments.constants import PaymentKind, PaymentStatus
+    from apps.payments.models import Payment
+    from apps.specifications.models import (
+        SpecificationDocumentKind,
+        SpecificationSheet,
+        SpecificationStatus,
+    )
+    from apps.trial_batches.models import TrialBatchCycle
+
+    formulation_ids = list(
+        proposal.lines.filter(
+            formulation_version__formulation__isnull=False,
+        )
+        .values_list("formulation_version__formulation_id", flat=True)
+        .distinct()
+    )
+    if not formulation_ids:
+        return {
+            "npd_customer_confirmed_done_at": None,
+            "npd_final_spec_uuid": None,
+            "npd_final_spec_status": None,
+            "npd_final_spec_signed_at": None,
+            "npd_final_spec_rejected_at": None,
+            "npd_final_payment_approved_at": None,
+        }
+
+    # Primary CO on PSP is the first line's formulation. Trial-batch
+    # cycles are per-formulation; we mirror the primary's cycle so
+    # the primary CO card gets the phase promotion.
+    primary_formulation_id = formulation_ids[0]
+
+    cycle = TrialBatchCycle.objects.filter(
+        formulation_id=primary_formulation_id
+    ).first()
+    confirmed_done_at = (
+        cycle.customer_confirmed_done_at if cycle is not None else None
+    )
+
+    # Active FINAL — approved / sent / accepted. Rejected + draft +
+    # in_review don't count.
+    active_final = (
+        SpecificationSheet.objects.filter(
+            formulation_version__formulation_id=primary_formulation_id,
+            document_kind=SpecificationDocumentKind.FINAL,
+            status__in=(
+                SpecificationStatus.APPROVED.value,
+                SpecificationStatus.SENT.value,
+                SpecificationStatus.ACCEPTED.value,
+            ),
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+
+    # Most recent rejection (any FINAL). Kept as a distinct field so
+    # PSP can surface "customer rejected on <date>" without walking
+    # the audit trail.
+    latest_rejected = (
+        SpecificationSheet.objects.filter(
+            formulation_version__formulation_id=primary_formulation_id,
+            document_kind=SpecificationDocumentKind.FINAL,
+            status=SpecificationStatus.REJECTED.value,
+        )
+        .order_by("-customer_rejected_at")
+        .first()
+    )
+
+    # FINAL payment approval — the "production authorised" signal.
+    final_payment_approved_at = (
+        Payment.objects.filter(
+            formulation_id=primary_formulation_id,
+            kind=PaymentKind.FINAL,
+            status=PaymentStatus.APPROVED,
+        )
+        .order_by("-approved_at")
+        .values_list("approved_at", flat=True)
+        .first()
+    )
+
+    return {
+        "npd_customer_confirmed_done_at": _iso_or_none(confirmed_done_at),
+        "npd_final_spec_uuid": (
+            str(active_final.id) if active_final is not None else None
+        ),
+        "npd_final_spec_status": (
+            active_final.status if active_final is not None else None
+        ),
+        "npd_final_spec_signed_at": _iso_or_none(
+            getattr(active_final, "customer_signed_at", None)
+        ),
+        "npd_final_spec_rejected_at": _iso_or_none(
+            getattr(latest_rejected, "customer_rejected_at", None)
+        ),
+        "npd_final_payment_approved_at": _iso_or_none(final_payment_approved_at),
+    }
+
+
 def _bundled_deposit_paid_at(proposal: Any):
     """Earliest ``approved_at`` across every approved DEPOSIT Payment
     tied to one of the proposal's formulations. Returns ``None`` when
@@ -3247,6 +3373,15 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         "npd_deposit_paid_at": _iso_or_none(
             _bundled_deposit_paid_at(proposal)
         ),
+        # FINAL-spec + FINAL-payment lifecycle mirror. Six columns
+        # in one lookup — see ``_final_spec_state_for_proposal`` for
+        # the "which sheet counts / what happened when" rules.
+        # Rejection is self-healing: a rejected FINAL contributes
+        # nothing here, and vita-cff's reopen-cycle hook clears
+        # ``customer_confirmed_done_at`` on the trial cycle, so PSP
+        # sees "no confirmed done + no active FINAL" and falls back
+        # to ``:trial_batches_in_flight`` on the next derive_phase.
+        **_final_spec_state_for_proposal(proposal),
         # Latest-transition timestamps for the wizard phase gate.
         "npd_proposal_created_at": _iso_or_none(getattr(proposal, "created_at", None)),
         "npd_proposal_created_by_name": _person_display_name(

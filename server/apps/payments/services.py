@@ -335,6 +335,33 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
 
         transaction.on_commit(_apply_additional_samples)
 
+    # FINAL payment approval — push the "production authorised"
+    # signal to PSP. The proposal-merge payload gains
+    # ``npd_final_payment_approved_at`` which promotes the CO from
+    # ``:awaiting_final_spec`` to ``:production_planning``
+    # ("Need MO created"). Silent-degrade on any failure — finance
+    # can retry the sync via the manual re-sync path if PSP was
+    # down at approve time.
+    if payment.kind == PaymentKind.FINAL and payment.formulation_id is not None:
+        formulation_pk = payment.formulation_id
+
+        def _push_final_payment_to_psp() -> None:
+            from apps.formulations.models import Formulation as _Formulation
+
+            fresh = _Formulation.objects.filter(pk=formulation_pk).first()
+            if fresh is None:
+                return
+            try:
+                _sync_formulation_proposal_to_psp(fresh)
+            except Exception:  # noqa: BLE001 — never break approve
+                logger.exception(
+                    "Failed to push FINAL payment approval to PSP for "
+                    "formulation %s",
+                    formulation_pk,
+                )
+
+        transaction.on_commit(_push_final_payment_to_psp)
+
     # Live push — moves the row from the Needs-attention column into
     # Approved on every open finance tab.
     schedule_payment_changed_broadcast(payment, "approved")

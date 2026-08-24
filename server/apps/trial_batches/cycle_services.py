@@ -831,6 +831,11 @@ def reopen_cycle_for_final_rejection(
             "updated_at",
         ]
     )
+    # Push the reopened cycle to PSP so the kanban board falls back
+    # from :awaiting_final_spec to :trial_batches_in_flight — the
+    # cleared ``customer_confirmed_done_at`` nulls the mirror field
+    # PSP's derive_phase reads for the final-spec gate.
+    _push_final_state_to_psp(formulation)
     return cycle
 
 
@@ -911,6 +916,9 @@ def confirm_trial_batches_done(
             "updated_at",
         ]
     )
+    # Push the confirmed-done stamp to PSP so the kanban board's
+    # :awaiting_final_spec column lights up without a manual sync.
+    _push_final_state_to_psp(cycle.formulation)
     return cycle
 
 
@@ -1019,3 +1027,24 @@ def _cancel_open_slots_on_team_close(
         )
         count += 1
     return count
+
+
+def _push_final_state_to_psp(formulation: Optional[Formulation]) -> None:
+    """Fire a PSP proposal-sync so the six ``npd_final_*`` mirror
+    columns on the customer-order row refresh. Safe on every path:
+    ``_sync_formulation_proposal_to_psp`` short-circuits when no
+    signed/accepted proposal is attached and defers the actual push
+    to ``transaction.on_commit``.
+    """
+
+    if formulation is None:
+        return
+    try:
+        from apps.payments.services import _sync_formulation_proposal_to_psp
+
+        _sync_formulation_proposal_to_psp(formulation)
+    except Exception:
+        logger.exception(
+            "psp.sync.final_state_push_failed formulation_id=%s",
+            getattr(formulation, "id", None),
+        )
