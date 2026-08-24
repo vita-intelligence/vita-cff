@@ -147,6 +147,7 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
   if (!spec) return <p>Loading…</p>;
 
   const isFinal = spec.document_kind === "final";
+  const isRejected = spec.status === "rejected";
   const allAffirmed =
     !isFinal || FINAL_AFFIRMATIONS.every((a) => affirmations[a.key]);
   // Delta-info drives an additional acknowledgement gate on FINALs
@@ -178,9 +179,11 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
 
   return (
     <div className="flex flex-col gap-8">
-      {isFinal && !spec.has_signature ? (
+      {isFinal && !spec.has_signature && !isRejected ? (
         <FinalProductionBanner proposalCode={proposalCode} />
       ) : null}
+
+      {isRejected ? <RejectedBanner spec={spec} /> : null}
 
       <PageHeader
         eyebrow={
@@ -229,7 +232,7 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
           <SpecSheetContent rendered={spec.render_context as any} />
         </ScrollTrackingDiv>
 
-        {!spec.has_signature && isFinal && spec.delta_info ? (
+        {!spec.has_signature && !isRejected && isFinal && spec.delta_info ? (
           <UpdatedPriceBlock
             delta={spec.delta_info}
             acknowledged={acknowledgedUpdatedTotal}
@@ -237,7 +240,7 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
           />
         ) : null}
 
-        {!spec.has_signature && isFinal ? (
+        {!spec.has_signature && !isRejected && isFinal ? (
           <div className="mt-6 border-t-2 border-dashed border-black pt-6">
             <p className="text-[11px] font-bold uppercase tracking-widest text-neutral-700">
               Before signing, please confirm:
@@ -269,7 +272,7 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
           </div>
         ) : null}
 
-        {!spec.has_signature ? (
+        {!spec.has_signature && !isRejected ? (
           <div className="mt-6 border-t-2 border-dashed border-black pt-6">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <PortalButton
@@ -545,6 +548,43 @@ function UpdatedPriceBlock({
                 I accept the updated total of {money(delta.amount_due)}.
               </span>
             </label>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function RejectedBanner({ spec }: { spec: PortalSpecListItem }) {
+  const at = spec.customer_rejected_at
+    ? new Date(spec.customer_rejected_at).toLocaleString()
+    : null;
+  return (
+    <div className="relative border-2 border-red-700 bg-red-50 px-5 py-4">
+      <div className="flex items-start gap-3">
+        <XCircle className="mt-0.5 h-6 w-6 shrink-0 text-red-700" />
+        <div className="flex-1">
+          <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-red-800">
+            You rejected this final specification
+          </p>
+          <p className="mt-1 text-sm font-medium leading-snug text-red-900">
+            We&rsquo;ve reopened trial batches on your project — head back
+            to the project page to order more samples and iterate towards
+            a new final specification.
+          </p>
+          {spec.customer_rejection_reason ? (
+            <div className="mt-3 border-2 border-red-300 bg-white p-3">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-red-800">
+                Reason you gave
+              </p>
+              <p className="mt-1 whitespace-pre-line text-sm text-neutral-900">
+                {spec.customer_rejection_reason}
+              </p>
+            </div>
+          ) : null}
+          {at ? (
+            <p className="mt-2 text-[11px] text-red-700/70">Rejected {at}</p>
           ) : null}
         </div>
       </div>

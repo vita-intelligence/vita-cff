@@ -300,6 +300,11 @@ export interface PortalSpecListItem {
   readonly formulation_version_number: number | null;
   readonly has_signature: boolean;
   readonly customer_signed_at: string | null;
+  /** ISO timestamp — set when the customer clicked Reject on a
+   *  FINAL. Portal keys off this + ``status === "rejected"`` to
+   *  hide the sign/reject card and show a "Rejected on …" banner. */
+  readonly customer_rejected_at: string | null;
+  readonly customer_rejection_reason: string;
   readonly proposal: {
     readonly id: string;
     readonly code: string;
