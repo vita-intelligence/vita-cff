@@ -19,6 +19,9 @@ from apps.specifications.api.views import (
     SpecificationStatusView,
     SpecificationVisibilityView,
 )
+from apps.specifications.api.final_specs_scientist_views import (
+    FinalSpecsPipelineView,
+)
 
 app_name = "specifications"
 
@@ -27,6 +30,13 @@ urlpatterns = [
         "organizations/<uuid:org_id>/specifications/",
         SpecificationListCreateView.as_view(),
         name="specification-list",
+    ),
+    # Kanban feed for /final-specs/ — every FINAL sheet in the org
+    # bucketed by lifecycle stage (needs_click / in_flight / closed).
+    path(
+        "organizations/<uuid:org_id>/final-specs/pipeline/",
+        FinalSpecsPipelineView.as_view(),
+        name="final-specs-pipeline",
     ),
     path(
         "organizations/<uuid:org_id>/specifications/packaging-options/",

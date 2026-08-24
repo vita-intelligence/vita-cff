@@ -35,6 +35,7 @@ export type ProtectedNavKey =
   | "labelling"
   | "samples"
   | "trial-batches"
+  | "final-specs"
   | "finance";
 
 interface ProtectedHeaderProps {
@@ -223,6 +224,11 @@ export async function ProtectedHeader({
       key: "trial-batches",
       href: "/trial-batches",
       label: "Trial batches",
+    });
+    rndItems.push({
+      key: "final-specs",
+      href: "/final-specs",
+      label: "Final specs",
     });
   }
   // Finance lives in its own group (not under R&D) because payment
