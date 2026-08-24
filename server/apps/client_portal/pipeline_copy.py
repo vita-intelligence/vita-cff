@@ -82,9 +82,9 @@ PHASE_CURRENT_NOTE: dict[str, str] = {
         "(or ordering what we're short on) so production can start."
     ),
     "in_production": (
-        "The shop floor is actively producing your batch — blending, "
-        "encapsulating, and packaging step by step. Once the last step "
-        "closes, the batch moves to QC."
+        "The shop floor is actively producing your batch — working "
+        "through the recipe step by step, with in-process checks at "
+        "each stage. Once the last step closes, the batch moves to QC."
     ),
     "closeout": (
         "The last production step just finished. Operators are closing "

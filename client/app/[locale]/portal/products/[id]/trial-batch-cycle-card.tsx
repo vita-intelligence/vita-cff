@@ -210,7 +210,24 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
     (activeSlot.status === "in_production" ||
       activeSlot.status === "shipped" ||
       activeSlot.status === "awaiting_scientist");
-  const cycleDone = cycle.status === "satisfied" || cycle.status === "terminated_by_team";
+  // "Remaining work" = any slot the customer is still expecting.
+  // Approving a slot with "keep sending the rest" locks the remaining
+  // AWAITING_SCIENTIST slots to the approved recipe rather than
+  // cancelling them, so those still count as in-flight even though
+  // the cycle itself flips to SATISFIED. Without this the portal
+  // switches to "final spec incoming" while boxes are still shipping.
+  const hasRemainingSamples = cycle.slots.some(
+    (s) =>
+      s.status === "awaiting_scientist" ||
+      s.status === "in_production" ||
+      s.status === "shipped" ||
+      s.status === "delivered" ||
+      s.status === "feedback_pending",
+  );
+  const cycleClosedStatus =
+    cycle.status === "satisfied" || cycle.status === "terminated_by_team";
+  const cycleDone = cycleClosedStatus && !hasRemainingSamples;
+  const finishingRemaining = cycleClosedStatus && hasRemainingSamples;
   const maxReached = cycle.status === "max_reached";
 
   return (
@@ -226,9 +243,11 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
           <p className="mt-1 text-lg font-black uppercase leading-tight">
             {cycleDone
               ? "You're happy — final spec incoming."
-              : maxReached
-                ? `All ${cycle.total_slots} samples sent — what next?`
-                : `${cycle.slots_used} of ${cycle.total_slots} samples sent`}
+              : finishingRemaining
+                ? "Recipe approved — remaining samples still coming"
+                : maxReached
+                  ? `All ${cycle.total_slots} samples sent — what next?`
+                  : `${cycle.slots_used} of ${cycle.total_slots} samples sent`}
           </p>
           {!cycleDone && !maxReached && activeSlot ? (
             <p className="mt-0.5 text-xs uppercase tracking-widest text-black">
@@ -239,9 +258,11 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
           <p className="mt-1 text-sm text-neutral-800">
             {cycleDone
               ? "We're preparing the final specification. Sign it to authorise full production."
-              : maxReached
-                ? "Let us know if you're satisfied, or request another sample below."
-                : "One sample at a time. Give feedback on each and we'll iterate until it's right."}
+              : finishingRemaining
+                ? "You approved the recipe and asked us to keep sending the remaining samples. The final specification unlocks after every sample lands."
+                : maxReached
+                  ? "Let us know if you're satisfied, or request another sample below."
+                  : "One sample at a time. Give feedback on each and we'll iterate until it's right."}
           </p>
         </div>
       </div>

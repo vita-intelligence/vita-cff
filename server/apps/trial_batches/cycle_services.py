@@ -468,16 +468,41 @@ def _cancel_awaiting_slots(
 def _lock_remaining_slots_to_version(
     *, cycle: TrialBatchCycle, formulation_version_id: Any
 ) -> int:
-    """Lock every AWAITING_SCIENTIST slot to the same formulation
-    version — used when the customer chose "satisfied — keep sending
-    the remaining samples I paid for". Prevents any further recipe
-    iteration on this cycle.
+    """Called on ``SATISFIED + keep_producing_remaining=True`` — the
+    customer approved the recipe but paid for more samples and wants
+    us to keep shipping them. Two things happen:
+
+    1. Every existing ``AWAITING_SCIENTIST`` slot is locked to the
+       approved ``formulation_version`` so no further iteration can
+       drift the recipe.
+    2. Any slots the cycle paid for but the scientist hadn't
+       pre-opened yet (usually all of them — slots are seeded lazily
+       on ``open_next_slot_iterated``) are created now, locked to
+       the same version, as ``AWAITING_SCIENTIST``. Without this
+       step the portal shows "trial batches complete" the instant
+       the customer approves, even when they explicitly asked us to
+       finish the paid-for run.
+
+    Returns the total slots touched (locked + newly seeded).
     """
 
-    return TrialBatchSlot.objects.filter(
+    locked = TrialBatchSlot.objects.filter(
         cycle=cycle,
         status=TrialBatchSlotStatus.AWAITING_SCIENTIST,
     ).update(formulation_version_id=formulation_version_id)
+
+    existing_count = TrialBatchSlot.objects.filter(cycle=cycle).count()
+    seeded = 0
+    for offset in range(existing_count, cycle.total_slots):
+        TrialBatchSlot.objects.create(
+            cycle=cycle,
+            sequence_no=offset + 1,
+            formulation_version_id=formulation_version_id,
+            status=TrialBatchSlotStatus.AWAITING_SCIENTIST,
+        )
+        seeded += 1
+
+    return locked + seeded
 
 
 # ---------------------------------------------------------------------------
