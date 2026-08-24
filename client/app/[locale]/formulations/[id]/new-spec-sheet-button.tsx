@@ -89,10 +89,22 @@ export function NewSpecSheetButton({
   );
 
   // Only relevant when documentKind === "final". BE enforces one
-  // FINAL per project (``FinalSpecAlreadyExists``); we mirror that
-  // by disabling the trigger and pointing to the existing sheet.
+  // ACTIVE FINAL per project (``FinalSpecAlreadyExists``); we
+  // mirror that by disabling the trigger and pointing to the
+  // existing sheet. Rejected FINALs don't count — the customer
+  // sending us back to trial batches is a project-restart, so we
+  // owe them a fresh sheet against the new approved version.
+  // Draft / in_review are excluded too (in-progress scientist work,
+  // not customer-facing yet).
   const existingFinal = useMemo(
-    () => existingSheets.find((sheet) => sheet.document_kind === "final"),
+    () =>
+      existingSheets.find(
+        (sheet) =>
+          sheet.document_kind === "final" &&
+          sheet.status !== "rejected" &&
+          sheet.status !== "draft" &&
+          sheet.status !== "in_review",
+      ),
     [existingSheets],
   );
 
