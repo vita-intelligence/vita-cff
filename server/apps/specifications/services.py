@@ -615,18 +615,36 @@ def _existing_final_for_formulation(
     formulation_id: Any,
     exclude_pk: Any = None,
 ) -> SpecificationSheet | None:
-    """Return the FINAL spec sheet (if any) attached to ``formulation_id``,
-    walking through every formulation_version of the project.
+    """Return the ACTIVE FINAL spec sheet (if any) attached to
+    ``formulation_id``, walking through every formulation_version
+    of the project.
 
-    The "one FINAL per project" invariant lives here so the auto-create
-    hook, the create-sheet path, and the update-sheet path all share
-    the same view of "is there already a final?". ``exclude_pk`` lets
-    the update path ignore the row currently being edited.
+    "Active" excludes ``rejected`` sheets — the customer rejecting
+    a FINAL is a project-restart signal, and we owe them a fresh
+    sheet against the new approved version. Treating a rejected
+    sheet as "already exists" would trap the project.
+    ``draft`` / ``in_review`` are also excluded (private scientist
+    work) since those aren't customer-facing artefacts either — a
+    scientist iterating on a draft shouldn't block another author
+    starting a new one, mirroring the "one live draft per project"
+    rule that already handles draft collisions separately.
+
+    The "one FINAL per project" invariant lives here so the auto-
+    create hook, the create-sheet path, and the update-sheet path
+    all share the same view of "is there already an active final?".
+    ``exclude_pk`` lets the update path ignore the row currently
+    being edited.
     """
 
     qs = SpecificationSheet.objects.filter(
         formulation_version__formulation_id=formulation_id,
         document_kind=SpecificationDocumentKind.FINAL,
+    ).exclude(
+        status__in=(
+            SpecificationStatus.REJECTED.value,
+            SpecificationStatus.DRAFT.value,
+            SpecificationStatus.IN_REVIEW.value,
+        )
     )
     if exclude_pk is not None:
         qs = qs.exclude(pk=exclude_pk)
