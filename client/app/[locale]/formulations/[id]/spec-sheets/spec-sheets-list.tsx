@@ -112,12 +112,20 @@ export function SpecSheetsList({
   const cycle = cycleQuery.data ?? null;
 
   const sheets = initialPage.results;
-  // A "final" spec sheet exists once the scientist creates one after
-  // the customer confirms done. While that's absent, the banner
-  // nudges the scientist to create it.
-  const hasFinalSheet = sheets.some((s) => s.document_kind === "final");
+  // Only ACTIVE final sheets block the banner. A ``rejected`` final
+  // means the customer sent us back to trial batches — once they've
+  // re-confirmed done we owe them a fresh FINAL against the new
+  // approved version, so the banner should re-appear. Mirrors the
+  // ``_awaiting_final_projects`` rule on the /final-specs/ kanban.
+  const hasActiveFinalSheet = sheets.some(
+    (s) =>
+      s.document_kind === "final" &&
+      s.status !== "rejected" &&
+      s.status !== "draft" &&
+      s.status !== "in_review",
+  );
   const customerConfirmedDone = cycle?.customer_confirmed_done_at != null;
-  const showFinalSpecBanner = customerConfirmedDone && !hasFinalSheet;
+  const showFinalSpecBanner = customerConfirmedDone && !hasActiveFinalSheet;
 
   return (
     <section className="flex flex-col gap-4">
