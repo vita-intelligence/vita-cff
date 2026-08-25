@@ -27,6 +27,15 @@ import {
 // Wire types — mirror server/apps/client_portal/api/product_detail_views.py
 // ---------------------------------------------------------------------------
 
+export interface ProductionMoPurchaseOrder {
+  readonly uuid: string;
+  readonly code: string | null;
+  readonly vendor_name: string | null;
+  readonly status: string | null;
+  readonly expected_delivery_date: string | null;
+  readonly line_count: number | null;
+}
+
 export interface ProductionMoSession {
   readonly uuid: string;
   readonly workstation_name: string | null;
@@ -62,6 +71,7 @@ export interface ProductionMoRoadmap {
   readonly bookings_received_count: number | null;
   readonly output_lots_pending_qc_count: number | null;
   readonly sessions?: readonly ProductionMoSession[];
+  readonly purchase_orders?: readonly ProductionMoPurchaseOrder[];
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +106,12 @@ function stageCompletionAt(mo: ProductionMoRoadmap, stageKey: string): string | 
 }
 
 function currentStageSubstatus(mo: ProductionMoRoadmap): string {
+  if (mo.stage === "mo_request") {
+    const poCount = mo.purchase_orders?.length ?? 0;
+    if (poCount > 0) {
+      return `Awaiting ingredients from ${poCount} supplier${poCount === 1 ? "" : "s"}.`;
+    }
+  }
   if (mo.stage === "pickup" && (mo.bookings_total ?? 0) > 0) {
     return `${mo.bookings_picked_count ?? 0} of ${mo.bookings_total ?? 0} ingredients picked so far.`;
   }
@@ -111,6 +127,47 @@ function currentStageSubstatus(mo: ProductionMoRoadmap): string {
   }
   if (mo.stage === "closeout") return "Wrapping up the paperwork.";
   return "";
+}
+
+/** Same customer-friendly labels the web-site portal uses, mirrored
+ *  here so both surfaces stay in lockstep. */
+function purchaseOrderStatusLabel(status: string | null): {
+  label: string;
+  tone: "amber" | "blue" | "emerald" | "muted";
+} {
+  switch (status) {
+    case "draft":
+    case "pending_approver":
+    case "pending_director":
+      return { label: "Awaiting approval", tone: "amber" };
+    case "approved":
+      return { label: "Approved, sending to supplier", tone: "amber" };
+    case "ordered":
+      return { label: "Ordered — awaiting delivery", tone: "blue" };
+    case "partially_received":
+      return { label: "Partial delivery received", tone: "blue" };
+    case "received":
+      return { label: "Delivered", tone: "emerald" };
+    default: {
+      const raw = (status ?? "").replace(/_/g, " ").trim();
+      return {
+        label: raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : "In progress",
+        tone: "muted",
+      };
+    }
+  }
+}
+
+function formatDeliveryDate(iso: string | null): string {
+  if (!iso) return "";
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return "";
+  const currentYear = new Date().getFullYear();
+  const opts: Intl.DateTimeFormatOptions =
+    dt.getFullYear() === currentYear
+      ? { day: "2-digit", month: "short" }
+      : { day: "2-digit", month: "short", year: "numeric" };
+  return dt.toLocaleDateString("en-GB", opts);
 }
 
 /** Leaves-first execution order — blending → encapsulation → bottling
@@ -306,6 +363,81 @@ function CollapsedMoRow({ mo, onExpand }: { mo: ProductionMoRoadmap; onExpand: (
   );
 }
 
+/** Brutalist "Ingredients on order" block — one row per PO with
+ *  vendor + friendly status + expected delivery date. Empty PO
+ *  list renders nothing. */
+function PurchaseOrdersBlock({
+  pos,
+}: {
+  pos: readonly ProductionMoPurchaseOrder[];
+}) {
+  if (pos.length === 0) return null;
+
+  return (
+    <div className="mt-3 space-y-2">
+      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">
+        Ingredients on order ({pos.length})
+      </p>
+      <ul className="divide-y-2 divide-black border-2 border-black bg-white">
+        {pos.map((po) => {
+          const { label, tone } = purchaseOrderStatusLabel(po.status);
+          const delivery = formatDeliveryDate(po.expected_delivery_date);
+          const showDelivery =
+            delivery &&
+            (po.status === "ordered" || po.status === "partially_received");
+          return (
+            <li key={po.uuid} className="flex items-baseline gap-2.5 p-2.5">
+              <span
+                className={
+                  "mt-0.5 h-2 w-2 shrink-0 " +
+                  (tone === "emerald"
+                    ? "bg-emerald-500"
+                    : tone === "blue"
+                      ? "bg-blue-500"
+                      : tone === "amber"
+                        ? "bg-orange-500"
+                        : "bg-neutral-400")
+                }
+                aria-hidden
+              />
+              <div className="min-w-0 flex-1 text-xs">
+                <p className="truncate font-bold uppercase tracking-tight text-black">
+                  {po.vendor_name || "Supplier"}
+                  {po.code ? (
+                    <span className="ml-1.5 font-mono text-[10px] font-normal normal-case tracking-normal text-neutral-500">
+                      {po.code}
+                    </span>
+                  ) : null}
+                </p>
+                <p
+                  className={
+                    "mt-0.5 " +
+                    (tone === "emerald"
+                      ? "text-emerald-700"
+                      : tone === "blue"
+                        ? "text-blue-700"
+                        : tone === "amber"
+                          ? "text-orange-700"
+                          : "text-neutral-600")
+                  }
+                >
+                  {label}
+                  {showDelivery ? (
+                    <span className="font-normal text-neutral-600">
+                      {" · arriving "}
+                      {delivery}
+                    </span>
+                  ) : null}
+                </p>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function SessionTimeline({ sessions }: { sessions: readonly ProductionMoSession[] }) {
   const activeSessions = useMemo(
     () => sessions.filter((s) => !s.finished_at),
@@ -463,6 +595,13 @@ function ExpandedMoCard({
               </div>
             ) : null}
           </div>
+
+          {/* POs blocking this MO — surfaces WHY stage 1 is holding.
+              Rendered above the 8-stage list so the customer's eye
+              lands on it before scanning the pipeline. */}
+          {!isCancelled ? (
+            <PurchaseOrdersBlock pos={mo.purchase_orders ?? []} />
+          ) : null}
 
           {isCancelled ? (
             <p className="mt-3 border-2 border-black bg-red-100 p-2.5 text-xs">
