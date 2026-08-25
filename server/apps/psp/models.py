@@ -197,6 +197,25 @@ class PspProductionStatus(models.Model):
     mos_in_production = models.PositiveIntegerField(default=0)
     mos_awaiting_closeout = models.PositiveIntegerField(default=0)
 
+    #: Per-MO roadmap detail — one entry per root production MO on
+    #: PSP. Sanitised customer-safe subset of PSP's canonical 8-stage
+    #: stepper (mo_request → pickup → transfer → preflight →
+    #: production → quality → closeout → return_pickup). Populated by
+    #: PSP's push; the portal reads this to render a full-fidelity
+    #: production roadmap alongside the coarse phase counters above.
+    #:
+    #: Shape: ``[{uuid, code, item_name, quantity, quantity_produced,
+    #: stage, stage_index, stage_total, status, target_lot_code,
+    #: approved_at, released_to_warehouse_at, pickup_started_at,
+    #: pickup_completed_at, actual_start, actual_finish,
+    #: closeout_completed_at, due_date, bookings_total,
+    #: bookings_picked_count, bookings_received_count,
+    #: output_lots_pending_qc_count}, ...]``
+    #:
+    #: Empty list = no MOs yet (still in earlier phase) or PSP push
+    #: predates the roadmap fields (backward compat).
+    manufacturing_orders = models.JSONField(default=list, blank=True)
+
     #: PSP's own ``updated_at`` for the CO — freshness anchor
     #: distinct from ``pushed_at`` (which reflects when NPD received
     #: the snapshot). Useful when auditing a "why did the portal

@@ -237,6 +237,11 @@ def _build_production_status(*, formulation) -> dict | None:
         "mos_awaiting_closeout": row.mos_awaiting_closeout,
         "psp_updated_at": _iso(row.psp_updated_at),
         "pushed_at": _iso(row.pushed_at),
+        # Per-MO roadmap — the customer FE renders one 8-stage
+        # stepper per production MO with substage progress and
+        # timestamps. Empty list = still in earlier phase OR PSP push
+        # predates the roadmap fields (backward compat).
+        "manufacturing_orders": list(row.manufacturing_orders or []),
     }
 
 

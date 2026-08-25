@@ -28,6 +28,85 @@ from apps.specifications.services import render_html
 from apps.trial_batches.models import TrialBatch
 
 
+# PSP's per-MO roadmap payload — allowlisted keys only so a rogue
+# / mis-configured PSP push can't stuff arbitrary shapes into a
+# JSONField that the customer portal renders. Also caps string
+# fields to defensive lengths.
+_MO_STRING_KEYS_MAX = {
+    "uuid": 40,
+    "code": 40,
+    "item_name": 200,
+    "stage": 32,
+    "status": 32,
+    "target_lot_code": 40,
+    "quantity": 40,
+    "quantity_produced": 40,
+}
+
+_MO_INT_KEYS = {
+    "stage_index",
+    "stage_total",
+    "bookings_total",
+    "bookings_picked_count",
+    "bookings_received_count",
+    "output_lots_pending_qc_count",
+}
+
+_MO_ISO_KEYS = {
+    "approved_at",
+    "released_to_warehouse_at",
+    "pickup_started_at",
+    "pickup_completed_at",
+    "actual_start",
+    "actual_finish",
+    "closeout_completed_at",
+    "due_date",
+}
+
+
+def _sanitise_manufacturing_orders(raw) -> list[dict]:
+    """Coerce PSP's push into a customer-safe list of MO roadmap
+    entries. Drops unknown keys, caps strings, coerces int/ISO
+    fields. Silent-degrade: any malformed row → empty list rather
+    than raising (matches the rest of the endpoint's contract)."""
+
+    if not isinstance(raw, list):
+        return []
+
+    out: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+
+        row: dict = {}
+        for key, cap in _MO_STRING_KEYS_MAX.items():
+            value = entry.get(key)
+            if value is None:
+                row[key] = None
+            else:
+                row[key] = str(value)[:cap]
+
+        for key in _MO_INT_KEYS:
+            value = entry.get(key)
+            try:
+                row[key] = int(value) if value is not None else None
+            except (TypeError, ValueError):
+                row[key] = None
+
+        for key in _MO_ISO_KEYS:
+            value = entry.get(key)
+            row[key] = str(value)[:40] if value else None
+
+        # Skip entries with no identity — a stray push shouldn't land
+        # a blank MO row that the portal renders as a phantom.
+        if not row.get("uuid"):
+            continue
+
+        out.append(row)
+
+    return out
+
+
 def _extract_bearer(request: Request) -> str | None:
     raw = request.META.get("HTTP_AUTHORIZATION", "")
     if not raw.lower().startswith("bearer "):
@@ -546,6 +625,8 @@ class PspProductionStatusUpsertView(APIView):
 
         from django.utils import timezone as _tz
 
+        mos = _sanitise_manufacturing_orders(payload.get("manufacturing_orders"))
+
         row, _created = PspProductionStatus.objects.update_or_create(
             formulation=formulation,
             defaults={
@@ -562,10 +643,23 @@ class PspProductionStatusUpsertView(APIView):
                 "mos_awaiting_delivery": _int("mos_awaiting_delivery"),
                 "mos_in_production": _int("mos_in_production"),
                 "mos_awaiting_closeout": _int("mos_awaiting_closeout"),
+                "manufacturing_orders": mos,
                 "psp_updated_at": psp_updated_at,
                 "pushed_at": _tz.now(),
             },
         )
+
+        # Portal WebSocket fanout — the customer's project tab
+        # invalidates and re-fetches without polling. Silent no-op if
+        # Channels isn't wired for this deployment.
+        try:
+            from apps.client_portal.consumers import (
+                broadcast_production_status_changed,
+            )
+
+            broadcast_production_status_changed(formulation)
+        except Exception:  # noqa: BLE001 — realtime is best-effort
+            pass
 
         return Response(
             {
