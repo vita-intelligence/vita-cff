@@ -52,6 +52,10 @@ class LabelDesignRevisionReadSerializer(serializers.ModelSerializer):
     # ``LabelDesignReviewReadSerializer`` declared further down,
     # via DRF's lazy resolution.
     reviews = serializers.SerializerMethodField()
+    #: Supplementary artwork files — back view, side view, mockup on
+    #: the finished bottle, etc. Nested inline so the workspace
+    #: gallery renders in one round-trip.
+    additional_assets = serializers.SerializerMethodField()
 
     class Meta:
         model = LabelDesignRevision
@@ -67,6 +71,7 @@ class LabelDesignRevisionReadSerializer(serializers.ModelSerializer):
             "submitted_at",
             "artwork_pdf_url",
             "artwork_preview_png_url",
+            "additional_assets",
             "compliance_block_snapshot",
             "customer_approved_own_design",
             "notes",
@@ -79,6 +84,21 @@ class LabelDesignRevisionReadSerializer(serializers.ModelSerializer):
 
     def get_artwork_preview_png_url(self, obj: LabelDesignRevision) -> str:
         return obj.artwork_preview_png.url if obj.artwork_preview_png else ""
+
+    def get_additional_assets(self, obj: LabelDesignRevision) -> list[dict]:
+        rows = list(obj.additional_assets.all().order_by("sort_order", "created_at"))
+        return [
+            {
+                "id": str(row.id),
+                "file_url": row.file.url if row.file else "",
+                "label": row.label or f"View {idx + 2}",
+                "original_filename": row.original_filename,
+                "content_type": row.content_type,
+                "size_bytes": row.size_bytes,
+                "sort_order": row.sort_order,
+            }
+            for idx, row in enumerate(rows)
+        ]
 
     def get_reviews(self, obj: LabelDesignRevision) -> list[dict]:
         # Order scientist-first then director — matches the workflow
@@ -409,9 +429,32 @@ def _validate_artwork_file(value):
 class UploadArtworkSerializer(serializers.Serializer):
     artwork = serializers.FileField()
     notes = serializers.CharField(allow_blank=True, default="")
+    #: Optional JSON-encoded labels for the additional files, in the
+    #: same order the customer / staff attached them. Empty entries
+    #: mean "no label", the FE will fall back to "View N". Read via
+    #: ``request.FILES.getlist("additional_files")`` on the view;
+    #: this field only carries the parallel labels array.
+    additional_file_labels = serializers.CharField(
+        allow_blank=True, default="[]"
+    )
 
     def validate_artwork(self, value):
         return _validate_artwork_file(value)
+
+    def validate_additional_file_labels(self, value: str) -> list[str]:
+        if not value or not value.strip():
+            return []
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            raise serializers.ValidationError(
+                "additional_file_labels must be a JSON array"
+            )
+        if not isinstance(parsed, list):
+            raise serializers.ValidationError(
+                "additional_file_labels must be a JSON array"
+            )
+        return [str(x) for x in parsed]
 
 
 class _ChecklistResponseSerializer(serializers.Serializer):
@@ -563,9 +606,29 @@ class CustomerUploadArtworkSerializer(serializers.Serializer):
     artwork = serializers.FileField()
     signature_image = serializers.CharField()
     notes = serializers.CharField(allow_blank=True, default="")
+    #: See ``UploadArtworkSerializer.additional_file_labels`` — same
+    #: shape, same parsing.
+    additional_file_labels = serializers.CharField(
+        allow_blank=True, default="[]"
+    )
 
     def validate_artwork(self, value):
         return _validate_artwork_file(value)
+
+    def validate_additional_file_labels(self, value: str) -> list[str]:
+        if not value or not value.strip():
+            return []
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            raise serializers.ValidationError(
+                "additional_file_labels must be a JSON array"
+            )
+        if not isinstance(parsed, list):
+            raise serializers.ValidationError(
+                "additional_file_labels must be a JSON array"
+            )
+        return [str(x) for x in parsed]
 
 
 class CustomerApproveSerializer(serializers.Serializer):

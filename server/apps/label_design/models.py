@@ -421,6 +421,84 @@ class LabelDesignRevision(models.Model):
         return f"Revision {self.revision_number} of {self.label_design_id}"
 
 
+def _revision_asset_upload_to(
+    instance: "LabelDesignRevisionAsset", filename: str
+) -> str:
+    """Storage path for supplementary revision assets.
+
+    One folder per revision (mirrors ``_revision_artwork_upload_to``)
+    with a UUID-keyed asset filename inside so a customer uploading
+    two files both called ``front.pdf`` doesn't collide on save.
+    Extension preserved so browsers pick the right renderer when
+    the URL is opened directly.
+    """
+
+    ext = _safe_extension(filename, fallback="")
+    return (
+        f"label_design/{instance.revision.label_design_id}/revisions/"
+        f"{instance.revision_id}/assets/{instance.id}{ext}"
+    )
+
+
+class LabelDesignRevisionAsset(models.Model):
+    """One supplementary artwork file attached to a revision — the
+    "back view", "side view", "mockup on shelf" companions to the
+    canonical ``LabelDesignRevision.artwork_pdf``.
+
+    Kept as a related model (not a JSONB column on the parent) so:
+
+    * Each file has its own storage path + audit history — the
+      immutable revision-per-submission audit contract still holds.
+    * File-count limits and per-file validation apply per row via
+      the standard :func:`_validate_artwork_file` helper.
+    * Deletion / reorder edits don't rewrite the parent revision.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    revision = models.ForeignKey(
+        LabelDesignRevision,
+        on_delete=models.CASCADE,
+        related_name="additional_assets",
+    )
+    file = models.FileField(
+        _("file"),
+        upload_to=_revision_asset_upload_to,
+        max_length=255,
+    )
+    #: Optional label the uploader gave the view — "Back", "Left side",
+    #: "Mockup on 500ml bottle". Empty string when the uploader didn't
+    #: bother — the FE falls back to "View {N}" in that case.
+    label = models.CharField(
+        _("view label"), max_length=80, blank=True, default=""
+    )
+    #: Preserves the browser-side ordering so a customer who dragged
+    #: "Front" above "Back" sees the same order on both sides.
+    sort_order = models.PositiveIntegerField(
+        _("sort order"), default=0, db_index=True
+    )
+    original_filename = models.CharField(
+        _("original filename"), max_length=255, blank=True, default=""
+    )
+    content_type = models.CharField(
+        _("content type"), max_length=120, blank=True, default=""
+    )
+    size_bytes = models.PositiveIntegerField(_("size in bytes"), default=0)
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        verbose_name = _("label design revision asset")
+        verbose_name_plural = _("label design revision assets")
+        ordering = ("sort_order", "created_at")
+        indexes = [
+            models.Index(fields=("revision", "sort_order")),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"Asset {self.id} of revision {self.revision_id}"
+
+
 class LabelDesignReview(models.Model):
     """A scientist's or director's verdict on a single revision.
 
