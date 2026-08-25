@@ -65,6 +65,11 @@ interface PortalProposalDto {
   readonly id: string;
   readonly code: string;
   readonly status: string;
+  //: NPD's own portal navigates around projects — from a proposal
+  //: the back link routes here so the customer's mental model is
+  //: "always one step back to the project", never to a proposal
+  //: list they didn't drill in from.
+  readonly formulation_id: string | null;
   readonly has_signature: boolean;
   readonly customer_signed_at: string | null;
   readonly ack_spec_signing: boolean;
@@ -199,7 +204,12 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         eyebrow={`Proposal ${proposal.code}`}
         title={proposal.code}
         subtitle="Read the proposal, sign it, then sign each specification on its own page."
-        back={{ href: "/portal/proposals", label: "All proposals" }}
+        back={{
+          href: proposal.formulation_id
+            ? `/portal/products/${proposal.formulation_id}`
+            : "/portal/proposals",
+          label: proposal.formulation_id ? "Back to project" : "All proposals",
+        }}
         actions={
           <>
             <PortalLinkButton

@@ -194,6 +194,10 @@ export function PortalLabelDesignWorkspace({ id }: { id: string }) {
       <PageHeader
         eyebrow={data.formulation_code || "LABEL"}
         title={data.formulation_name || "Label design"}
+        back={{
+          href: data.formulation ? `/portal/products/${data.formulation}` : "/portal/products",
+          label: "Back to project",
+        }}
         subtitle={
           <span className="mt-2 inline-flex flex-wrap items-center gap-3">
             <StatusBadge status={data.status} />
