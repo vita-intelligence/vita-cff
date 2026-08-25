@@ -34,6 +34,8 @@ export interface ProductionMoPurchaseOrder {
   readonly status: string | null;
   readonly expected_delivery_date: string | null;
   readonly line_count: number | null;
+  readonly payment_status?: string | null;
+  readonly paid_at?: string | null;
 }
 
 export interface ProductionMoSession {
@@ -129,17 +131,20 @@ function currentStageSubstatus(mo: ProductionMoRoadmap): string {
   return "";
 }
 
-/** Same customer-friendly labels the web-site portal uses, mirrored
- *  here so both surfaces stay in lockstep. */
-function purchaseOrderStatusLabel(status: string | null): {
+type PoTone = "amber" | "blue" | "emerald" | "rose" | "muted";
+
+/** Same delivery-status translation the web-site portal uses. */
+function poDeliveryStatusLabel(status: string | null): {
   label: string;
-  tone: "amber" | "blue" | "emerald" | "muted";
+  tone: PoTone;
 } {
   switch (status) {
     case "draft":
+      return { label: "Draft", tone: "muted" };
     case "pending_approver":
+      return { label: "Awaiting approver", tone: "amber" };
     case "pending_director":
-      return { label: "Awaiting approval", tone: "amber" };
+      return { label: "Awaiting director", tone: "amber" };
     case "approved":
       return { label: "Approved, sending to supplier", tone: "amber" };
     case "ordered":
@@ -158,6 +163,27 @@ function purchaseOrderStatusLabel(status: string | null): {
   }
 }
 
+function poPaymentStatusLabel(
+  paymentStatus: string | null | undefined,
+  paidAt: string | null | undefined,
+): { label: string; tone: PoTone } {
+  switch (paymentStatus) {
+    case "paid": {
+      const on = formatDeliveryDate(paidAt ?? null);
+      return { label: on ? `Paid ${on}` : "Paid", tone: "emerald" };
+    }
+    case "partially_paid":
+      return { label: "Partially paid", tone: "blue" };
+    case "invoiced_unpaid":
+      return { label: "Invoice received — awaiting payment", tone: "amber" };
+    case "disputed":
+      return { label: "Payment disputed", tone: "rose" };
+    case "not_invoiced":
+    default:
+      return { label: "Not invoiced yet", tone: "muted" };
+  }
+}
+
 function formatDeliveryDate(iso: string | null): string {
   if (!iso) return "";
   const dt = new Date(iso);
@@ -168,6 +194,37 @@ function formatDeliveryDate(iso: string | null): string {
       ? { day: "2-digit", month: "short" }
       : { day: "2-digit", month: "short", year: "numeric" };
   return dt.toLocaleDateString("en-GB", opts);
+}
+
+/** Brutalist tone → hard colour block. */
+function poBlockClass(tone: PoTone): string {
+  switch (tone) {
+    case "emerald":
+      return "bg-emerald-500";
+    case "blue":
+      return "bg-blue-500";
+    case "amber":
+      return "bg-orange-500";
+    case "rose":
+      return "bg-red-500";
+    default:
+      return "bg-neutral-400";
+  }
+}
+
+function poTextClass(tone: PoTone): string {
+  switch (tone) {
+    case "emerald":
+      return "text-emerald-700";
+    case "blue":
+      return "text-blue-700";
+    case "amber":
+      return "text-orange-700";
+    case "rose":
+      return "text-red-700";
+    default:
+      return "text-neutral-600";
+  }
 }
 
 /** Leaves-first execution order — blending → encapsulation → bottling
@@ -363,9 +420,9 @@ function CollapsedMoRow({ mo, onExpand }: { mo: ProductionMoRoadmap; onExpand: (
   );
 }
 
-/** Brutalist "Ingredients on order" block — one row per PO with
- *  vendor + friendly status + expected delivery date. Empty PO
- *  list renders nothing. */
+/** Brutalist "Ingredients on order" block. Each PO gets a two-line
+ *  status (Delivery on top, Payment below) so the customer sees
+ *  both independent workstreams honestly. */
 function PurchaseOrdersBlock({
   pos,
 }: {
@@ -380,56 +437,55 @@ function PurchaseOrdersBlock({
       </p>
       <ul className="divide-y-2 divide-black border-2 border-black bg-white">
         {pos.map((po) => {
-          const { label, tone } = purchaseOrderStatusLabel(po.status);
-          const delivery = formatDeliveryDate(po.expected_delivery_date);
-          const showDelivery =
-            delivery &&
+          const delivery = poDeliveryStatusLabel(po.status);
+          const payment = poPaymentStatusLabel(po.payment_status, po.paid_at);
+          const eta = formatDeliveryDate(po.expected_delivery_date);
+          const showEta =
+            eta &&
             (po.status === "ordered" || po.status === "partially_received");
+
           return (
-            <li key={po.uuid} className="flex items-baseline gap-2.5 p-2.5">
-              <span
-                className={
-                  "mt-0.5 h-2 w-2 shrink-0 " +
-                  (tone === "emerald"
-                    ? "bg-emerald-500"
-                    : tone === "blue"
-                      ? "bg-blue-500"
-                      : tone === "amber"
-                        ? "bg-orange-500"
-                        : "bg-neutral-400")
-                }
-                aria-hidden
-              />
-              <div className="min-w-0 flex-1 text-xs">
-                <p className="truncate font-bold uppercase tracking-tight text-black">
-                  {po.vendor_name || "Supplier"}
-                  {po.code ? (
-                    <span className="ml-1.5 font-mono text-[10px] font-normal normal-case tracking-normal text-neutral-500">
-                      {po.code}
-                    </span>
-                  ) : null}
-                </p>
-                <p
-                  className={
-                    "mt-0.5 " +
-                    (tone === "emerald"
-                      ? "text-emerald-700"
-                      : tone === "blue"
-                        ? "text-blue-700"
-                        : tone === "amber"
-                          ? "text-orange-700"
-                          : "text-neutral-600")
-                  }
-                >
-                  {label}
-                  {showDelivery ? (
-                    <span className="font-normal text-neutral-600">
-                      {" · arriving "}
-                      {delivery}
-                    </span>
-                  ) : null}
-                </p>
-              </div>
+            <li key={po.uuid} className="p-2.5">
+              <p className="truncate text-xs font-bold uppercase tracking-tight text-black">
+                {po.vendor_name || "Supplier"}
+                {po.code ? (
+                  <span className="ml-1.5 font-mono text-[10px] font-normal normal-case tracking-normal text-neutral-500">
+                    {po.code}
+                  </span>
+                ) : null}
+              </p>
+              <dl className="mt-1.5 space-y-1 text-[11px]">
+                <div className="flex items-baseline gap-2">
+                  <span
+                    className={"mt-0.5 h-1.5 w-1.5 shrink-0 " + poBlockClass(delivery.tone)}
+                    aria-hidden
+                  />
+                  <dt className="w-16 shrink-0 font-bold uppercase tracking-widest text-neutral-500">
+                    Delivery
+                  </dt>
+                  <dd className={"min-w-0 flex-1 " + poTextClass(delivery.tone)}>
+                    {delivery.label}
+                    {showEta ? (
+                      <span className="font-normal text-neutral-600">
+                        {" · arriving "}
+                        {eta}
+                      </span>
+                    ) : null}
+                  </dd>
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span
+                    className={"mt-0.5 h-1.5 w-1.5 shrink-0 " + poBlockClass(payment.tone)}
+                    aria-hidden
+                  />
+                  <dt className="w-16 shrink-0 font-bold uppercase tracking-widest text-neutral-500">
+                    Payment
+                  </dt>
+                  <dd className={"min-w-0 flex-1 " + poTextClass(payment.tone)}>
+                    {payment.label}
+                  </dd>
+                </div>
+              </dl>
             </li>
           );
         })}
