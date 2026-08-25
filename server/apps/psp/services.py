@@ -2833,11 +2833,22 @@ def _header_image_url_for_formulation(formulation: Any) -> str:
     )
     if label is not None and label.customer_approved_at is not None:
         revision = getattr(label, "current_revision", None)
+        # Preferred: a generated thumbnail from the PDF pipeline.
         preview_url = _absolute_media_url(
             _safe_file_url(getattr(revision, "artwork_preview_png", None))
         )
         if preview_url:
             return preview_url
+        # Fallback: the ``artwork_pdf`` field accepts PNG / JPG too
+        # (the field name is historical — it's the "final artwork"
+        # slot regardless of extension). When the customer signed
+        # off on a PNG / JPG, THAT file is the preview.
+        artwork_file = getattr(revision, "artwork_pdf", None)
+        artwork_name = (getattr(artwork_file, "name", "") or "").lower()
+        if artwork_name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+            artwork_url = _absolute_media_url(_safe_file_url(artwork_file))
+            if artwork_url:
+                return artwork_url
 
     photo = (
         FormulationPhoto.objects.filter(formulation_id=formulation.id)
@@ -2846,7 +2857,7 @@ def _header_image_url_for_formulation(formulation: Any) -> str:
     )
     if photo is not None:
         photo_url = _absolute_media_url(
-            getattr(getattr(photo, "image", None), "url", "")
+            _safe_file_url(getattr(photo, "image", None))
         )
         if photo_url:
             return photo_url
