@@ -853,21 +853,58 @@ def _build_pipeline(
         }
 
     # ---- Stage 8: Production -------------------------------------------
-    production_done = (
-        label_design is not None
-        and label_design.status == LabelDesignStatus.LABEL_APPROVED
-    )
-    production_stage = {
-        "key": "production",
-        "label": "Production",
-        "state": "current" if production_done else "future",
-        "completed_at": None,
-        "detail": (
-            "Your product is heading into production scheduling."
-            if production_done
-            else "After label sign-off, production planning begins."
-        ),
-    }
+    # Production runs in PARALLEL with label design once FINAL payment
+    # is approved — the shop floor doesn't wait for a signed label to
+    # start manufacturing (the label is applied at closeout / release
+    # inspection, not during blending). The pipeline exposes this to
+    # the customer by tagging both stages with the same
+    # ``parallel_group`` value; the FE renders them bracketed under a
+    # shared step number with a "running in parallel" note.
+    production_status = getattr(formulation, "psp_production_status", None)
+    production_phase = getattr(production_status, "phase", "") or ""
+    production_started = production_phase not in ("", "delivered", "cancelled")
+    production_done_terminal = production_phase == "delivered"
+    if production_done_terminal:
+        production_stage = {
+            "key": "production",
+            "label": "Production complete",
+            "state": "done",
+            "completed_at": _iso(getattr(production_status, "pushed_at", None)),
+            "detail": "Your batch has been delivered.",
+        }
+    elif production_started:
+        # PSP is actively working on it — show the live phase label.
+        phase_copy = _PRODUCTION_PHASE_COPY.get(production_phase, {})
+        production_stage = {
+            "key": "production",
+            "label": phase_copy.get("label")
+            or getattr(production_status, "phase_label", "")
+            or "Production in progress",
+            "state": "current",
+            "completed_at": None,
+            "detail": phase_copy.get("detail")
+            or "Your batch is being manufactured.",
+        }
+    else:
+        # Not started — either awaiting FINAL sign-off or PSP hasn't
+        # pushed yet.
+        production_stage = {
+            "key": "production",
+            "label": "Production",
+            "state": "future",
+            "completed_at": None,
+            "detail": (
+                "Once your final invoice is settled, production planning "
+                "kicks off alongside label design — the two run in parallel."
+            ),
+        }
+
+    # Tag label + production as a concurrent pair. The FE reads this
+    # to bracket the two stages under one step number with a
+    # "running in parallel" indicator so the customer doesn't read
+    # the pipeline as "label first, then production".
+    label_stage["parallel_group"] = "manufacturing"
+    production_stage["parallel_group"] = "manufacturing"
 
     # Stage order — real business flow, not schema order:
     #   draft spec signed (recipe committed) → proposal signed
