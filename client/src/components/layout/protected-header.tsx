@@ -202,8 +202,15 @@ export async function ProtectedHeader({
       label: tNav("main.approvals"),
     });
   }
+  // Labelling used to sit under R&D. Reader complaint: it's an
+  // artwork-design workflow that starts AFTER R&D signs off, so
+  // burying it inside the R&D dropdown made it hard to find for
+  // the designers who actually live in it. Moved into its own
+  // "Design" group so future artwork surfaces (label templates,
+  // packaging design, moodboards) have a natural home too.
+  const designItems: HeaderNavItem[] = [];
   if (canSeeLabelling) {
-    rndItems.push({
+    designItems.push({
       key: "labelling",
       href: "/labelling",
       label: "Labelling",
@@ -269,6 +276,13 @@ export async function ProtectedHeader({
       key: "rnd",
       label: tNav("groups.rnd"),
       items: rndItems,
+    });
+  }
+  if (designItems.length > 0) {
+    navGroups.push({
+      key: "design",
+      label: tNav("groups.design"),
+      items: designItems,
     });
   }
   if (proposalItems.length > 0) {
