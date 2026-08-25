@@ -145,6 +145,59 @@ export default function CustomerApprovePage({
               />
             </div>
           ) : null}
+
+          {/* Supplementary views — "back", "side", "bottle mockup"
+              files uploaded alongside the primary artwork. Every
+              file the reviewer stamped needs to be on this page so
+              the customer signs off on the whole set, not just the
+              front. */}
+          {data?.current_revision_detail?.additional_assets &&
+          data.current_revision_detail.additional_assets.length > 0 ? (
+            <div className="mt-4">
+              <Eyebrow>EXTRA VIEWS ({data.current_revision_detail.additional_assets.length})</Eyebrow>
+              <ul className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {data.current_revision_detail.additional_assets.map((asset, i) => {
+                  const isImageAsset = asset.content_type.startsWith("image/");
+                  return (
+                    <li
+                      key={asset.id}
+                      className="overflow-hidden border-2 border-black"
+                    >
+                      <a
+                        href={asset.file_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block"
+                        title={asset.original_filename || asset.label}
+                      >
+                        {isImageAsset ? (
+                          <img
+                            src={asset.file_url}
+                            alt={asset.label || `View ${i + 2}`}
+                            className="h-24 w-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-24 w-full flex-col items-center justify-center gap-1 bg-neutral-100">
+                            <ExternalLink className="h-4 w-4 text-neutral-500" />
+                            <span className="text-[10px] font-bold uppercase text-neutral-600">
+                              {asset.content_type.includes("pdf") ? "PDF" : "File"}
+                            </span>
+                          </div>
+                        )}
+                        <p className="truncate bg-white px-2 py-1 text-[11px] font-bold uppercase tracking-wide">
+                          {asset.label || `View ${i + 2}`}
+                        </p>
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="mt-2 text-[11px] text-neutral-600">
+                Click any thumbnail to open it full-size. Your sign-off below
+                covers the whole set.
+              </p>
+            </div>
+          ) : null}
         </Card>
 
         <div className="space-y-4">

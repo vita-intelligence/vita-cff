@@ -405,6 +405,45 @@ function CurrentArtworkCard({
           </p>
         )}
       </div>
+      {revision.additional_assets && revision.additional_assets.length > 0 ? (
+        <div className="mt-4">
+          <Eyebrow>EXTRA VIEWS ({revision.additional_assets.length})</Eyebrow>
+          <ul className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {revision.additional_assets.map((asset, i) => {
+              const isImageAsset = asset.content_type.startsWith("image/");
+              return (
+                <li key={asset.id} className="overflow-hidden border-2 border-black">
+                  <a
+                    href={asset.file_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block"
+                    title={asset.original_filename || asset.label}
+                  >
+                    {isImageAsset ? (
+                      <img
+                        src={asset.file_url}
+                        alt={asset.label || `View ${i + 2}`}
+                        className="h-24 w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-24 w-full flex-col items-center justify-center gap-1 bg-neutral-100">
+                        <FileImage className="h-4 w-4 text-neutral-500" />
+                        <span className="text-[10px] font-bold uppercase text-neutral-600">
+                          {asset.content_type.includes("pdf") ? "PDF" : "File"}
+                        </span>
+                      </div>
+                    )}
+                    <p className="truncate bg-white px-2 py-1 text-[11px] font-bold uppercase tracking-wide">
+                      {asset.label || `View ${i + 2}`}
+                    </p>
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
     </Card>
   );
 }
