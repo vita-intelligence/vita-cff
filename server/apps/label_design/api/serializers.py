@@ -527,7 +527,19 @@ class SubmitPreferencesSerializer(serializers.Serializer):
         # Decode them back into native Python before delegating to the
         # standard field validation — otherwise DRF sees a raw string
         # and reports ``not_a_list``.
-        if hasattr(data, "copy"):
+        #
+        # QueryDict trap: multipart requests give us a QueryDict where
+        # ``__setitem__`` wraps every value in a list. Assigning
+        # ``data[key] = <parsed_json_list>`` therefore stores
+        # ``[[...]]`` and DRF's ``ListField.get_value`` (which routes
+        # to ``getlist`` for QueryDicts) hands the child validator the
+        # whole list as a single "item", producing ``not_a_dict`` /
+        # ``not_a_valid_url`` errors on payloads that ARE valid. Flatten
+        # to a plain dict before writing so the JSON-decoded lists ride
+        # through untouched.
+        if hasattr(data, "getlist"):
+            data = {key: data.get(key) for key in data}
+        elif hasattr(data, "copy"):
             data = data.copy()
         else:
             data = dict(data)
