@@ -38,6 +38,12 @@ export default function ChoosePathPage({
   const projectHref = ld.data?.formulation
     ? `/portal/products/${ld.data.formulation}`
     : "/portal/products";
+  // Design-fee headline for the "Vita designs" card. Zero → "Free";
+  // non-zero renders as "£X" (or the org's currency).
+  const feeAmount = Number.parseFloat(ld.data?.design_by_us_fee_amount || "0");
+  const feeCurrency = (ld.data?.design_by_us_fee_currency || "GBP").toUpperCase();
+  const hasFee = Number.isFinite(feeAmount) && feeAmount > 0;
+  const feeDisplay = hasFee ? formatFee(feeAmount, feeCurrency) : "";
   const [selected, setSelected] = useState<PathKey | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +77,7 @@ export default function ChoosePathPage({
           title={PATH_LABELS.design_by_us}
           body="Fill in a short preferences form (brand colours, design style, inspirational examples) and our team will produce the artwork. You’ll review and approve the final design."
           nextStep="Next: brief us →"
+          priceLabel={hasFee ? `${feeDisplay} design fee` : "No extra cost"}
           selected={selected === "design_by_us"}
           onSelect={() => setSelected("design_by_us")}
         />
@@ -79,10 +86,19 @@ export default function ChoosePathPage({
           title={PATH_LABELS.design_by_customer}
           body="Use our spec-derived content block (PDF / PNG / text) in your tool of choice — Canva, Illustrator, Figma — then upload the finished artwork for our compliance review."
           nextStep="Next: get the content block →"
+          priceLabel="Free"
           selected={selected === "design_by_customer"}
           onSelect={() => setSelected("design_by_customer")}
         />
       </div>
+
+      {hasFee ? (
+        <p className="mt-4 border-2 border-black bg-amber-100 p-3 text-xs">
+          Picking &ldquo;{PATH_LABELS.design_by_us}&rdquo; adds a{" "}
+          <span className="font-bold">{feeDisplay}</span> design invoice to your
+          account. Our finance team approves it before the design work starts.
+        </p>
+      ) : null}
 
       {/* Sticky-style confirm bar at the bottom of the page. Activates
           only once a card is selected, so an accidental tap on the
@@ -134,6 +150,7 @@ function PathOption({
   title,
   body,
   nextStep,
+  priceLabel,
   selected,
   onSelect,
 }: {
@@ -141,6 +158,7 @@ function PathOption({
   title: string;
   body: string;
   nextStep: string;
+  priceLabel: string;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -167,7 +185,16 @@ function PathOption({
             <Check className="h-3.5 w-3.5" />
           </span>
         ) : null}
-        {icon}
+        <span
+          className={`inline-block border-2 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.15em] ${
+            selected
+              ? "border-black bg-white text-black"
+              : "border-black bg-paper text-black"
+          }`}
+        >
+          {priceLabel}
+        </span>
+        <div className="mt-3">{icon}</div>
         <h3 className="mt-3 text-lg font-bold">{title}</h3>
         <p
           className={`mt-2 text-sm ${
@@ -186,6 +213,22 @@ function PathOption({
       </div>
     </button>
   );
+}
+
+/** Render a decimal price with the org's currency, formatted for
+ *  the en-GB locale (portal is single-locale today). Kept local so
+ *  this page doesn't reach into the heavier company-format helpers
+ *  for what is a single line of copy. */
+function formatFee(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat("en-GB", {
+      style: "currency",
+      currency: (currency || "GBP").toUpperCase(),
+      minimumFractionDigits: amount % 1 === 0 ? 0 : 2,
+    }).format(amount);
+  } catch {
+    return `${(currency || "GBP").toUpperCase()} ${amount}`;
+  }
 }
 
 
