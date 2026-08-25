@@ -14,6 +14,7 @@ from apps.formulations.api.psp_integration import (
     LatestSpecSheetHtmlView,
     LatestValidationSheetHtmlView,
     PinManufacturingOrderOnTrialBatchView,
+    PspProductionStatusUpsertView,
 )
 
 
@@ -45,5 +46,13 @@ urlpatterns = [
         "trial-batches/pin-mo/",
         PinManufacturingOrderOnTrialBatchView.as_view(),
         name="trial-batches-pin-mo",
+    ),
+    # PSP → NPD production-status push. PSP fires this on every
+    # ``OrderWizard.notify_co_changed`` so NPD's portal always
+    # reflects the latest phase + sub-stage counters.
+    path(
+        "production-status/upsert/",
+        PspProductionStatusUpsertView.as_view(),
+        name="production-status-upsert",
     ),
 ]

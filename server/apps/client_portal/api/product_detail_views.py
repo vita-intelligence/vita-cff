@@ -93,6 +93,154 @@ def _first_sent_unsigned(
 
 
 # ---------------------------------------------------------------------------
+# Production status — PSP-mirrored, drives the portal's production
+# card (which runs in parallel with the label-design card once
+# production kicks off).
+# ---------------------------------------------------------------------------
+
+#: Portal-friendly copy for each PSP wizard phase. Falls back to
+#: ``PspProductionStatus.phase_label`` (PSP's own copy) for phases
+#: that don't have a customer-safe rewrite yet. Keep here (not on
+#: PSP) so wording can be tuned without a PSP deploy — the payload
+#: PSP sends is authoritative for the raw ``phase`` key.
+_PRODUCTION_PHASE_COPY: dict[str, dict[str, str]] = {
+    "production_planning": {
+        "label": "Preparing manufacturing order",
+        "detail": (
+            "Our production planner is preparing the manufacturing order for "
+            "your project. Once the order is drafted and internally approved, "
+            "we'll start sourcing any ingredients or components we need."
+        ),
+    },
+    "setup": {
+        "label": "Setting up your order",
+        "detail": (
+            "Our team is preparing the order in our production system — "
+            "adding the recipe, quantities, and shipping details before "
+            "handing it to the planner."
+        ),
+    },
+    "approval": {
+        "label": "Awaiting order approval",
+        "detail": (
+            "The order is queued for internal sign-off. Once approved, "
+            "we'll move it to the production planner."
+        ),
+    },
+    "awaiting_ingredients": {
+        "label": "Waiting on ingredients",
+        "detail": (
+            "We've raised purchase orders for the ingredients needed to make "
+            "your product. As soon as they land in our warehouse, production "
+            "picks them up."
+        ),
+    },
+    "picking_ingredients": {
+        "label": "Picking ingredients from warehouse",
+        "detail": (
+            "Our warehouse team is pulling the ingredients and staging them "
+            "for the production line."
+        ),
+    },
+    "in_production": {
+        "label": "In production",
+        "detail": (
+            "Your product is being manufactured. This covers pre-production "
+            "checks, blending / filling, and in-process quality tests."
+        ),
+    },
+    "closeout": {
+        "label": "Quality check and closeout",
+        "detail": (
+            "The production run is complete. Our quality team is running the "
+            "final release tests and any remaining paperwork before your "
+            "batch is signed off."
+        ),
+    },
+    "final_release": {
+        "label": "Final release check",
+        "detail": (
+            "The final release documents are being prepared — the last "
+            "compliance step before your batch is ready to ship."
+        ),
+    },
+    "awaiting_routing": {
+        "label": "Awaiting shipping details",
+        "detail": (
+            "Your batch is ready. Our logistics team is finalising the "
+            "carrier and route."
+        ),
+    },
+    "ready_to_dispatch": {
+        "label": "Preparing dispatch paperwork",
+        "detail": (
+            "The shipping paperwork is being drawn up — labels, packing "
+            "lists, and any customs docs."
+        ),
+    },
+    "awaiting_pickup": {
+        "label": "Awaiting carrier pickup",
+        "detail": "Your batch is packed and staged for the carrier to collect.",
+    },
+    "dispatched": {
+        "label": "On its way",
+        "detail": "Your batch has left our warehouse and is in transit.",
+    },
+    "delivered": {
+        "label": "Delivered",
+        "detail": "Your batch has been delivered to the shipping address.",
+    },
+    "cancelled": {
+        "label": "Cancelled",
+        "detail": "This order has been cancelled.",
+    },
+}
+
+
+def _build_production_status(*, formulation) -> dict | None:
+    """Return the customer-safe production snapshot for the portal, or
+    ``None`` when PSP hasn't pushed anything yet (i.e. the project
+    isn't in production).
+    """
+
+    row = getattr(formulation, "psp_production_status", None)
+    if row is None:
+        return None
+    if not (row.phase or "").strip():
+        # Row exists but PSP hasn't populated a phase — treat as no
+        # data (shouldn't happen in normal flow; guards a partial
+        # upsert if PSP is mid-migration).
+        return None
+
+    copy = _PRODUCTION_PHASE_COPY.get(row.phase, {})
+    return {
+        "phase": row.phase,
+        "phase_label": copy.get("label") or row.phase_label or row.phase,
+        "phase_detail": copy.get("detail") or "",
+        # Forward PSP's next-action fields raw — the FE renders them
+        # under a "What our team is doing" heading. Empty when the
+        # phase has no explicit next-action (terminal states).
+        "next_action_title": row.next_action_title or "",
+        "next_action_detail": row.next_action_detail or "",
+        "blocker_count": row.blocker_count,
+        # Sub-stage counters — the FE uses these to pick between
+        # "PO drafting" / "PO ordered" / "PO delivered" sub-copy for
+        # the ``awaiting_ingredients`` phase, and similar for later
+        # phases. Everything defaults to 0 so the FE can null-safely
+        # compare.
+        "line_count": row.line_count,
+        "mo_count": row.mo_count,
+        "lines_awaiting_mo": row.lines_awaiting_mo,
+        "mos_awaiting_po_send": row.mos_awaiting_po_send,
+        "mos_awaiting_delivery": row.mos_awaiting_delivery,
+        "mos_in_production": row.mos_in_production,
+        "mos_awaiting_closeout": row.mos_awaiting_closeout,
+        "psp_updated_at": _iso(row.psp_updated_at),
+        "pushed_at": _iso(row.pushed_at),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Pipeline derivation — eight ordered stages
 # ---------------------------------------------------------------------------
 
@@ -1311,6 +1459,18 @@ class PortalProductDetailView(PortalAPIView):
                 # on projects that don't have a proposal yet (chat
                 # isn't available until sales sends one).
                 "primary_proposal": _primary_proposal_ref(proposals),
+                # PSP-derived production status. Populated the moment
+                # PSP fires an ``OrderWizard.notify_co_changed`` push
+                # (every MO / PO / session / closeout state change).
+                # Null when the project hasn't reached production on
+                # PSP yet — the portal then hides the production card
+                # and shows only the pre-production roadmap. Once
+                # production starts, this + the label-design card
+                # render side-by-side so the customer sees both
+                # concurrent workstreams.
+                "production_status": _build_production_status(
+                    formulation=formulation,
+                ),
             }
         )
 
