@@ -217,6 +217,26 @@ class PortalLabelDesignPreferencesView(PortalAPIView):
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
 
+        # Declaration attribution — the FE may or may not send
+        # ``declaration_name`` / ``declaration_position``. NPD's own
+        # portal omits them (its rationale: the client account
+        # already carries identity), so the payload defaults to "".
+        # web-site's portal captures both as first-class inputs.
+        # Prefer the payload when it's populated; otherwise stamp
+        # from the authenticated client account so the compliance
+        # audit trail always names a person, no matter which portal
+        # the customer used.
+        account = request.user
+        customer = getattr(account, "customer", None)
+        default_name = (
+            (getattr(customer, "name", "") or "").strip()
+            or (getattr(customer, "company", "") or "").strip()
+        )
+        declaration_name = (
+            payload["declaration_name"].strip() or default_name
+        )
+        declaration_position = payload["declaration_position"].strip()
+
         preferences = LabelDesignPreferences.objects.create(
             submitted_by_client=request.user,
             company_name=payload["company_name"],
@@ -231,8 +251,8 @@ class PortalLabelDesignPreferencesView(PortalAPIView):
             additional_comments=payload["additional_comments"],
             declaration_signed_at=timezone.now(),
             declaration_signature_image=payload["declaration_signature_image"],
-            declaration_name=payload["declaration_name"],
-            declaration_position=payload["declaration_position"],
+            declaration_name=declaration_name,
+            declaration_position=declaration_position,
             raw_payload=request.data
             if isinstance(request.data, dict)
             else dict(request.data),
