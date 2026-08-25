@@ -34,6 +34,7 @@ from apps.trial_batches.models import TrialBatch
 # fields to defensive lengths.
 _MO_STRING_KEYS_MAX = {
     "uuid": 40,
+    "parent_mo_uuid": 40,
     "code": 40,
     "item_name": 200,
     "stage": 32,
