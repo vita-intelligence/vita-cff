@@ -296,6 +296,11 @@ export interface PortalSpecListItem {
   readonly code: string;
   readonly document_kind: string;
   readonly status: string;
+  //: Powers the "back to project" arrow — from a spec the customer
+  //: should always land on the project detail, not the specs list
+  //: they may not have drilled in from. Null on legacy rows the
+  //: server can't resolve back to a formulation.
+  readonly formulation_id: string | null;
   readonly formulation_name: string;
   readonly formulation_version_number: number | null;
   readonly has_signature: boolean;

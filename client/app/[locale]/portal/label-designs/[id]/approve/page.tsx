@@ -88,12 +88,20 @@ export default function CustomerApprovePage({
     }
   };
 
+  // Route the back link at the parent project. While the label
+  // design detail is fetching we fall back to the products index so
+  // the arrow never points at a dead URL.
+  const projectHref = data?.formulation
+    ? `/portal/products/${data.formulation}`
+    : "/portal/products";
+
   return (
     <PortalShell active="products">
       <PageHeader
         eyebrow="APPROVE LABEL"
         title="Review and sign off"
         subtitle="Our team’s scientist + director have approved the artwork. Once you sign, this label is locked in for production."
+        back={{ href: projectHref, label: "Back to project" }}
       />
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="overflow-hidden lg:col-span-2">

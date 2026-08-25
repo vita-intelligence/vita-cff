@@ -9,7 +9,7 @@ import {
   PortalShell,
 } from "@/components/portal/brutalist";
 import { useRouter } from "@/i18n/navigation";
-import { usePortalReject } from "@/services/label-design";
+import { usePortalLabelDesign, usePortalReject } from "@/services/label-design";
 
 
 export default function CustomerRejectPage({
@@ -20,6 +20,13 @@ export default function CustomerRejectPage({
   const { id } = use(params);
   const router = useRouter();
   const reject = usePortalReject(id);
+  // Fetch the label so the back link routes to the parent project.
+  // Falls back to /portal/products while the query is in flight so
+  // the arrow never points at a dead URL.
+  const ld = usePortalLabelDesign(id);
+  const projectHref = ld.data?.formulation
+    ? `/portal/products/${ld.data.formulation}`
+    : "/portal/products";
 
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +51,7 @@ export default function CustomerRejectPage({
         eyebrow="REQUEST CHANGES"
         title="Tell us what to fix"
         subtitle="Our team will revise the artwork and re-submit it for your approval."
+        back={{ href: projectHref, label: "Back to project" }}
       />
       <form onSubmit={onSubmit} className="space-y-4">
         <Card>

@@ -200,12 +200,14 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
         }
         subtitle={spec.code ? `Reference: ${spec.code}` : undefined}
         back={
-          spec.proposal
-            ? {
-                href: `/portal/proposals/${spec.proposal.id}`,
-                label: `Proposal ${spec.proposal.code}`,
-              }
-            : { href: "/portal/specs", label: "Specifications" }
+          spec.formulation_id
+            ? { href: `/portal/products/${spec.formulation_id}`, label: "Back to project" }
+            : spec.proposal
+              ? {
+                  href: `/portal/proposals/${spec.proposal.id}`,
+                  label: `Proposal ${spec.proposal.code}`,
+                }
+              : { href: "/portal/specs", label: "Specifications" }
         }
         actions={
           <>
