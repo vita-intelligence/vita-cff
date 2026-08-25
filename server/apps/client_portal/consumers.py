@@ -118,3 +118,29 @@ def _resolve_org_id(client_account) -> str | None:
     if not org_id:
         return None
     return str(org_id)
+
+
+def broadcast_production_status_changed(formulation) -> None:
+    """Fan out a ``production_status.changed`` event on the portal
+    feed so the customer's tab invalidates the project-detail query
+    without polling.
+
+    Called from :class:`apps.formulations.api.psp_integration.PspProductionStatusUpsertView`
+    on every PSP push — one broadcast per upsert, keyed by the
+    formulation uuid so the FE hook can match it to the currently-
+    open project tab. Silent-degrade wraps this at the callsite;
+    a Channels-less deployment simply skips the fanout.
+    """
+
+    from apps.organizations.live import broadcast_org_event_now
+
+    organization_id = getattr(formulation, "organization_id", None)
+    if not organization_id:
+        return
+
+    broadcast_org_event_now(
+        organization_id=str(organization_id),
+        entity="psp_production_status",
+        entity_id=str(getattr(formulation, "id", "")),
+        action="updated",
+    )
