@@ -262,6 +262,7 @@ class SamplePricingConfigReadSerializer(serializers.ModelSerializer):
             "free_samples_included",
             "price_per_extra_sample",
             "currency_code",
+            "label_design_fee_amount",
             "discount_tiers",
             "updated_at",
         )
@@ -289,6 +290,12 @@ class SamplePricingConfigWriteSerializer(serializers.Serializer):
     )
     currency_code = serializers.CharField(
         allow_blank=True, max_length=3, required=False,
+    )
+    #: One-off design fee charged when a customer picks the
+    #: "Vita designs" path on the label workflow. 0 disables the
+    #: gate entirely — those customers go straight to the brief step.
+    label_design_fee_amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=0, required=False,
     )
     tiers = SamplePricingDiscountTierWriteSerializer(
         many=True, required=False,

@@ -864,6 +864,9 @@ class SamplePricingConfigView(APIView):
             price_per_extra_sample=payload.validated_data["price_per_extra_sample"],
             currency_code=payload.validated_data.get("currency_code", ""),
             tiers=payload.validated_data.get("tiers", []),
+            label_design_fee_amount=payload.validated_data.get(
+                "label_design_fee_amount"
+            ),
         )
         config.refresh_from_db()
         return Response(SamplePricingConfigReadSerializer(config).data)

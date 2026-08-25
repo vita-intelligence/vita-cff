@@ -159,17 +159,41 @@ class PortalLabelDesignChoosePathView(PortalAPIView):
         ld.design_path = path
         ld.save(update_fields=["design_path", "updated_at"])
 
-        target = (
-            LabelDesignStatus.DESIGN_PREFERENCES_PENDING
-            if path == LabelDesignPath.DESIGN_BY_US
-            else LabelDesignStatus.DESIGN_IN_PROGRESS
-        )
+        # design_by_us goes through a paid gate when the org has a
+        # ``label_design_fee_amount > 0``. Creating the payment is
+        # part of the same transaction as the transition so a hiccup
+        # rolls both back — the customer can retry cleanly instead of
+        # ending up in DESIGN_FEE_PENDING with no invoice on finance's
+        # queue.
+        if path == LabelDesignPath.DESIGN_BY_US:
+            from apps.payments.services import (
+                ensure_label_design_payment_for_formulation,
+            )
+
+            payment = ensure_label_design_payment_for_formulation(
+                formulation=ld.formulation,
+                actor=None,
+            )
+            target = (
+                LabelDesignStatus.DESIGN_FEE_PENDING
+                if payment is not None
+                else LabelDesignStatus.DESIGN_PREFERENCES_PENDING
+            )
+            notes = (
+                "customer chose design_by_us — LABEL_DESIGN fee invoice raised"
+                if payment is not None
+                else "customer chose design_by_us — no design fee configured, skipping gate"
+            )
+        else:
+            target = LabelDesignStatus.DESIGN_IN_PROGRESS
+            notes = f"customer chose {path}"
+
         try:
             transition_status(
                 ld,
                 to_status=target,
                 actor_client=request.user,
-                notes=f"customer chose {path}",
+                notes=notes,
             )
         except InvalidStatusTransition as exc:
             raise ValidationError({"detail": str(exc), "code": "invalid_transition"})

@@ -37,6 +37,13 @@ class LabelDesignStatus(models.TextChoices):
 
     PAYMENT_PENDING = "payment_pending", _("Payment pending")
     LABEL_PATH_PENDING = "label_path_pending", _("Awaiting design path")
+    #: DESIGN_BY_US only — created after the customer picks the
+    #: "you design" path, when the org has a non-zero
+    #: ``label_design_fee_amount`` configured. A
+    #: ``Payment(kind=LABEL_DESIGN)`` row is fired at the same
+    #: transition; finance approving that payment auto-advances the
+    #: workflow to ``DESIGN_PREFERENCES_PENDING``.
+    DESIGN_FEE_PENDING = "design_fee_pending", _("Awaiting design fee")
     DESIGN_PREFERENCES_PENDING = (
         "design_preferences_pending",
         _("Awaiting design preferences"),
@@ -69,8 +76,21 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     ),
     LabelDesignStatus.LABEL_PATH_PENDING: frozenset(
         {
+            #: DESIGN_BY_US with a configured design fee lands here
+            #: while finance approves the LABEL_DESIGN payment.
+            LabelDesignStatus.DESIGN_FEE_PENDING,
+            #: DESIGN_BY_US with a 0/unset fee (or DESIGN_BY_CUSTOMER
+            #: on the design-brief-required org policy) can jump
+            #: straight to the brief step.
             LabelDesignStatus.DESIGN_PREFERENCES_PENDING,
+            #: DESIGN_BY_CUSTOMER is free — go straight to design.
             LabelDesignStatus.DESIGN_IN_PROGRESS,
+            LabelDesignStatus.ON_HOLD,
+        }
+    ),
+    LabelDesignStatus.DESIGN_FEE_PENDING: frozenset(
+        {
+            LabelDesignStatus.DESIGN_PREFERENCES_PENDING,
             LabelDesignStatus.ON_HOLD,
         }
     ),
@@ -116,6 +136,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
             # here so the validator accepts the move.
             LabelDesignStatus.PAYMENT_PENDING,
             LabelDesignStatus.LABEL_PATH_PENDING,
+            LabelDesignStatus.DESIGN_FEE_PENDING,
             LabelDesignStatus.DESIGN_PREFERENCES_PENDING,
             LabelDesignStatus.DESIGN_IN_PROGRESS,
             LabelDesignStatus.SCIENTIST_REVIEW,

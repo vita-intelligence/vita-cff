@@ -305,6 +305,20 @@ class SamplePricingConfig(models.Model):
         _("currency code"), max_length=3, blank=True, default="",
     )
 
+    #: One-off fee charged when the customer picks ``design_by_us`` on
+    #: the label workflow. Approval of the resulting
+    #: ``Payment(kind=LABEL_DESIGN)`` unlocks the design brief step.
+    #: 0 or unset skips the fee gate entirely — the customer's choice
+    #: goes straight to ``DESIGN_PREFERENCES_PENDING``. Currency
+    #: shares ``currency_code`` above so finance only manages one
+    #: currency knob for the module.
+    label_design_fee_amount = models.DecimalField(
+        _("label-design fee"),
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+    )
+
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(
