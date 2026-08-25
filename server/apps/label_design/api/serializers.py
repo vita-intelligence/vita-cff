@@ -188,6 +188,12 @@ class LabelDesignReadSerializer(serializers.ModelSerializer):
     )
     hold_reason = serializers.SerializerMethodField()
     hold_started_at = serializers.SerializerMethodField()
+    #: Design-fee headline for the "Vita designs" card on the
+    #: choose-path step — customers see the price BEFORE they commit
+    #: to the design_by_us lane. Zero when the org hasn't set a fee;
+    #: the portal reads that as "free" and hides the price chip.
+    design_by_us_fee_amount = serializers.SerializerMethodField()
+    design_by_us_fee_currency = serializers.SerializerMethodField()
 
     class Meta:
         model = LabelDesign
@@ -212,10 +218,47 @@ class LabelDesignReadSerializer(serializers.ModelSerializer):
             "customer_approved_at",
             "hold_reason",
             "hold_started_at",
+            "design_by_us_fee_amount",
+            "design_by_us_fee_currency",
             "created_at",
             "updated_at",
         )
         read_only_fields = fields
+
+    def get_design_by_us_fee_amount(self, obj) -> str:
+        """Decimal string ("0.00" when unset) so the FE doesn't have
+        to deal with JS number precision on money. Reads
+        ``SamplePricingConfig.label_design_fee_amount`` scoped to
+        the label design's organisation."""
+
+        from apps.payments.services import get_or_create_sample_pricing_config
+
+        try:
+            cfg = get_or_create_sample_pricing_config(obj.organization)
+            return str(cfg.label_design_fee_amount or 0)
+        except Exception:  # noqa: BLE001 — never break the detail read
+            return "0"
+
+    def get_design_by_us_fee_currency(self, obj) -> str:
+        """ISO-4217 code driving the currency chip on the card. Falls
+        back to the org's company currency when the pricing config
+        row has no explicit currency (matches the
+        ``ensure_label_design_payment_for_formulation`` fallback)."""
+
+        from apps.payments.services import get_or_create_sample_pricing_config
+
+        try:
+            cfg = get_or_create_sample_pricing_config(obj.organization)
+            explicit = (cfg.currency_code or "").strip()
+            if explicit:
+                return explicit.upper()[:3]
+            company_ccy = (
+                getattr(getattr(obj.organization, "company", None), "currency_code", "")
+                or ""
+            ).strip()
+            return (company_ccy or "GBP").upper()[:3]
+        except Exception:  # noqa: BLE001
+            return "GBP"
 
     def get_hold_reason(self, obj) -> str:
         """Notes recorded on the most-recent ON_HOLD transition,

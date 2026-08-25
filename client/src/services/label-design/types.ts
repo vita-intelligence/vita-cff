@@ -118,6 +118,12 @@ export interface LabelDesignDto {
   //: paused, not just the bare status chip.
   readonly hold_reason: string;
   readonly hold_started_at: string | null;
+  //: Design-fee headline surfaced on the choose-path card so the
+  //: customer sees the cost of the "Vita designs" lane BEFORE they
+  //: commit. Decimal string ("0" when the org hasn't set a fee) —
+  //: FE reads 0 as free and hides the price chip.
+  readonly design_by_us_fee_amount: string;
+  readonly design_by_us_fee_currency: string;
   readonly created_at: string;
   readonly updated_at: string;
 }
