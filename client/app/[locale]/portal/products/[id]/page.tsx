@@ -19,6 +19,10 @@ import { env } from "@/config/env";
 
 import { SampleSelectionCard } from "./sample-selection-card";
 import { TrialBatchCycleCard } from "./trial-batch-cycle-card";
+import {
+  ProductionSection,
+  type ProductionMoRoadmap,
+} from "./production-section";
 
 
 type StageState = "done" | "current" | "future" | "skipped";
@@ -71,6 +75,13 @@ interface Cancellation {
 }
 
 
+interface ProductionStatusPayload {
+  readonly phase: string;
+  readonly phase_label: string;
+  readonly phase_detail: string;
+  readonly manufacturing_orders: readonly ProductionMoRoadmap[];
+}
+
 interface ProductDetail {
   readonly product: {
     readonly id: string;
@@ -83,6 +94,10 @@ interface ProductDetail {
   readonly next_action: NextAction | null;
   readonly documents: ReadonlyArray<DocumentEntry>;
   readonly timeline: ReadonlyArray<TimelineEntry>;
+  /** PSP-mirrored production snapshot. ``null`` until production
+   *  kicks off; the ProductionSection renders nothing in that
+   *  case. */
+  readonly production_status: ProductionStatusPayload | null;
 }
 
 
@@ -186,6 +201,23 @@ export default async function PortalProductDetailPage({
         <Eyebrow>Your journey</Eyebrow>
         <Stepper stages={data.pipeline} />
       </section>
+
+      {/* Production roadmap — mirrors PSP's 8-stage wizard 1:1 so
+          the customer sees exactly which shop-floor stage each of
+          their batches is on. Renders nothing when the PSP push
+          hasn't landed manufacturing_orders yet (project still in
+          an earlier phase). */}
+      {data.production_status &&
+      data.production_status.manufacturing_orders.length > 0 ? (
+        <section className="mb-10">
+          <Eyebrow>Production</Eyebrow>
+          <div className="mt-3">
+            <ProductionSection
+              mos={data.production_status.manufacturing_orders}
+            />
+          </div>
+        </section>
+      ) : null}
 
       {data.documents.length > 0 ? (
         <section className="mb-10">
