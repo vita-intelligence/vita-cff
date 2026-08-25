@@ -1420,6 +1420,8 @@ function SubmitForReviewCard({
 }
 
 
+type ChecklistAnswer = "pass" | "fail" | null;
+
 function ReviewForm({
   kind,
   orgId,
@@ -1435,32 +1437,100 @@ function ReviewForm({
   const director = useSubmitDirectorReview(orgId, labelDesignId);
   const mutation = kind === "scientist" ? scientist : director;
 
-  const [responses, setResponses] = useState<Record<string, { pass: boolean; comment: string }>>(
-    () =>
-      Object.fromEntries(
-        CHECKLIST_ITEMS.map((item) => [item.key, { pass: true, comment: "" }]),
-      ),
+  // Every item starts as ``null`` — the reviewer MUST actively pick
+  // Pass or Fail. Prevents the "submit with defaults, nothing was
+  // actually reviewed" failure mode the previous version had.
+  const [responses, setResponses] = useState<
+    Record<string, { answer: ChecklistAnswer; comment: string }>
+  >(() =>
+    Object.fromEntries(
+      CHECKLIST_ITEMS.map((item) => [item.key, { answer: null, comment: "" }]),
+    ),
   );
   const [finalComments, setFinalComments] = useState("");
-  const [outcome, setOutcome] = useState<"approved" | "requires_revision">(
-    "approved",
-  );
   const [signature, setSignature] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  // Which item first tripped the validator — drives auto-scroll so
+  // the reviewer isn't hunting for what's missing.
+  const [errorKey, setErrorKey] = useState<string | null>(null);
+
+  // Progress + auto-outcome derivation. Auto-set to "requires
+  // revision" the moment any item is failed; auto-set to "approve"
+  // when every item passes. The reviewer can still override before
+  // submitting.
+  const answered = Object.values(responses).filter((r) => r.answer !== null).length;
+  const failed = Object.values(responses).filter((r) => r.answer === "fail").length;
+  const passed = Object.values(responses).filter((r) => r.answer === "pass").length;
+  const total = CHECKLIST_ITEMS.length;
+  const hasAnyFail = failed > 0;
+  const allAnswered = answered === total;
+  const failedWithoutComment = Object.entries(responses).find(
+    ([, r]) => r.answer === "fail" && !r.comment.trim(),
+  );
+
+  const [outcomeOverride, setOutcomeOverride] = useState<
+    "approved" | "requires_revision" | null
+  >(null);
+  const effectiveOutcome: "approved" | "requires_revision" =
+    outcomeOverride ?? (hasAnyFail ? "requires_revision" : "approved");
+
+  const patch = (key: string, patch: Partial<{ answer: ChecklistAnswer; comment: string }>) => {
+    setErr(null);
+    setErrorKey(null);
+    setResponses((cur) => ({
+      ...cur,
+      [key]: { ...cur[key]!, ...patch },
+    }));
+  };
+
+  const scrollToItem = (key: string) => {
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-checklist-item="${key}"]`);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr(null);
+    setErrorKey(null);
+    // Gate 1: every item must be answered.
+    if (!allAnswered) {
+      const firstUnanswered = CHECKLIST_ITEMS.find(
+        (i) => responses[i.key]?.answer === null,
+      );
+      if (firstUnanswered) {
+        setErrorKey(firstUnanswered.key);
+        setErr(
+          `${total - answered} item${total - answered === 1 ? "" : "s"} still unanswered — every checklist item needs Pass or Fail.`,
+        );
+        scrollToItem(firstUnanswered.key);
+        return;
+      }
+    }
+    // Gate 2: failed items must carry a reason.
+    if (failedWithoutComment) {
+      setErrorKey(failedWithoutComment[0]);
+      setErr("Every failed item needs a short reason so the designer knows what to fix.");
+      scrollToItem(failedWithoutComment[0]);
+      return;
+    }
+    // Gate 3: final comments always required (regulatory).
     if (!finalComments.trim()) {
-      setErr("Final comments are required (regulatory).");
+      setErr("Final comments are required — a one-liner summary for the audit trail.");
+      return;
+    }
+    // Gate 4: signature required (regulatory sign-off).
+    if (!signature.trim()) {
+      setErr("Please sign to record your review.");
       return;
     }
     try {
       const body = {
-        outcome,
+        outcome: effectiveOutcome,
         checklist: CHECKLIST_ITEMS.map((item) => ({
           item_key: item.key,
-          pass_check: responses[item.key]?.pass ?? true,
+          pass_check: responses[item.key]?.answer === "pass",
           comment: responses[item.key]?.comment ?? "",
         })),
         final_comments: finalComments,
@@ -1470,119 +1540,270 @@ function ReviewForm({
       onMutate();
     } catch (e) {
       setErr(
-        (e as { response?: { data?: { detail?: string } } })?.response?.data
-          ?.detail ?? "Submission failed.",
+        (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+          "Submission failed.",
       );
     }
   };
 
   return (
-    <form
-      onSubmit={onSubmit}
-      className="rounded-2xl bg-ink-0 p-3 ring-1 ring-ink-200"
-    >
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-700">
-        {kind === "scientist" ? "Scientist review" : "Director review"}
-      </h3>
+    <form onSubmit={onSubmit} className="rounded-2xl bg-ink-0 p-4 ring-1 ring-ink-200">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-ink-1000">
+          {kind === "scientist" ? "Scientist review" : "Director review"}
+        </h3>
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+          MA-PD-B-012
+        </p>
+      </div>
 
-      <div className="mt-2 max-h-[420px] overflow-y-auto pr-1">
+      {/* Progress strip — always visible at the top so the reviewer
+          sees how far they've gone as they scroll through sections. */}
+      <div className="mt-3 rounded-xl border border-ink-200 bg-ink-50 p-3">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="font-semibold text-ink-1000">
+            {answered} of {total} answered
+          </span>
+          <span className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+              <Check className="h-2.5 w-2.5" /> {passed} pass
+            </span>
+            <span
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                failed > 0 ? "bg-rose-100 text-rose-800" : "bg-ink-100 text-ink-500"
+              }`}
+            >
+              <AlertCircle className="h-2.5 w-2.5" /> {failed} flagged
+            </span>
+          </span>
+        </div>
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-ink-200">
+          <div
+            className={`h-full transition-all ${hasAnyFail ? "bg-rose-500" : "bg-emerald-500"}`}
+            style={{ width: `${(answered / total) * 100}%` }}
+          />
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-4">
         {CHECKLIST_SECTIONS.map((section) => {
           const items = CHECKLIST_ITEMS.filter((i) => i.section === section.key);
           if (items.length === 0) return null;
+          const sectionAnswered = items.filter((i) => responses[i.key]?.answer !== null).length;
+          const sectionFailed = items.filter((i) => responses[i.key]?.answer === "fail").length;
           return (
-            <details
-              key={section.key}
-              open
-              className="mb-2 border-t border-ink-100 pt-2 first:border-t-0 first:pt-0"
-            >
-              <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wide text-ink-500">
-                {section.label}
-              </summary>
-              <ul className="mt-2 space-y-1.5">
+            <section key={section.key}>
+              <header className="flex items-center justify-between border-b border-ink-100 pb-1">
+                <h4 className="text-[11px] font-bold uppercase tracking-wider text-ink-700">
+                  {section.label}
+                </h4>
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                    sectionAnswered === items.length && sectionFailed === 0
+                      ? "bg-emerald-100 text-emerald-800"
+                      : sectionFailed > 0
+                        ? "bg-rose-100 text-rose-800"
+                        : "bg-ink-100 text-ink-600"
+                  }`}
+                >
+                  {sectionAnswered}/{items.length}
+                </span>
+              </header>
+              <ul className="mt-2 space-y-2">
                 {items.map((item) => {
-                  const res = responses[item.key];
+                  const res = responses[item.key]!;
+                  const isFail = res.answer === "fail";
+                  const needsComment = isFail && !res.comment.trim();
+                  const highlighted = errorKey === item.key;
                   return (
-                    <li key={item.key} className="rounded bg-ink-50/50 px-2 py-1.5">
-                      <div className="flex items-start justify-between gap-2">
-                        <span className="text-[11px] text-ink-1000">{item.label}</span>
-                        <select
-                          value={res?.pass ? "yes" : "no"}
-                          onChange={(e) =>
-                            setResponses({
-                              ...responses,
-                              [item.key]: {
-                                pass: e.target.value === "yes",
-                                comment: res?.comment ?? "",
-                              },
-                            })
-                          }
-                          className="shrink-0 rounded border border-ink-200 px-1 py-0.5 text-[11px]"
-                        >
-                          <option value="yes">Pass</option>
-                          <option value="no">Fail</option>
-                        </select>
+                    <li
+                      key={item.key}
+                      data-checklist-item={item.key}
+                      className={`rounded-xl border p-3 transition-colors ${
+                        highlighted
+                          ? "border-rose-400 bg-rose-50/70 ring-2 ring-rose-200"
+                          : isFail
+                            ? "border-rose-200 bg-rose-50/30"
+                            : res.answer === "pass"
+                              ? "border-emerald-200 bg-emerald-50/30"
+                              : "border-ink-200 bg-ink-0"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold text-ink-1000">{item.label}</p>
+                          {item.help ? (
+                            <p className="mt-0.5 text-[10px] text-ink-500">{item.help}</p>
+                          ) : null}
+                        </div>
+                        <div className="flex shrink-0 gap-1">
+                          <button
+                            type="button"
+                            onClick={() => patch(item.key, { answer: "pass" })}
+                            aria-pressed={res.answer === "pass"}
+                            className={`inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-[11px] font-bold transition-colors ${
+                              res.answer === "pass"
+                                ? "bg-emerald-600 text-white shadow-sm"
+                                : "bg-ink-0 text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-emerald-50"
+                            }`}
+                          >
+                            <Check className="h-3 w-3" /> Pass
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => patch(item.key, { answer: "fail" })}
+                            aria-pressed={res.answer === "fail"}
+                            className={`inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-[11px] font-bold transition-colors ${
+                              res.answer === "fail"
+                                ? "bg-rose-600 text-white shadow-sm"
+                                : "bg-ink-0 text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-rose-50"
+                            }`}
+                          >
+                            <AlertCircle className="h-3 w-3" /> Fail
+                          </button>
+                        </div>
                       </div>
-                      <input
-                        type="text"
-                        placeholder="Comment (optional)"
-                        value={res?.comment ?? ""}
-                        onChange={(e) =>
-                          setResponses({
-                            ...responses,
-                            [item.key]: {
-                              pass: res?.pass ?? true,
-                              comment: e.target.value,
-                            },
-                          })
-                        }
-                        className="mt-1 w-full rounded border border-ink-200 px-1.5 py-0.5 text-[11px]"
-                      />
+                      {res.answer !== null ? (
+                        <div className="mt-2">
+                          <input
+                            type="text"
+                            value={res.comment}
+                            onChange={(e) => patch(item.key, { comment: e.target.value })}
+                            placeholder={
+                              isFail
+                                ? "What needs to change? (required)"
+                                : "Optional comment"
+                            }
+                            className={`w-full rounded-md bg-ink-0 px-2 py-1 text-[11px] outline-none ring-1 ring-inset transition-colors focus:ring-2 focus:ring-orange-400 ${
+                              needsComment
+                                ? "ring-rose-300"
+                                : "ring-ink-200"
+                            }`}
+                          />
+                          {needsComment ? (
+                            <p className="mt-0.5 text-[10px] font-semibold text-rose-600">
+                              Add a short reason so the designer knows what to fix.
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </li>
                   );
                 })}
               </ul>
-            </details>
+            </section>
           );
         })}
       </div>
 
-      <label className="mt-2 block text-[10px] font-semibold uppercase tracking-wide text-ink-700">
-        Final comments (required)
+      <label className="mt-4 block">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-700">
+          Final comments (required)
+        </span>
+        <textarea
+          value={finalComments}
+          onChange={(e) => {
+            setFinalComments(e.target.value);
+            setErr(null);
+          }}
+          rows={3}
+          placeholder="Summary of your findings — one paragraph that lives on the audit record."
+          className="mt-1 w-full rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-800 outline-none ring-1 ring-inset ring-ink-200 focus:ring-2 focus:ring-orange-400"
+        />
       </label>
-      <textarea
-        value={finalComments}
-        onChange={(e) => setFinalComments(e.target.value)}
-        rows={3}
-        className="mt-1 w-full rounded border border-ink-200 px-2 py-1 text-xs"
-      />
 
-      <SignatureField
-        label="Sign"
-        value={signature}
-        onChange={setSignature}
-        ariaLabel="Scientist signature"
-      />
-
-      <div className="mt-2 flex items-center gap-2">
-        <select
-          value={outcome}
-          onChange={(e) =>
-            setOutcome(e.target.value as "approved" | "requires_revision")
-          }
-          className="rounded border border-ink-200 px-2 py-1.5 text-xs"
-        >
-          <option value="approved">Approve</option>
-          <option value="requires_revision">Request revisions</option>
-        </select>
-        <button
-          type="submit"
-          disabled={mutation.isPending}
-          className="rounded-md bg-ink-1000 px-3 py-1.5 text-xs font-semibold text-ink-0 hover:bg-ink-900 disabled:opacity-50"
-        >
-          {mutation.isPending ? "Submitting…" : "Submit review"}
-        </button>
+      <div className="mt-3">
+        <SignatureField
+          label="Sign"
+          value={signature}
+          onChange={(v) => {
+            setSignature(v);
+            setErr(null);
+          }}
+          ariaLabel={`${kind === "scientist" ? "Scientist" : "Director"} signature`}
+        />
       </div>
-      {err ? <p className="mt-2 text-xs text-danger">{err}</p> : null}
+
+      {/* Outcome — big segmented buttons; auto-selected based on the
+          checklist state but the reviewer can still override. */}
+      <div className="mt-4">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-700">
+          Outcome
+        </p>
+        <div className="mt-1 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setOutcomeOverride("approved")}
+            aria-pressed={effectiveOutcome === "approved"}
+            className={`flex flex-col items-start gap-0.5 rounded-lg border-2 p-2.5 text-left transition-colors ${
+              effectiveOutcome === "approved"
+                ? "border-emerald-500 bg-emerald-50"
+                : "border-ink-200 bg-ink-0 hover:border-emerald-300"
+            }`}
+          >
+            <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-800">
+              <Check className="h-3 w-3" /> Approve
+            </span>
+            <span className="text-[10px] text-ink-600">
+              Everything checks out. Advance the workflow.
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setOutcomeOverride("requires_revision")}
+            aria-pressed={effectiveOutcome === "requires_revision"}
+            className={`flex flex-col items-start gap-0.5 rounded-lg border-2 p-2.5 text-left transition-colors ${
+              effectiveOutcome === "requires_revision"
+                ? "border-rose-500 bg-rose-50"
+                : "border-ink-200 bg-ink-0 hover:border-rose-300"
+            }`}
+          >
+            <span className="flex items-center gap-1 text-[11px] font-bold text-rose-800">
+              <AlertCircle className="h-3 w-3" /> Request revisions
+            </span>
+            <span className="text-[10px] text-ink-600">
+              Send back to the designer for fixes.
+            </span>
+          </button>
+        </div>
+        {hasAnyFail && effectiveOutcome === "approved" ? (
+          <p className="mt-1 text-[10px] font-semibold text-amber-700">
+            Heads-up: {failed} item{failed === 1 ? "" : "s"} flagged as Fail. Are you sure this
+            should advance?
+          </p>
+        ) : null}
+      </div>
+
+      {err ? (
+        <p className="mt-3 flex items-start gap-1.5 rounded-md bg-rose-50 px-2.5 py-2 text-[11px] font-semibold text-rose-700 ring-1 ring-inset ring-rose-200">
+          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{err}</span>
+        </p>
+      ) : null}
+
+      <button
+        type="submit"
+        disabled={mutation.isPending}
+        className={`mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-xs font-bold uppercase tracking-wide text-white transition-colors disabled:opacity-50 ${
+          effectiveOutcome === "approved"
+            ? "bg-emerald-600 hover:bg-emerald-700"
+            : "bg-rose-600 hover:bg-rose-700"
+        }`}
+      >
+        {mutation.isPending ? (
+          <>
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Submitting…
+          </>
+        ) : effectiveOutcome === "approved" ? (
+          <>
+            <Check className="h-3.5 w-3.5" /> Approve & submit
+          </>
+        ) : (
+          <>
+            <AlertCircle className="h-3.5 w-3.5" /> Request revisions
+          </>
+        )}
+      </button>
     </form>
   );
 }
