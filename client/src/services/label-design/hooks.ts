@@ -255,8 +255,11 @@ export function useAssignLabelDesigner(orgId: string, ldId: string) {
 export function useUploadLabelArtwork(orgId: string, ldId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { artwork: File; notes?: string }) =>
-      uploadLabelArtwork(orgId, ldId, payload),
+    mutationFn: (payload: {
+      artwork: File;
+      notes?: string;
+      additionalFiles?: ReadonlyArray<{ file: File; label: string }>;
+    }) => uploadLabelArtwork(orgId, ldId, payload),
     onSuccess: () => _invalidateLabelDesign(qc, orgId, ldId),
   });
 }
