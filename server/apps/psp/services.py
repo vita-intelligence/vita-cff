@@ -2674,6 +2674,30 @@ def sync_customer_order_to_psp(
         # CFF-unlink sync: wipe all cff_* fields on the CO.
         payload["cff_state"] = "cleared"
 
+    # Payments mirror — every save re-ships the full list so PSP's
+    # invoice card reflects the current state of the finance queue
+    # for this project (deposit / additional_samples / label_design
+    # / final, in the order they landed). Empty list = "no finance
+    # activity yet". PSP replaces its child rows to match — anything
+    # in PSP but not in this list gets removed. See
+    # ``_payments_for_formulation`` for the per-row shape.
+    payload["payments"] = _payments_for_formulation(formulation)
+
+    # Label supplementary artwork (back / side / bottle mockup views)
+    # from the CURRENT revision. The primary PDF + PNG preview URLs
+    # already ride the proposal-merge label state block; this list
+    # covers the "extra views" gallery the operator sees on the PSP
+    # project page. Empty when no current revision or no extras
+    # attached.
+    payload["label_files"] = _label_additional_assets_for_formulation(formulation)
+
+    # Header image — one URL PSP renders on the projects dashboard +
+    # detail hero. Priority: customer-approved label preview PNG →
+    # first product photo the scientist uploaded → empty. NPD picks
+    # so PSP doesn't have to fetch two upstream URLs and reason about
+    # freshness.
+    payload["header_image_url"] = _header_image_url_for_formulation(formulation)
+
     try:
         client = _client_factory(config)
         return client.sync_customer_order(payload)
@@ -2684,6 +2708,150 @@ def sync_customer_order_to_psp(
             formulation.pk,
         )
         return None
+
+
+def _payments_for_formulation(formulation: Any) -> list[dict]:
+    """Every :class:`Payment` tied to this formulation, oldest first.
+
+    Includes voided rows so PSP can render the full audit trail — the
+    operator can see "we tried once, voided, took another payment"
+    without switching apps.
+
+    Nested ``files`` mirrors :func:`_sample_payment_payload` so PSP's
+    per-payment file list uses the same shape whether the payment
+    landed via the sample-flow sync or the main-formulation sync.
+    """
+
+    from apps.payments.models import Payment
+
+    payments = (
+        Payment.objects.filter(formulation_id=formulation.id)
+        .prefetch_related("invoices")
+        .order_by("paid_at")
+    )
+
+    result: list[dict] = []
+    for payment in payments:
+        amount = getattr(payment, "amount", None)
+        paid_at = getattr(payment, "approved_at", None) or getattr(
+            payment, "paid_at", None
+        )
+        files: list[dict] = []
+        for pf in payment.invoices.all():
+            files.append(
+                {
+                    "uuid": str(pf.id),
+                    "filename": pf.filename or "",
+                    "mime": pf.mime or "",
+                    "byte_size": int(pf.byte_size or 0),
+                    "uploaded_at": pf.uploaded_at.isoformat()
+                    if pf.uploaded_at
+                    else "",
+                }
+            )
+        result.append(
+            {
+                "id": str(payment.id),
+                "kind": payment.kind or "",
+                "amount": format(amount, "f") if amount is not None else None,
+                "currency": (payment.currency or "").strip(),
+                "status": payment.status or "",
+                "invoice_number": payment.invoice_number or "",
+                "paid_at": paid_at.isoformat() if paid_at else None,
+                "files": files,
+            }
+        )
+    return result
+
+
+def _label_additional_assets_for_formulation(formulation: Any) -> list[dict]:
+    """List of supplementary-view assets on the current LabelDesign
+    revision. Empty when no LabelDesign exists yet or the current
+    revision has no extras.
+
+    Emitted as a flat list of ``{uuid, label, content_type, filename,
+    byte_size, file_url}`` so PSP can render an "Extra views" gallery
+    on the project page without a second round-trip. ``file_url`` is
+    absolute so a PSP browser can fetch it directly through the file
+    proxy.
+    """
+
+    from apps.label_design.models import LabelDesign
+
+    label = (
+        LabelDesign.objects.filter(formulation_id=formulation.id)
+        .select_related("current_revision")
+        .first()
+    )
+    if label is None:
+        return []
+    revision = getattr(label, "current_revision", None)
+    if revision is None:
+        return []
+    assets = getattr(revision, "additional_assets", None)
+    if assets is None:
+        return []
+
+    result: list[dict] = []
+    for asset in assets.all().order_by("sort_order"):
+        file_url = _absolute_media_url(
+            _safe_file_url(getattr(asset, "file", None))
+        )
+        if not file_url:
+            continue
+        result.append(
+            {
+                "uuid": str(asset.id),
+                "label": asset.label or "",
+                "content_type": asset.content_type or "",
+                "filename": asset.original_filename or "",
+                "byte_size": int(asset.size_bytes or 0),
+                "file_url": file_url,
+            }
+        )
+    return result
+
+
+def _header_image_url_for_formulation(formulation: Any) -> str:
+    """Pick one image URL for PSP to render as the project's header
+    on the dashboard + detail page.
+
+    Priority:
+      1. Customer-approved LabelDesign's current-revision preview PNG.
+      2. First :class:`FormulationPhoto` the scientist uploaded
+         (``is_primary DESC, sort_order`` = model's default order).
+      3. Empty string — PSP shows its neutral placeholder.
+    """
+
+    from apps.formulations.models import FormulationPhoto
+    from apps.label_design.models import LabelDesign
+
+    label = (
+        LabelDesign.objects.filter(formulation_id=formulation.id)
+        .select_related("current_revision")
+        .first()
+    )
+    if label is not None and label.customer_approved_at is not None:
+        revision = getattr(label, "current_revision", None)
+        preview_url = _absolute_media_url(
+            _safe_file_url(getattr(revision, "artwork_preview_png", None))
+        )
+        if preview_url:
+            return preview_url
+
+    photo = (
+        FormulationPhoto.objects.filter(formulation_id=formulation.id)
+        .order_by("-is_primary", "sort_order")
+        .first()
+    )
+    if photo is not None:
+        photo_url = _absolute_media_url(
+            getattr(getattr(photo, "image", None), "url", "")
+        )
+        if photo_url:
+            return photo_url
+
+    return ""
 
 
 def maybe_resync_customer_address_to_psp(*, customer: Any) -> int:
@@ -2737,6 +2905,59 @@ def maybe_resync_customer_address_to_psp(*, customer: Any) -> int:
                 payment.pk,
             )
     return resynced
+
+
+def maybe_resync_payment_to_psp(*, payment: Any) -> None:
+    """Fan-out for a payment lifecycle event (approve / void / file
+    attach / file delete). Fires whichever PSP sync path applies:
+
+    * RTG formulations → sample-flow sync (``sync_sample_customer_order``)
+      as before — the sample CO is keyed on the payment id, not the
+      formulation.
+    * Custom formulations → main formulation sync
+      (``sync_customer_order_to_psp``) so the ``payments`` list on the
+      CO refreshes to include the newly approved / voided / re-filed
+      row. This is the path that closes the "PSP invoice section is
+      empty for custom projects" gap — before this hook the main sync
+      never re-fired on a payment change.
+
+    Silent-degrade end-to-end: no exception ever bubbles up. Callers
+    treat this as fire-and-forget on ``transaction.on_commit`` so a
+    downstream failure never rolls back the payment save.
+    """
+
+    from apps.formulations.models import ProjectType
+
+    # RTG sample-CO path — early-return delegate. Keeps the historical
+    # trial-batch sample-invoice card working exactly as it did.
+    try:
+        maybe_resync_sample_payment_to_psp(payment=payment)
+    except Exception:  # pragma: no cover - defence in depth
+        logger.exception(
+            "maybe_resync_payment_to_psp: sample-path leg failed for "
+            "payment %s (silent-degraded)",
+            getattr(payment, "id", None),
+        )
+
+    # Custom-formulation path — re-fire the main sync so PSP's
+    # ``customer_orders.npd_payments`` mirror picks up the fresh
+    # payment row (or drops a voided row). Skipped for RTG (that's
+    # what the sample path is for) and for anything without a
+    # formulation attached (e.g. proposal-only deposits with no
+    # formulation link).
+    try:
+        formulation = getattr(payment, "formulation", None)
+        if formulation is None:
+            return
+        if getattr(formulation, "project_type", None) == ProjectType.READY_TO_GO:
+            return
+        sync_customer_order_to_psp(formulation=formulation)
+    except Exception:  # pragma: no cover - defence in depth
+        logger.exception(
+            "maybe_resync_payment_to_psp: main-sync leg failed for "
+            "payment %s (silent-degraded)",
+            getattr(payment, "id", None),
+        )
 
 
 def maybe_resync_sample_payment_to_psp(*, payment: Any) -> None:
@@ -3041,10 +3262,10 @@ def _label_design_state_for_proposal(proposal: Any) -> dict:
         "npd_label_rejection_count": label.rejection_count,
         "npd_label_updated_at": _iso_or_none(label.updated_at),
         "npd_label_preview_png_url": _absolute_media_url(
-            getattr(getattr(revision, "artwork_preview_png", None), "url", "")
+            _safe_file_url(getattr(revision, "artwork_preview_png", None))
         ),
         "npd_label_pdf_url": _absolute_media_url(
-            getattr(getattr(revision, "artwork_pdf", None), "url", "")
+            _safe_file_url(getattr(revision, "artwork_pdf", None))
         ),
         "npd_label_url": _label_design_url(label),
     }
@@ -3059,6 +3280,23 @@ def _label_design_url(label: Any) -> str:
     if not base or not label:
         return ""
     return f"{base}/labelling/{label.id}/"
+
+
+def _safe_file_url(file_field: Any) -> str:
+    """Django ``FieldFile.url`` raises ``ValueError`` when the field
+    has no attached file. Every ``_absolute_media_url`` caller wants
+    an empty string in that case, so wrap the ``.url`` access here
+    once instead of ``try / except`` at each call site.
+    """
+
+    if file_field is None:
+        return ""
+    if not getattr(file_field, "name", None):
+        return ""
+    try:
+        return file_field.url or ""
+    except (ValueError, AttributeError):
+        return ""
 
 
 def _absolute_media_url(relative_or_empty: str) -> str:

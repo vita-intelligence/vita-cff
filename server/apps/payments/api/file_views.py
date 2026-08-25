@@ -109,12 +109,12 @@ class PaymentInvoicesView(APIView):
             byte_size=upload.size or 0,
             uploaded_by=request.user,
         )
-        # Sample payments — push the new file into PSP's CO detail
-        # card so the invoice section stays in sync without waiting
-        # for the next Create-MO click. Silent-degrade, no-op for
-        # non-sample payments.
-        from apps.psp.services import maybe_resync_sample_payment_to_psp
-        maybe_resync_sample_payment_to_psp(payment=payment)
+        # Push the new file into PSP's CO detail card so the invoice
+        # section stays in sync without waiting for the next Create-MO
+        # click. Custom projects re-sync via the main formulation
+        # sync's ``payments`` list; RTG stays on the sample-CO path.
+        from apps.psp.services import maybe_resync_payment_to_psp
+        maybe_resync_payment_to_psp(payment=payment)
         # Live push — the invoice-count paperclip on the payment card
         # bumps without a reload. Same channel the record/approve/void
         # paths use so the FE hook doesn't need to distinguish.
@@ -148,11 +148,12 @@ class PaymentInvoiceDetailView(APIView):
             raise NotFound()
         row.file.delete(save=False)
         row.delete()
-        # Sample payments — drop the file from the PSP mirror too so
-        # the CO detail card doesn't keep showing a filename whose
-        # bytes are gone. Silent-degrade, no-op for non-samples.
-        from apps.psp.services import maybe_resync_sample_payment_to_psp
-        maybe_resync_sample_payment_to_psp(payment=payment)
+        # Drop the file from the PSP mirror too so the CO detail card
+        # doesn't keep showing a filename whose bytes are gone. Custom
+        # projects re-sync the whole payments list; RTG rides the
+        # sample-CO sync path.
+        from apps.psp.services import maybe_resync_payment_to_psp
+        maybe_resync_payment_to_psp(payment=payment)
         # Same live push as attach — the paperclip / count updates
         # on every open finance tab.
         schedule_payment_changed_broadcast(payment, "invoice_attached")
