@@ -128,3 +128,18 @@ def _push_label_state_to_psp(sender, instance: LabelDesign, **kwargs) -> None:
             "label_design PSP mirror sync failed for label_design %s",
             instance.pk,
         )
+    # Also fire the main formulation sync — that's the path that
+    # carries the ``label_files`` list (supplementary artwork views on
+    # the current revision) and the header-image URL. Without this a
+    # scientist uploading a new "back view" mockup wouldn't reach PSP
+    # until the next unrelated formulation save. Silent-degrade in
+    # the same shape as the proposal path above.
+    try:
+        from apps.psp.services import sync_customer_order_to_psp
+
+        sync_customer_order_to_psp(formulation=formulation)
+    except Exception:  # pragma: no cover - defence in depth
+        logger.exception(
+            "label_design main PSP sync failed for label_design %s",
+            instance.pk,
+        )

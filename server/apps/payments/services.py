@@ -243,19 +243,21 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
 
     transaction.on_commit(_fire_email)
 
-    # Sample payments — push the fresh payment state to PSP so the
-    # CO detail's NPD-payment card reflects the approval + any
-    # attached invoice files. Silent-degrade, no-op for non-sample
-    # payments. Fires on commit so a rollback doesn't leave PSP
+    # Payment landed — push the fresh state to PSP. RTG projects keep
+    # riding the sample-CO sync (keyed on payment id); custom projects
+    # now trigger the main formulation sync so PSP's ``npd_payments``
+    # list refreshes to include this approval + any attached invoice
+    # files. Silent-degrade, no-op for anything not linked to a
+    # formulation. Fires on commit so a rollback doesn't leave PSP
     # thinking we approved when we didn't.
-    def _resync_sample() -> None:
-        from apps.psp.services import maybe_resync_sample_payment_to_psp
+    def _resync_payment() -> None:
+        from apps.psp.services import maybe_resync_payment_to_psp
 
         fresh = Payment.objects.filter(pk=payment_pk).first()
         if fresh is not None:
-            maybe_resync_sample_payment_to_psp(payment=fresh)
+            maybe_resync_payment_to_psp(payment=fresh)
 
-    transaction.on_commit(_resync_sample)
+    transaction.on_commit(_resync_payment)
 
     # Scientist notification — approval is when the sample is
     # actually unlocked for the scientist to spin up a trial batch.
@@ -442,20 +444,21 @@ def void_payment(*, payment: Payment, actor: Any, notes: str = "") -> Payment:
         after={"status": PaymentStatus.VOIDED, "notes": notes},
     )
 
-    # Sample payments — push the voided state to PSP so the CO
-    # detail card can render "Voided" instead of showing a paid
-    # invoice for an order that isn't happening. Same silent-degrade
-    # posture as the approve path.
+    # Payment voided — push the voided state to PSP so its CO detail
+    # card renders "Voided" instead of a paid invoice for an order
+    # that isn't happening. Same silent-degrade posture as approve.
+    # Custom projects re-sync the whole payments list; RTG keeps
+    # riding the sample-CO sync path.
     payment_pk = payment.pk
 
-    def _resync_sample_on_void() -> None:
-        from apps.psp.services import maybe_resync_sample_payment_to_psp
+    def _resync_payment_on_void() -> None:
+        from apps.psp.services import maybe_resync_payment_to_psp
 
         fresh = Payment.objects.filter(pk=payment_pk).first()
         if fresh is not None:
-            maybe_resync_sample_payment_to_psp(payment=fresh)
+            maybe_resync_payment_to_psp(payment=fresh)
 
-    transaction.on_commit(_resync_sample_on_void)
+    transaction.on_commit(_resync_payment_on_void)
 
     # ADDITIONAL_SAMPLES payments — voiding the finance-queue row is
     # how "reject the top-up request" gets recorded. Mirror it onto
