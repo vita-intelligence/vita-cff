@@ -29,6 +29,7 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 
 from apps.formulations.models import Formulation, ProjectStatus
+from apps.label_design.models import LabelDesign
 from apps.label_design.services import (
     bootstrap_for_spec,
     _find_signed_spec_sheet,
@@ -96,4 +97,34 @@ def _backfill_label_designs_on_approval(
     except Exception:  # pragma: no cover - defence in depth
         logger.exception(
             "label_design backfill failed for formulation %s", instance.pk
+        )
+
+
+@receiver(post_save, sender=LabelDesign)
+def _push_label_state_to_psp(sender, instance: LabelDesign, **kwargs) -> None:
+    """Fire a PSP proposal-sync on every LabelDesign mutation.
+
+    One signal, every mutation. Path chosen, artwork uploaded (which
+    updates ``current_revision``), reviewer verdict landed (which
+    flips ``status``), customer approved (which stamps
+    ``customer_approved_at``): all of them save the row and trip
+    this signal.
+
+    ``_sync_formulation_proposal_to_psp`` already defers the actual
+    push to ``transaction.on_commit`` so a rollback of the enclosing
+    LabelDesign save doesn't push stale state to PSP. Silent-degrade
+    posture — a PSP outage should never break a label workflow save.
+    """
+
+    formulation = getattr(instance, "formulation", None)
+    if formulation is None:
+        return
+    try:
+        from apps.payments.services import _sync_formulation_proposal_to_psp
+
+        _sync_formulation_proposal_to_psp(formulation)
+    except Exception:  # pragma: no cover - defence in depth
+        logger.exception(
+            "label_design PSP mirror sync failed for label_design %s",
+            instance.pk,
         )

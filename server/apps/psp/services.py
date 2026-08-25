@@ -2967,6 +2967,121 @@ def _final_spec_state_for_proposal(proposal: Any) -> dict:
     }
 
 
+def _label_design_state_for_proposal(proposal: Any) -> dict:
+    """Build the label-design mirror block for the PSP proposal-merge
+    payload.
+
+    Keyed off the primary line's formulation (same rule as
+    ``_final_spec_state_for_proposal``). The label workflow is
+    per-formulation; a bundled multi-product proposal today mirrors
+    only its primary product's label — the other products' label
+    workflows live on their split-back R&D COs after unmerge.
+
+    Nine fields land on ``customer_orders``:
+
+    * ``npd_label_design_uuid`` — the ``LabelDesign`` row id (also the
+      URL segment on ``/labelling/[id]``). Absence == "no workflow yet".
+    * ``npd_label_status`` — one of the nine ``LabelDesignStatus``
+      values.
+    * ``npd_label_design_path`` — ``design_by_us`` / ``design_by_customer``
+      / "" until the customer picks.
+    * ``npd_label_approved_at`` — customer's e-sign timestamp (the
+      terminal signal). Null on every non-terminal state.
+    * ``npd_label_rejection_count`` — consecutive customer rejects.
+      Bumped by ``transition_status``; auto-hold routes at 3.
+    * ``npd_label_updated_at`` — freshness anchor from the
+      ``LabelDesign.updated_at`` column.
+    * ``npd_label_preview_png_url`` — absolute URL to the current
+      revision's PNG thumbnail. Rendered on PSP's kanban card + R&D
+      team card. Empty when no revision uploaded yet.
+    * ``npd_label_pdf_url`` — absolute URL to the current revision's
+      full artwork PDF.
+    * ``npd_label_url`` — deep-link to ``/labelling/[id]`` on NPD.
+    """
+
+    empty = {
+        "npd_label_design_uuid": None,
+        "npd_label_status": None,
+        "npd_label_design_path": None,
+        "npd_label_approved_at": None,
+        "npd_label_rejection_count": None,
+        "npd_label_updated_at": None,
+        "npd_label_preview_png_url": None,
+        "npd_label_pdf_url": None,
+        "npd_label_url": None,
+    }
+
+    from apps.label_design.models import LabelDesign
+
+    formulation_ids = list(
+        proposal.lines.filter(
+            formulation_version__formulation__isnull=False,
+        )
+        .values_list("formulation_version__formulation_id", flat=True)
+        .distinct()
+    )
+    if not formulation_ids:
+        return empty
+
+    primary_formulation_id = formulation_ids[0]
+    label = (
+        LabelDesign.objects.filter(formulation_id=primary_formulation_id)
+        .select_related("current_revision")
+        .first()
+    )
+    if label is None:
+        return empty
+
+    revision = label.current_revision
+    return {
+        "npd_label_design_uuid": str(label.id),
+        "npd_label_status": label.status,
+        "npd_label_design_path": label.design_path or "",
+        "npd_label_approved_at": _iso_or_none(label.customer_approved_at),
+        "npd_label_rejection_count": label.rejection_count,
+        "npd_label_updated_at": _iso_or_none(label.updated_at),
+        "npd_label_preview_png_url": _absolute_media_url(
+            getattr(getattr(revision, "artwork_preview_png", None), "url", "")
+        ),
+        "npd_label_pdf_url": _absolute_media_url(
+            getattr(getattr(revision, "artwork_pdf", None), "url", "")
+        ),
+        "npd_label_url": _label_design_url(label),
+    }
+
+
+def _label_design_url(label: Any) -> str:
+    """Deep link to the /labelling/[id] workspace on NPD."""
+
+    from django.conf import settings as django_settings
+
+    base = (getattr(django_settings, "APP_BASE_URL", "") or "").rstrip("/")
+    if not base or not label:
+        return ""
+    return f"{base}/labelling/{label.id}/"
+
+
+def _absolute_media_url(relative_or_empty: str) -> str:
+    """Prefix a Django-storage ``.url`` with APP_BASE_URL so a PSP
+    browser can fetch it. Django returns paths like ``/media/…`` for
+    local FileSystemStorage; those need a scheme + host before they'll
+    load on a different origin. Azure-backed storage already returns
+    absolute URLs — return them untouched.
+    """
+
+    if not relative_or_empty:
+        return ""
+    if relative_or_empty.startswith(("http://", "https://")):
+        return relative_or_empty
+
+    from django.conf import settings as django_settings
+
+    base = (getattr(django_settings, "APP_BASE_URL", "") or "").rstrip("/")
+    if not base:
+        return ""
+    return f"{base}{relative_or_empty}"
+
+
 def _bundled_deposit_paid_at(proposal: Any):
     """Earliest ``approved_at`` across every approved DEPOSIT Payment
     tied to one of the proposal's formulations. Returns ``None`` when
@@ -3382,6 +3497,14 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         # sees "no confirmed done + no active FINAL" and falls back
         # to ``:trial_batches_in_flight`` on the next derive_phase.
         **_final_spec_state_for_proposal(proposal),
+        # Label-design workflow mirror. Nine columns in one lookup —
+        # see ``_label_design_state_for_proposal`` for the exact
+        # field list. Populated the moment vita-cff's LabelDesign
+        # post_save signal fires on any workflow mutation (path
+        # chosen, artwork uploaded, reviewer verdict, customer
+        # approval). All nil when no LabelDesign row exists yet for
+        # the primary formulation.
+        **_label_design_state_for_proposal(proposal),
         # Latest-transition timestamps for the wizard phase gate.
         "npd_proposal_created_at": _iso_or_none(getattr(proposal, "created_at", None)),
         "npd_proposal_created_by_name": _person_display_name(
