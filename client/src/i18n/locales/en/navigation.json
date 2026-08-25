@@ -15,6 +15,7 @@
   },
   "groups": {
     "rnd": "R&D",
+    "design": "Design",
     "proposal": "Proposal"
   },
   "tooltips": {
