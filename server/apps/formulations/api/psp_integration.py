@@ -458,3 +458,120 @@ class PinManufacturingOrderOnTrialBatchView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class PspProductionStatusUpsertView(APIView):
+    """``POST /api/psp-integration/production-status/upsert/``.
+
+    PSP fires this on every ``OrderWizard.notify_co_changed`` so the
+    portal always reflects the latest phase + sub-stage counters for
+    a customer's project — no polling.
+
+    Request body (JSON):
+
+    .. code-block:: json
+
+        {
+          "formulation_uuid":       "<npd formulation uuid>",
+          "psp_customer_order_uuid": "<psp CO uuid>",
+          "phase":                  "in_production",
+          "phase_label":            "In production",
+          "next_action_title":      "Sessions in flight",
+          "next_action_detail":     "Ops has started the manufacturing run.",
+          "blocker_count":          0,
+          "line_count":             1,
+          "mo_count":               1,
+          "lines_awaiting_mo":      0,
+          "mos_awaiting_po_send":   0,
+          "mos_awaiting_delivery":  0,
+          "mos_in_production":      1,
+          "mos_awaiting_closeout":  0,
+          "psp_updated_at":         "2026-08-25T14:12:31Z"
+        }
+
+    Behaviour:
+
+    * Look up the ``Formulation`` by uuid. Unknown → 404 (silent-
+      degrade on PSP side, sample formulations without a PSP-visible
+      NPD record fall here).
+    * Upsert a :class:`PspProductionStatus` row keyed on the
+      formulation. Idempotent — a re-fire with the same phase but
+      updated counters just refreshes the row.
+
+    Auth: same bearer-token flow as the other endpoints in this
+    module.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def post(self, request: Request) -> Response:
+        _resolve_token(request)
+
+        formulation_uuid = (request.data.get("formulation_uuid") or "").strip()
+        if not formulation_uuid:
+            return Response(
+                {"detail": "formulation_uuid_required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        formulation = (
+            Formulation.objects.filter(id=formulation_uuid).only("id").first()
+        )
+        if formulation is None:
+            return Response(
+                {"detail": "formulation_not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from apps.psp.models import PspProductionStatus
+        from django.utils.dateparse import parse_datetime
+
+        payload = request.data
+        psp_co_uuid = (payload.get("psp_customer_order_uuid") or "").strip() or None
+        psp_updated_at_raw = payload.get("psp_updated_at") or ""
+        psp_updated_at = (
+            parse_datetime(psp_updated_at_raw) if psp_updated_at_raw else None
+        )
+
+        def _int(k: str) -> int:
+            try:
+                return int(payload.get(k, 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        def _str(k: str, cap: int) -> str:
+            v = payload.get(k)
+            return str(v)[:cap] if v is not None else ""
+
+        from django.utils import timezone as _tz
+
+        row, _created = PspProductionStatus.objects.update_or_create(
+            formulation=formulation,
+            defaults={
+                "psp_customer_order_uuid": psp_co_uuid,
+                "phase": _str("phase", 48),
+                "phase_label": _str("phase_label", 120),
+                "next_action_title": _str("next_action_title", 200),
+                "next_action_detail": str(payload.get("next_action_detail") or ""),
+                "blocker_count": _int("blocker_count"),
+                "line_count": _int("line_count"),
+                "mo_count": _int("mo_count"),
+                "lines_awaiting_mo": _int("lines_awaiting_mo"),
+                "mos_awaiting_po_send": _int("mos_awaiting_po_send"),
+                "mos_awaiting_delivery": _int("mos_awaiting_delivery"),
+                "mos_in_production": _int("mos_in_production"),
+                "mos_awaiting_closeout": _int("mos_awaiting_closeout"),
+                "psp_updated_at": psp_updated_at,
+                "pushed_at": _tz.now(),
+            },
+        )
+
+        return Response(
+            {
+                "formulation_uuid": str(formulation.id),
+                "phase": row.phase,
+                "pushed_at": row.pushed_at.isoformat() if row.pushed_at else None,
+            },
+            status=status.HTTP_200_OK,
+        )
