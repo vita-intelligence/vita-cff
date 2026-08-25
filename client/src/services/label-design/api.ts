@@ -272,11 +272,27 @@ export async function assignLabelDesigner(
 export async function uploadLabelArtwork(
   orgId: string,
   ldId: string,
-  payload: { readonly artwork: File; readonly notes?: string },
+  payload: {
+    readonly artwork: File;
+    readonly notes?: string;
+    /** Optional companion files — "back", "side", "mockup" views
+     *  that ride alongside the primary artwork on the same revision.
+     *  Order + labels persist through to the read serializer. */
+    readonly additionalFiles?: ReadonlyArray<{
+      readonly file: File;
+      readonly label: string;
+    }>;
+  },
 ): Promise<LabelDesignDto> {
   const form = new FormData();
   form.append("artwork", payload.artwork);
   if (payload.notes) form.append("notes", payload.notes);
+  const extras = payload.additionalFiles ?? [];
+  for (const extra of extras) form.append("additional_files", extra.file);
+  form.append(
+    "additional_file_labels",
+    JSON.stringify(extras.map((e) => e.label.trim())),
+  );
   const { data } = await apiClient.post<LabelDesignDto>(
     ep.uploadArtwork(orgId, ldId),
     form,

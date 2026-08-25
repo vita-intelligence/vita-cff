@@ -32,6 +32,10 @@ export interface LabelDesignRevisionDto {
   readonly submitted_at: string;
   readonly artwork_pdf_url: string;
   readonly artwork_preview_png_url: string;
+  /** Supplementary artwork files attached to the same revision —
+   *  "Back", "Left side", "Bottle mockup". Sorted by ``sort_order``.
+   *  Empty when the uploader only sent the primary artwork. */
+  readonly additional_assets: ReadonlyArray<LabelDesignRevisionAssetDto>;
   readonly compliance_block_snapshot: Record<string, unknown>;
   readonly customer_approved_own_design: boolean;
   readonly notes: string;
@@ -40,6 +44,19 @@ export interface LabelDesignRevisionDto {
    *  the staff Versions tab nor the customer portal need a
    *  second round-trip to reconstruct the journey. */
   readonly reviews: ReadonlyArray<LabelDesignReviewDto>;
+}
+
+export interface LabelDesignRevisionAssetDto {
+  readonly id: string;
+  //: Storage URL for the file. Same origin as the primary artwork.
+  readonly file_url: string;
+  //: User-supplied label ("Back", "Left side"). Empty → the FE
+  //: falls back to "View N".
+  readonly label: string;
+  readonly original_filename: string;
+  readonly content_type: string;
+  readonly size_bytes: number;
+  readonly sort_order: number;
 }
 
 export interface LabelDesignReviewDto {

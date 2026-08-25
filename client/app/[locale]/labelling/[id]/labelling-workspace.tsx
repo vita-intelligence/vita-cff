@@ -247,6 +247,7 @@ export function LabellingWorkspace({
           status={data.status}
           designPath={data.design_path}
           artworkPdfUrl={data.current_revision_detail?.artwork_pdf_url ?? ""}
+          additionalAssets={data.current_revision_detail?.additional_assets ?? []}
           currentRevisionId={data.current_revision}
           onMutate={() => refetch()}
         />
@@ -641,12 +642,23 @@ const STATUS_TONE_CLASS: Record<string, string> = {
 };
 
 
+interface AdditionalAssetSummary {
+  readonly id: string;
+  readonly file_url: string;
+  readonly label: string;
+  readonly original_filename: string;
+  readonly content_type: string;
+  readonly size_bytes: number;
+  readonly sort_order: number;
+}
+
 function ArtworkTab({
   orgId,
   labelDesignId,
   status,
   designPath,
   artworkPdfUrl,
+  additionalAssets,
   currentRevisionId,
   canDesign,
   canReviewScientist,
@@ -658,6 +670,7 @@ function ArtworkTab({
   status: LabelDesignStatus;
   designPath: string;
   artworkPdfUrl: string;
+  additionalAssets: ReadonlyArray<AdditionalAssetSummary>;
   currentRevisionId: string | null;
   canDesign: boolean;
   canReviewScientist: boolean;
@@ -824,6 +837,51 @@ function ArtworkTab({
               </div>
             </div>
           )}
+          {additionalAssets.length > 0 ? (
+            <div className="border-t border-ink-200 p-4">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-ink-500">
+                Extra views ({additionalAssets.length})
+              </p>
+              <ul className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+                {additionalAssets.map((asset, i) => {
+                  const isImage = asset.content_type.startsWith("image/");
+                  return (
+                    <li
+                      key={asset.id}
+                      className="overflow-hidden rounded-lg border border-ink-200"
+                    >
+                      <a
+                        href={asset.file_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block"
+                        title={asset.original_filename || asset.label}
+                      >
+                        {isImage ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={asset.file_url}
+                            alt={asset.label || `View ${i + 2}`}
+                            className="h-24 w-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-24 w-full flex-col items-center justify-center gap-1 bg-ink-50">
+                            <FileText className="h-5 w-5 text-ink-400" />
+                            <span className="text-[10px] font-semibold uppercase text-ink-500">
+                              {asset.content_type.includes("pdf") ? "PDF" : "File"}
+                            </span>
+                          </div>
+                        )}
+                        <p className="truncate bg-ink-0 px-2 py-1 text-[11px] font-semibold text-ink-700">
+                          {asset.label || `View ${i + 2}`}
+                        </p>
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
         </article>
 
         {/* Sidebar — context-driven action cards. Only the cards
@@ -985,6 +1043,15 @@ function _validateArtworkClient(file: File): string | null {
 }
 
 
+interface UploadAsset {
+  readonly file: File;
+  readonly label: string;
+}
+
+//: Maximum companion files per revision (front + up to 10 extras).
+//: Mirrors the backend cap in ``_attach_additional_assets``.
+const MAX_ARTWORK_ASSETS = 11;
+
 function UploadCard({
   orgId,
   labelDesignId,
@@ -995,43 +1062,74 @@ function UploadCard({
   onMutate: () => void;
 }) {
   const upload = useUploadLabelArtwork(orgId, labelDesignId);
-  const [file, setFile] = useState<File | null>(null);
+  // Multi-file model: the first entry is the "primary" artwork that
+  // drives the revision preview + review checklist; the rest ride
+  // as supplementary "back / side / mockup" views on the same
+  // revision. Reordering is supported so a mis-picked primary can
+  // be swapped without re-uploading.
+  const [assets, setAssets] = useState<UploadAsset[]>([]);
   const [notes, setNotes] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const pickFile = (candidate: File | null) => {
+  const addFiles = (incoming: FileList | File[] | null) => {
     setErr(null);
-    if (!candidate) {
-      setFile(null);
-      return;
-    }
-    const reason = _validateArtworkClient(candidate);
-    if (reason) {
-      setErr(reason);
-      setFile(null);
-      return;
-    }
-    setFile(candidate);
+    if (!incoming) return;
+    const picked = Array.from(incoming);
+    setAssets((current) => {
+      const remaining = MAX_ARTWORK_ASSETS - current.length;
+      const next: UploadAsset[] = [];
+      for (const f of picked.slice(0, remaining)) {
+        const reason = _validateArtworkClient(f);
+        if (reason) {
+          setErr(`${f.name}: ${reason}`);
+          continue;
+        }
+        next.push({ file: f, label: "" });
+      }
+      return [...current, ...next];
+    });
+  };
+
+  const removeAt = (idx: number) => {
+    setAssets((cur) => cur.filter((_, i) => i !== idx));
+  };
+  const relabel = (idx: number, label: string) => {
+    setAssets((cur) =>
+      cur.map((a, i) => (i === idx ? { ...a, label } : a)),
+    );
+  };
+  const moveUp = (idx: number) => {
+    setAssets((cur) => {
+      if (idx <= 0 || idx >= cur.length) return cur;
+      const next = [...cur];
+      [next[idx - 1], next[idx]] = [next[idx]!, next[idx - 1]!];
+      return next;
+    });
   };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr(null);
-    if (!file) {
+    if (assets.length === 0) {
       setErr("Drop a file or click to choose one first.");
       return;
     }
+    const [primary, ...extras] = assets;
     try {
-      await upload.mutateAsync({ artwork: file, notes });
-      setFile(null);
+      await upload.mutateAsync({
+        artwork: primary!.file,
+        notes,
+        additionalFiles: extras.map((a) => ({
+          file: a.file,
+          label: a.label.trim(),
+        })),
+      });
+      setAssets([]);
       setNotes("");
       onMutate();
     } catch (e) {
-      // Surface the backend's structured rejection (size / type
-      // / extension) when present — much friendlier than the
-      // generic "Upload failed".
       const data = (e as { response?: { data?: Record<string, unknown> } })
         ?.response?.data;
       const fieldErr = Array.isArray((data as { artwork?: unknown })?.artwork)
@@ -1045,9 +1143,10 @@ function UploadCard({
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
-    const dropped = e.dataTransfer.files?.[0];
-    if (dropped) pickFile(dropped);
+    addFiles(e.dataTransfer.files);
   };
+
+  const capsReached = assets.length >= MAX_ARTWORK_ASSETS;
 
   return (
     <form
@@ -1060,67 +1159,127 @@ function UploadCard({
         </span>
         <div>
           <p className="text-xs font-semibold text-ink-1000">Upload artwork</p>
-          <p className="text-[10px] text-ink-500">PDF, PNG, JPEG · up to 50 MB</p>
+          <p className="text-[10px] text-ink-500">
+            PDF, PNG, JPEG · up to 50 MB each · attach multiple views (front / back / side / mockup)
+          </p>
         </div>
       </div>
 
       <button
         type="button"
-        onClick={() => inputRef.current?.click()}
+        onClick={() => (capsReached ? undefined : inputRef.current?.click())}
         onDragOver={(e) => {
           e.preventDefault();
           setDragOver(true);
         }}
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
+        disabled={capsReached}
         className={`mt-3 flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-6 text-center transition-colors ${
           dragOver
             ? "border-orange-400 bg-orange-50"
-            : file
-              ? "border-emerald-300 bg-emerald-50/50"
-              : "border-ink-200 bg-ink-50 hover:border-orange-300 hover:bg-orange-50/40"
+            : "border-ink-200 bg-ink-50 hover:border-orange-300 hover:bg-orange-50/40 disabled:hover:border-ink-200 disabled:hover:bg-ink-50"
         }`}
       >
-        {file ? (
-          <>
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 ring-1 ring-inset ring-emerald-200">
-              <Check className="h-4 w-4 text-emerald-700" />
-            </span>
-            <div className="min-w-0">
-              <p className="truncate text-xs font-semibold text-ink-1000">
-                {file.name}
-              </p>
-              <p className="text-[10px] text-ink-500">
-                {_humanFileSize(file.size)}
-              </p>
-            </div>
-            <span className="text-[10px] text-ink-500 underline-offset-2 hover:underline">
-              Replace
-            </span>
-          </>
-        ) : (
-          <>
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-ink-0 ring-1 ring-inset ring-ink-200">
-              <UploadCloud className="h-4 w-4 text-ink-500" />
-            </span>
-            <div>
-              <p className="text-xs font-semibold text-ink-1000">
-                Drop your file here
-              </p>
-              <p className="text-[10px] text-ink-500">
-                or click to browse
-              </p>
-            </div>
-          </>
-        )}
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-ink-0 ring-1 ring-inset ring-ink-200">
+          <UploadCloud className="h-4 w-4 text-ink-500" />
+        </span>
+        <div>
+          <p className="text-xs font-semibold text-ink-1000">
+            {capsReached
+              ? `Reached the ${MAX_ARTWORK_ASSETS}-file limit`
+              : "Drop file(s) here"}
+          </p>
+          <p className="text-[10px] text-ink-500">
+            {capsReached ? "Remove one to add another" : "or click to browse"}
+          </p>
+        </div>
       </button>
       <input
         ref={inputRef}
         type="file"
         accept="application/pdf,image/png,image/jpeg"
-        onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+        multiple
+        onChange={(e) => {
+          addFiles(e.target.files);
+          e.target.value = "";
+        }}
         className="hidden"
       />
+
+      {assets.length > 0 ? (
+        <ul className="mt-3 space-y-2">
+          {assets.map((a, i) => (
+            <li
+              key={`${a.file.name}-${i}`}
+              className="flex items-start gap-2 rounded-lg bg-ink-50 p-2 ring-1 ring-inset ring-ink-200"
+            >
+              <span
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ring-1 ring-inset ${
+                  i === 0
+                    ? "bg-emerald-100 text-emerald-700 ring-emerald-200"
+                    : "bg-ink-0 text-ink-500 ring-ink-200"
+                }`}
+              >
+                {i === 0 ? (
+                  <Check className="h-4 w-4" />
+                ) : (
+                  <span className="text-[10px] font-bold">{i + 1}</span>
+                )}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
+                      i === 0
+                        ? "bg-emerald-100 text-emerald-800"
+                        : "bg-ink-100 text-ink-700"
+                    }`}
+                  >
+                    {i === 0 ? "Primary" : `View ${i + 1}`}
+                  </span>
+                  <p className="truncate text-[11px] font-semibold text-ink-1000">
+                    {a.file.name}
+                  </p>
+                  <span className="ml-auto text-[10px] text-ink-500">
+                    {_humanFileSize(a.file.size)}
+                  </span>
+                </div>
+                {i > 0 ? (
+                  <input
+                    type="text"
+                    value={a.label}
+                    onChange={(e) => relabel(i, e.target.value)}
+                    placeholder="Optional label (e.g. Back, Left side, Bottle mockup)"
+                    maxLength={80}
+                    className="mt-1.5 w-full rounded-md border-0 bg-ink-0 px-2 py-1 text-[11px] text-ink-800 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+                  />
+                ) : null}
+              </div>
+              <div className="flex flex-col gap-1">
+                {i > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => moveUp(i)}
+                    className="text-[10px] font-semibold text-ink-500 hover:text-orange-700"
+                    title="Move up (becomes new primary)"
+                  >
+                    ↑
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => removeAt(i)}
+                  className="text-[10px] font-semibold text-ink-500 hover:text-rose-600"
+                  title="Remove"
+                >
+                  ✕
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
       <label className="mt-3 block">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-500">
@@ -1144,7 +1303,7 @@ function UploadCard({
 
       <button
         type="submit"
-        disabled={upload.isPending || !file}
+        disabled={upload.isPending || assets.length === 0}
         className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-ink-1000 px-3 py-2 text-xs font-semibold text-ink-0 hover:bg-ink-900 disabled:opacity-50"
       >
         {upload.isPending ? (
@@ -1155,7 +1314,7 @@ function UploadCard({
         ) : (
           <>
             <UploadCloud className="h-3.5 w-3.5" />
-            Upload revision
+            Upload revision{assets.length > 1 ? ` (${assets.length} files)` : ""}
           </>
         )}
       </button>
