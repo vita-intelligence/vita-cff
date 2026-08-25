@@ -29,3 +29,9 @@ class PaymentKind(models.TextChoices):
     #: :class:`~apps.trial_batches.models.TrialBatchSlot` rows for the
     #: extra samples paid for.
     ADDITIONAL_SAMPLES = "additional_samples", _("Additional samples")
+    #: Per-formulation, paid when the customer picks
+    #: ``design_by_us`` on the label workflow. Approval unlocks the
+    #: MA-ST-B-009 design brief. Amount pulled from the org's
+    #: :class:`~apps.payments.models.SamplePricingConfig`.
+    #: ``label_design_fee_amount`` — 0 or unset skips the gate.
+    LABEL_DESIGN = "label_design", _("Label design")

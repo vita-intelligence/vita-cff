@@ -76,11 +76,13 @@ export function SamplePricingTab({
   // config also flows through here via ``useSamplePricingConfig``'s
   // cache update. Doesn't clobber mid-edit changes because
   // ``useQuery`` isn't re-fetching on refocus for this view.
+  const [labelDesignFee, setLabelDesignFee] = useState("");
   useEffect(() => {
     if (!configQuery.data) return;
     setFreeSamples(String(configQuery.data.free_samples_included));
     setPricePerExtra(String(configQuery.data.price_per_extra_sample));
     setCurrency(configQuery.data.currency_code);
+    setLabelDesignFee(String(configQuery.data.label_design_fee_amount ?? "0"));
     setTiers(tiersFromDto(configQuery.data));
   }, [configQuery.data?.id]);
 
@@ -90,6 +92,7 @@ export function SamplePricingTab({
     if (String(src.free_samples_included) !== freeSamples) return true;
     if (String(src.price_per_extra_sample) !== pricePerExtra) return true;
     if (src.currency_code !== currency) return true;
+    if (String(src.label_design_fee_amount ?? "0") !== labelDesignFee) return true;
     if (src.discount_tiers.length !== tiers.length) return true;
     return tiers.some((t, i) => {
       const original = src.discount_tiers[i];
@@ -99,7 +102,7 @@ export function SamplePricingTab({
         String(original.discount_percent) !== t.discount_percent
       );
     });
-  }, [configQuery.data, freeSamples, pricePerExtra, currency, tiers]);
+  }, [configQuery.data, freeSamples, pricePerExtra, currency, labelDesignFee, tiers]);
 
   function addTier() {
     setTiers((prev) => [
@@ -168,11 +171,17 @@ export function SamplePricingTab({
       setError("Price per extra sample must be a positive number.");
       return;
     }
+    const labelFee = Number.parseFloat(labelDesignFee || "0");
+    if (!Number.isFinite(labelFee) || labelFee < 0) {
+      setError("Label design fee must be 0 or a positive number.");
+      return;
+    }
     try {
       await saveMutation.mutateAsync({
         free_samples_included: free,
         price_per_extra_sample: price.toFixed(2),
         currency_code: (currency || "").trim().toUpperCase().slice(0, 3),
+        label_design_fee_amount: labelFee.toFixed(2),
         tiers: cleanTiers,
       });
       setSavedAt(Date.now());
@@ -313,6 +322,34 @@ export function SamplePricingTab({
             />
             <span className="text-[11px] text-ink-500">
               Blank = use company default.
+            </span>
+          </label>
+
+          {/* Design fee for the label workflow — separate from the
+              sample knobs above but managed on the same settings
+              surface so finance has one place for all NPD post-
+              proposal customer fees. */}
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-ink-700">
+              Label design fee
+            </span>
+            <div className="relative">
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={labelDesignFee}
+                disabled={!canEdit}
+                onChange={(e) => setLabelDesignFee(e.target.value)}
+                className="w-full rounded-lg bg-ink-0 px-3 py-2 pr-16 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-60"
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-ink-500">
+                {currencyLabel}
+              </span>
+            </div>
+            <span className="text-[11px] text-ink-500">
+              Charged when a customer picks &ldquo;Vita designs&rdquo; on the label
+              workflow. 0 = free / skip the gate.
             </span>
           </label>
         </div>

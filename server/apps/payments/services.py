@@ -362,6 +362,53 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
 
         transaction.on_commit(_push_final_payment_to_psp)
 
+        # Advance the label workflow's payment gate. The label
+        # bootstraps at ``PAYMENT_PENDING`` on customer FINAL-spec
+        # sign, then sits there until finance approves the FINAL
+        # invoice. Kicking this on ``transaction.on_commit`` so a
+        # rollback of the approve doesn't leave the label in a
+        # never-should-have-happened state.
+        def _advance_label_after_final_approval() -> None:
+            from apps.formulations.models import Formulation as _Formulation
+            from apps.label_design.services import advance_label_if_final_paid
+
+            fresh = _Formulation.objects.filter(pk=formulation_pk).first()
+            if fresh is None:
+                return
+            try:
+                advance_label_if_final_paid(fresh)
+            except Exception:  # noqa: BLE001 — never break approve
+                logger.exception(
+                    "Failed to advance label workflow after FINAL "
+                    "payment approval for formulation %s",
+                    formulation_pk,
+                )
+
+        transaction.on_commit(_advance_label_after_final_approval)
+
+    if payment.kind == PaymentKind.LABEL_DESIGN and payment.formulation_id is not None:
+        design_formulation_pk = payment.formulation_id
+
+        def _advance_label_after_design_fee_approval() -> None:
+            from apps.formulations.models import Formulation as _Formulation
+            from apps.label_design.services import (
+                advance_label_after_design_fee_paid,
+            )
+
+            fresh = _Formulation.objects.filter(pk=design_formulation_pk).first()
+            if fresh is None:
+                return
+            try:
+                advance_label_after_design_fee_paid(fresh)
+            except Exception:  # noqa: BLE001 — never break approve
+                logger.exception(
+                    "Failed to advance label workflow after LABEL_DESIGN "
+                    "payment approval for formulation %s",
+                    design_formulation_pk,
+                )
+
+        transaction.on_commit(_advance_label_after_design_fee_approval)
+
     # Live push — moves the row from the Needs-attention column into
     # Approved on every open finance tab.
     schedule_payment_changed_broadcast(payment, "approved")
@@ -659,6 +706,7 @@ def upsert_sample_pricing_config(
     price_per_extra_sample: Decimal,
     currency_code: str,
     tiers: list[dict[str, Any]],
+    label_design_fee_amount: Decimal | None = None,
 ) -> SamplePricingConfig:
     """Wholesale-replace the org's sample pricing config + discount
     tier list.
@@ -684,12 +732,21 @@ def upsert_sample_pricing_config(
         Decimal("0"), Decimal(str(price_per_extra_sample or 0))
     )
     config.currency_code = (currency_code or "").strip().upper()[:3]
+    # Only overwrite the design fee when the caller explicitly sent
+    # a value — the settings API may add / remove this field
+    # independently; ``None`` preserves whatever's on the row so a
+    # partial payload doesn't silently zero it out.
+    if label_design_fee_amount is not None:
+        config.label_design_fee_amount = max(
+            Decimal("0"), Decimal(str(label_design_fee_amount))
+        )
     config.updated_by = actor
     config.save(
         update_fields=[
             "free_samples_included",
             "price_per_extra_sample",
             "currency_code",
+            "label_design_fee_amount",
             "updated_by",
             "updated_at",
         ]
@@ -1342,6 +1399,78 @@ def ensure_final_payment_for_formulation(
         recorded_by=recorded_by,
         status=PaymentStatus.PENDING,
         notes="\n".join(notes_parts),
+    )
+    schedule_payment_changed_broadcast(payment, "created")
+    return payment
+
+
+def ensure_label_design_payment_for_formulation(
+    *, formulation, actor=None
+) -> Payment | None:
+    """Idempotently create the LABEL_DESIGN invoice Payment when the
+    customer picks ``design_by_us`` on the label workflow.
+
+    Called from :class:`PortalLabelDesignChoosePathView.post` inside
+    the same transaction as the ``LABEL_PATH_PENDING → DESIGN_FEE_PENDING``
+    transition, so a rollback of the choose-path request tears the
+    payment down too.
+
+    Amount pulled from
+    :class:`~apps.payments.models.SamplePricingConfig.label_design_fee_amount`
+    for the workflow's org. Returns ``None`` when the fee is 0 /
+    unset — the caller then skips the ``DESIGN_FEE_PENDING`` gate
+    and transitions straight to ``DESIGN_PREFERENCES_PENDING`` for a
+    free design.
+    """
+
+    existing = Payment.objects.filter(
+        formulation=formulation,
+        kind=PaymentKind.LABEL_DESIGN,
+        status__in=(PaymentStatus.PENDING, PaymentStatus.APPROVED),
+    ).first()
+    if existing is not None:
+        return existing
+
+    config = get_or_create_sample_pricing_config(formulation.organization)
+    amount = Decimal(config.label_design_fee_amount or 0)
+    if amount <= 0:
+        return None
+
+    currency_from_config = (config.currency_code or "").strip()
+    company_currency = (
+        getattr(getattr(formulation.organization, "company", None), "currency_code", "")
+        or ""
+    ).strip()
+    currency = (currency_from_config or company_currency or "GBP").upper()[:3]
+
+    proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+    customer = (
+        getattr(proposal, "customer", None)
+        or getattr(formulation, "customer", None)
+    )
+    recorded_by = (
+        actor
+        or getattr(formulation, "updated_by", None)
+        or getattr(formulation, "created_by", None)
+    )
+
+    notes = (
+        "Auto-created when customer chose ‘Vita designs’ on the "
+        "label workflow. Approval unlocks the design brief step."
+    )
+
+    payment = Payment.objects.create(
+        organization=formulation.organization,
+        kind=PaymentKind.LABEL_DESIGN,
+        formulation=formulation,
+        customer=customer,
+        amount=amount,
+        currency=currency,
+        method=PaymentMethod.BANK_TRANSFER,
+        paid_at=timezone.now(),
+        recorded_by=recorded_by,
+        status=PaymentStatus.PENDING,
+        notes=notes,
     )
     schedule_payment_changed_broadcast(payment, "created")
     return payment

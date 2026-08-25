@@ -657,6 +657,10 @@ export interface SamplePricingConfigDto {
   //: default at render time" — matches the codebase's "never
   //: hardcode currency" rule.
   readonly currency_code: string;
+  //: One-off fee charged when a customer picks "Vita designs" on the
+  //: label workflow. 0 disables the gate entirely — the customer
+  //: goes straight to the design brief step. Decimal string.
+  readonly label_design_fee_amount: string;
   readonly discount_tiers: ReadonlyArray<SamplePricingDiscountTierDto>;
   readonly updated_at: string;
 }
@@ -666,6 +670,7 @@ export interface SamplePricingSaveBody {
   readonly free_samples_included: number;
   readonly price_per_extra_sample: string;
   readonly currency_code: string;
+  readonly label_design_fee_amount: string;
   readonly tiers: ReadonlyArray<{
     readonly quantity_threshold: number;
     readonly discount_percent: string;
