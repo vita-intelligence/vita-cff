@@ -69,6 +69,58 @@ _MO_ISO_KEYS = {
     "due_date",
 }
 
+# WorkstationSession — nested list on each MO. Same allowlist
+# discipline as the parent MO shape: strings capped, ints coerced,
+# unknown keys dropped. `finished_at` may be null (active session).
+_SESSION_STRING_KEYS_MAX = {
+    "uuid": 40,
+    "workstation_name": 120,
+    "status": 32,
+}
+
+_SESSION_INT_KEYS = {"duration_seconds"}
+_SESSION_ISO_KEYS = {"started_at", "finished_at"}
+
+# Cap the sessions per MO to match PSP's own @public_sessions_cap.
+# A single MO can accumulate dozens of sessions over rework; we
+# only need the newest.
+_MO_SESSIONS_CAP = 20
+
+
+def _sanitise_sessions(raw) -> list[dict]:
+    if not isinstance(raw, list):
+        return []
+
+    out: list[dict] = []
+    for entry in raw[:_MO_SESSIONS_CAP]:
+        if not isinstance(entry, dict):
+            continue
+
+        row: dict = {}
+        for key, cap in _SESSION_STRING_KEYS_MAX.items():
+            value = entry.get(key)
+            row[key] = str(value)[:cap] if value is not None else None
+
+        for key in _SESSION_INT_KEYS:
+            value = entry.get(key)
+            try:
+                row[key] = int(value) if value is not None else None
+            except (TypeError, ValueError):
+                row[key] = None
+
+        for key in _SESSION_ISO_KEYS:
+            value = entry.get(key)
+            row[key] = str(value)[:40] if value else None
+
+        # Skip sessions with no uuid — same phantom guard as the MO
+        # sanitiser above.
+        if not row.get("uuid"):
+            continue
+
+        out.append(row)
+
+    return out
+
 
 def _sanitise_manufacturing_orders(raw) -> list[dict]:
     """Coerce PSP's push into a customer-safe list of MO roadmap
@@ -102,6 +154,8 @@ def _sanitise_manufacturing_orders(raw) -> list[dict]:
         for key in _MO_ISO_KEYS:
             value = entry.get(key)
             row[key] = str(value)[:40] if value else None
+
+        row["sessions"] = _sanitise_sessions(entry.get("sessions"))
 
         # Skip entries with no identity — a stray push shouldn't land
         # a blank MO row that the portal renders as a phantom.
