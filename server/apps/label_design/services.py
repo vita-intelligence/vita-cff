@@ -185,8 +185,7 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
     # at LABEL_PATH_PENDING. Same logic as the deposit-side skip:
     # a 0% edge means no gate applies.
     from decimal import Decimal
-    from apps.proposals.constants import ProposalStatus
-    from apps.proposals.models import ProposalLine
+    from apps.proposals.models import ProposalLine, ProposalStatus
 
     accepted_line = (
         ProposalLine.objects.filter(
