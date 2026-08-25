@@ -2547,9 +2547,12 @@ def _cff_payload(cff: Any) -> dict:
 def _spec_sheet_payload(sheet: Any) -> dict:
     """Spec identity + sign-off block for the PSP sync payload.
 
-    Only invoked from the ``in_review → approved`` transition, so
-    ``director_signed_at`` is guaranteed set — that timestamp is what
-    PSP uses to gate the phase move to :awaiting_proposal.
+    Invoked from the ``in_review → approved`` transition AND on every
+    subsequent save_version once the sheet is approved. Director
+    signature is always set at that point; customer signature (kiosk
+    portal) may follow later and is included when present so PSP's
+    MO-create trust card can render "customer signed on X" without
+    a round-trip back to NPD.
     """
 
     return {
@@ -2563,6 +2566,13 @@ def _spec_sheet_payload(sheet: Any) -> dict:
             getattr(sheet, "director_user", None)
         ),
         "spec_approved_at": _iso(getattr(sheet, "director_signed_at", None)),
+        "spec_customer_signed_at": _iso(
+            getattr(sheet, "customer_signed_at", None)
+        ),
+        "spec_customer_signed_by_name": (
+            getattr(sheet, "customer_name", "") or ""
+        ).strip()
+        or None,
     }
 
 
@@ -4799,6 +4809,55 @@ def _override_to_bom_lines(
     return out
 
 
+def _bom_provenance(formulation: Any) -> dict:
+    """Trust-card provenance for the BOM push payload.
+
+    PSP records these fields on the ``boms`` row so its MO-create UI
+    can prove which spec sheet the BOM was derived from and detect
+    drift when a fresh push lands after the customer already signed.
+
+    Latest customer-signed spec wins; otherwise fall back to the
+    latest approved / sent sheet; otherwise leave the field null so
+    PSP's trust card renders "No spec attached yet".
+    """
+
+    try:
+        from apps.specifications.models import SpecificationSheet
+
+        sheet = (
+            SpecificationSheet.objects.filter(
+                formulation_version__formulation=formulation,
+                customer_signed_at__isnull=False,
+            )
+            .order_by("-customer_signed_at")
+            .first()
+        ) or (
+            SpecificationSheet.objects.filter(
+                formulation_version__formulation=formulation,
+                director_signed_at__isnull=False,
+            )
+            .order_by("-director_signed_at")
+            .first()
+        )
+    except Exception:  # noqa: BLE001 — silent-degrade
+        sheet = None
+
+    latest_version = (
+        formulation.versions.order_by("-version_number").first()
+        if hasattr(formulation, "versions")
+        else None
+    )
+
+    return {
+        "npd_spec_sheet_uuid": str(sheet.id) if sheet is not None else None,
+        "npd_formulation_version_id": (
+            str(latest_version.version_number)
+            if latest_version is not None
+            else None
+        ),
+    }
+
+
 def _push_flat_bom(*, client: PspClient, formulation: Any) -> dict | None:
     """Legacy path: one flat BOM against the finished-product item.
     Kept as the fallback for formulations that don't yet have a
@@ -4842,6 +4901,7 @@ def _push_flat_bom(*, client: PspClient, formulation: Any) -> dict | None:
         "name": f"{formulation.code} — {formulation.name}",
         "version_notes": f"NPD save at {formulation.updated_at.isoformat()}",
         "lines": payload_lines,
+        **_bom_provenance(formulation),
     }
     return client.put_bom(formulation.psp_finished_product_uuid, payload)
 
@@ -5385,6 +5445,7 @@ def _push_staged_cascade(
                     f"NPD stage push at {formulation.updated_at.isoformat()}"
                 ),
                 "lines": bom_lines,
+                **_bom_provenance(formulation),
             }
             response = client.put_bom(output_uuid, payload)
             if response is not None:
