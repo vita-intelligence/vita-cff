@@ -227,6 +227,15 @@ export function LabellingQueue({
         <SearchBox value={searchInput} onChange={setSearchInput} />
       </header>
 
+      <LabellingAttentionPane
+        orgId={orgId}
+        canReviewScientist={canReviewScientist}
+        canReviewDirector={canReviewDirector}
+        canDesign={canDesign}
+        search={search}
+        onOpenTab={(k) => setTab(k)}
+      />
+
       <Tabs
         tabs={TABS}
         active={tab}
@@ -475,6 +484,218 @@ function StatusChip({ status }: { status: LabelDesignStatus }) {
     </span>
   );
 }
+
+
+// ---------------------------------------------------------------------------
+// Attention pane — priority-first summary strip pinned above the tabs.
+// Same three-layer pattern trial-batches uses: what needs my attention
+// NOW → the compact table → filters. Each lane fires one small list
+// query so the pane stays fast even with hundreds of workflows.
+// ---------------------------------------------------------------------------
+
+
+interface AttentionLane {
+  readonly key: TabKey;
+  readonly title: string;
+  readonly description: string;
+  readonly status: LabelDesignStatus;
+  readonly tone: "blue" | "amber" | "purple" | "rose";
+}
+
+
+function LabellingAttentionPane({
+  orgId,
+  canReviewScientist,
+  canReviewDirector,
+  canDesign,
+  search,
+  onOpenTab,
+}: {
+  orgId: string;
+  canReviewScientist: boolean;
+  canReviewDirector: boolean;
+  canDesign: boolean;
+  search: string;
+  onOpenTab: (key: TabKey) => void;
+}) {
+  // Lane composition mirrors capability: a director sees the director
+  // pile first, a scientist their pile, a designer their in-progress
+  // work. Customer-approval always surfaces so nobody misses a
+  // customer we've already handed off to. On-hold surfaces because a
+  // paused workflow is by definition waiting on us.
+  const lanes = useMemo<ReadonlyArray<AttentionLane>>(() => {
+    const rows: AttentionLane[] = [];
+    if (canReviewDirector) {
+      rows.push({
+        key: "director_review",
+        title: "Director review",
+        description: "Sign off before the customer sees the artwork.",
+        status: "director_review",
+        tone: "amber",
+      });
+    }
+    if (canReviewScientist) {
+      rows.push({
+        key: "scientist_review",
+        title: "Scientist review",
+        description: "Check the label against the specification.",
+        status: "scientist_review",
+        tone: "blue",
+      });
+    }
+    if (canDesign) {
+      rows.push({
+        key: "design_in_progress",
+        title: "Currently in design",
+        description: "Your open workspaces.",
+        status: "design_in_progress",
+        tone: "blue",
+      });
+    }
+    rows.push({
+      key: "customer_approval",
+      title: "Awaiting customer approval",
+      description: "Watching — nudge if it lingers.",
+      status: "customer_approval",
+      tone: "purple",
+    });
+    rows.push({
+      key: "on_hold",
+      title: "On hold",
+      description: "Paused workflows waiting for a decision.",
+      status: "on_hold",
+      tone: "rose",
+    });
+    return rows;
+  }, [canReviewScientist, canReviewDirector, canDesign]);
+
+  return (
+    <section
+      className="rounded-md border border-ink-200 bg-ink-50/60 p-3"
+      aria-label="Needs your attention"
+    >
+      <header className="flex items-baseline justify-between px-1 pb-2">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-700">
+          Needs your attention
+        </h2>
+        <p className="text-[10px] text-ink-500">
+          Priority rows for your role. Click a lane to jump into the full list.
+        </p>
+      </header>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {lanes.map((lane) => (
+          <AttentionLaneCard
+            key={lane.key}
+            orgId={orgId}
+            lane={lane}
+            search={search}
+            onOpen={() => onOpenTab(lane.key)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+
+function AttentionLaneCard({
+  orgId,
+  lane,
+  search,
+  onOpen,
+}: {
+  orgId: string;
+  lane: AttentionLane;
+  search: string;
+  onOpen: () => void;
+}) {
+  const query = useLabelDesigns(orgId, { status: lane.status, search });
+  const items = (query.data?.pages ?? []).flatMap((p) => p.items).slice(0, 5);
+  const total = query.data?.pages?.[0]?.total ?? items.length;
+  const tone = ATTENTION_TONE[lane.tone];
+
+  return (
+    <div
+      className={`flex flex-col gap-2 rounded-md border ${tone.border} ${tone.bg} p-3`}
+    >
+      <div className="flex items-baseline justify-between">
+        <p className={`text-xs font-semibold ${tone.title}`}>{lane.title}</p>
+        <span
+          className={`inline-flex min-w-[1.5rem] items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${tone.badge}`}
+        >
+          {total}
+        </span>
+      </div>
+      <p className="text-[11px] leading-snug text-ink-500">{lane.description}</p>
+      {query.isLoading ? (
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-ink-500">
+          <Loader2 className="h-3 w-3 animate-spin" /> Loading…
+        </span>
+      ) : items.length === 0 ? (
+        <p className="text-[11px] text-ink-400">Nothing here right now.</p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {items.map((it) => (
+            <li key={it.id}>
+              <Link
+                href={`/labelling/${it.id}`}
+                className="block truncate rounded px-1.5 py-1 text-[11px] text-ink-800 hover:bg-ink-0 hover:text-ink-1000"
+                title={it.formulation_name || it.formulation_code}
+              >
+                <span className="font-mono font-semibold">
+                  {it.formulation_code || "—"}
+                </span>
+                {it.formulation_name ? (
+                  <span className="ml-1 text-ink-600">· {it.formulation_name}</span>
+                ) : null}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+      {total > items.length ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          className={`self-start text-[11px] font-semibold ${tone.title} hover:underline`}
+        >
+          See all {total} →
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+
+const ATTENTION_TONE: Record<
+  AttentionLane["tone"],
+  { border: string; bg: string; title: string; badge: string }
+> = {
+  blue: {
+    border: "border-blue-200",
+    bg: "bg-blue-50/60",
+    title: "text-blue-800",
+    badge: "bg-blue-200 text-blue-900",
+  },
+  amber: {
+    border: "border-amber-200",
+    bg: "bg-amber-50/60",
+    title: "text-amber-800",
+    badge: "bg-amber-200 text-amber-900",
+  },
+  purple: {
+    border: "border-purple-200",
+    bg: "bg-purple-50/60",
+    title: "text-purple-800",
+    badge: "bg-purple-200 text-purple-900",
+  },
+  rose: {
+    border: "border-rose-200",
+    bg: "bg-rose-50/60",
+    title: "text-rose-800",
+    badge: "bg-rose-200 text-rose-900",
+  },
+};
 
 
 function EmptyState({ search }: { search: string }) {
