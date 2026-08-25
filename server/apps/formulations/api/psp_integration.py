@@ -42,6 +42,11 @@ _MO_STRING_KEYS_MAX = {
     "target_lot_code": 40,
     "quantity": 40,
     "quantity_produced": 40,
+    # PSP ships the OUTPUT item's stock UoM symbol (kg / L / pcs /
+    # mg) so the customer FE can render "10,000 pcs" instead of a
+    # bare integer. Symbol column on units_of_measurement caps at
+    # 16 chars.
+    "uom_symbol": 16,
 }
 
 _MO_INT_KEYS = {
