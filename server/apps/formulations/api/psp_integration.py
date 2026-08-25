@@ -95,12 +95,16 @@ _PO_STRING_KEYS_MAX = {
     "code": 40,
     "vendor_name": 200,
     "status": 32,
+    # Derived payment state — "not_invoiced" / "invoiced_unpaid" /
+    # "partially_paid" / "paid" / "disputed". The FE translates
+    # these to customer copy.
+    "payment_status": 32,
 }
 _PO_INT_KEYS = {"line_count"}
-# expected_delivery_date is a date (YYYY-MM-DD, 10 chars); the ISO
-# cap of 40 is generous enough to survive a future full-datetime
-# migration without a coordinated NPD change.
-_PO_ISO_KEYS = {"expected_delivery_date"}
+# expected_delivery_date is a date (YYYY-MM-DD, 10 chars); ISO cap
+# of 40 covers a future full-datetime migration. `paid_at` is a
+# UTC datetime once fully paid, else null.
+_PO_ISO_KEYS = {"expected_delivery_date", "paid_at"}
 _MO_POS_CAP = 20
 
 
