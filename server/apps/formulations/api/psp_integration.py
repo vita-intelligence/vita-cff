@@ -86,6 +86,58 @@ _SESSION_ISO_KEYS = {"started_at", "finished_at"}
 # only need the newest.
 _MO_SESSIONS_CAP = 20
 
+# Purchase orders supplying an MO's placeholder bookings — same
+# allowlist discipline. Vendor names capped generously; PSP's
+# vendors.name / legal_name column has no hard cap so we defend
+# against an accidental novel.
+_PO_STRING_KEYS_MAX = {
+    "uuid": 40,
+    "code": 40,
+    "vendor_name": 200,
+    "status": 32,
+}
+_PO_INT_KEYS = {"line_count"}
+# expected_delivery_date is a date (YYYY-MM-DD, 10 chars); the ISO
+# cap of 40 is generous enough to survive a future full-datetime
+# migration without a coordinated NPD change.
+_PO_ISO_KEYS = {"expected_delivery_date"}
+_MO_POS_CAP = 20
+
+
+def _sanitise_purchase_orders(raw) -> list[dict]:
+    if not isinstance(raw, list):
+        return []
+
+    out: list[dict] = []
+    for entry in raw[:_MO_POS_CAP]:
+        if not isinstance(entry, dict):
+            continue
+
+        row: dict = {}
+        for key, cap in _PO_STRING_KEYS_MAX.items():
+            value = entry.get(key)
+            row[key] = str(value)[:cap] if value is not None else None
+
+        for key in _PO_INT_KEYS:
+            value = entry.get(key)
+            try:
+                row[key] = int(value) if value is not None else None
+            except (TypeError, ValueError):
+                row[key] = None
+
+        for key in _PO_ISO_KEYS:
+            value = entry.get(key)
+            row[key] = str(value)[:40] if value else None
+
+        # Same phantom guard as sessions — a PO with no uuid is a
+        # malformed row that shouldn't reach the portal.
+        if not row.get("uuid"):
+            continue
+
+        out.append(row)
+
+    return out
+
 
 def _sanitise_sessions(raw) -> list[dict]:
     if not isinstance(raw, list):
@@ -156,6 +208,9 @@ def _sanitise_manufacturing_orders(raw) -> list[dict]:
             row[key] = str(value)[:40] if value else None
 
         row["sessions"] = _sanitise_sessions(entry.get("sessions"))
+        row["purchase_orders"] = _sanitise_purchase_orders(
+            entry.get("purchase_orders")
+        )
 
         # Skip entries with no identity — a stray push shouldn't land
         # a blank MO row that the portal renders as a phantom.
