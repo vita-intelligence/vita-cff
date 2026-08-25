@@ -536,6 +536,16 @@ class PortalLabelDesignUploadArtworkView(PortalAPIView):
             compliance_block_snapshot=_compliance_snapshot(ld),
             customer_approved_own_design=True,
         )
+        # Attach any additional "back / side / mockup" views the
+        # customer bundled in the same upload. Same shape as the
+        # staff-side upload endpoint.
+        from apps.label_design.api.views import _attach_additional_assets
+
+        _attach_additional_assets(
+            revision=revision,
+            request=request,
+            labels=payload.get("additional_file_labels", []),
+        )
         ld.current_revision = revision
         ld.save(update_fields=["current_revision", "updated_at"])
 

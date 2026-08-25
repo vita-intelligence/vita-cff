@@ -48,6 +48,7 @@ from apps.label_design.models import (
     LabelDesign,
     LabelDesignReview,
     LabelDesignRevision,
+    LabelDesignRevisionAsset,
     LabelDesignTransition,
 )
 from apps.label_design.services import (
@@ -310,6 +311,67 @@ def _next_revision_number(label_design: LabelDesign) -> int:
     return (last or 0) + 1
 
 
+#: Cap the supplementary-file count per revision. Ten is generous
+#: enough for front / back / left / right / top / bottom / mockup
+#: shots and still leaves headroom before the multipart body gets
+#: unwieldy. Enforced at every upload path.
+MAX_ADDITIONAL_ASSETS: int = 10
+
+
+def _attach_additional_assets(
+    *,
+    revision: LabelDesignRevision,
+    request: Request,
+    labels: list[str],
+) -> None:
+    """Persist any ``additional_files`` uploaded alongside the primary
+    artwork.
+
+    Files ride the multipart body under the ``additional_files`` field
+    (repeated); their user-facing labels ride via the parallel
+    ``additional_file_labels`` array (JSON-encoded string, positional).
+    A missing / short label array is fine — the FE renders "View N" as
+    a fallback.
+    """
+
+    uploads = request.FILES.getlist("additional_files") or []
+    if not uploads:
+        return
+    if len(uploads) > MAX_ADDITIONAL_ASSETS:
+        raise ValidationError(
+            {
+                "detail": (
+                    f"At most {MAX_ADDITIONAL_ASSETS} extra artwork "
+                    "files per revision."
+                ),
+                "code": "too_many_additional_files",
+            }
+        )
+    for idx, upload in enumerate(uploads):
+        # Reuse the same file-type + size validator as the primary
+        # artwork so the additional assets can't smuggle a
+        # 500 MB video through the back door.
+        from apps.label_design.api.serializers import (
+            _validate_artwork_file,
+        )
+
+        _validate_artwork_file(upload)
+        label = ""
+        if idx < len(labels):
+            label = str(labels[idx] or "")[:80]
+        LabelDesignRevisionAsset.objects.create(
+            revision=revision,
+            file=upload,
+            label=label,
+            sort_order=idx,
+            original_filename=(upload.name or "")[:255],
+            content_type=(
+                (getattr(upload, "content_type", "") or "").lower()
+            )[:120],
+            size_bytes=int(getattr(upload, "size", 0) or 0),
+        )
+
+
 def _make_compliance_snapshot(label_design: LabelDesign) -> dict:
     """Freeze the compliance content block onto the new revision.
 
@@ -378,6 +440,11 @@ class LabelDesignUploadArtworkView(APIView):
             notes=serializer.validated_data["notes"],
             compliance_block_snapshot=_make_compliance_snapshot(label_design),
         )
+        _attach_additional_assets(
+            revision=revision,
+            request=request,
+            labels=serializer.validated_data.get("additional_file_labels", []),
+        )
         label_design.current_revision = revision
         label_design.save(update_fields=["current_revision", "updated_at"])
 
@@ -387,7 +454,10 @@ class LabelDesignUploadArtworkView(APIView):
             action="label_design.upload_artwork",
             target=label_design,
             before=None,
-            after={"revision_id": str(revision.id)},
+            after={
+                "revision_id": str(revision.id),
+                "additional_assets": revision.additional_assets.count(),
+            },
         )
         return Response(
             LabelDesignReadSerializer(label_design).data,
