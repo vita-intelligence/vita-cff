@@ -9,6 +9,14 @@
 CLAUDE.md
 AGENTS.md
 .claude/
+# Edited Google-review copy — real customer names, kept local only.
+reviews-edited.md
+
+# ----- Playwright / test artefacts -----------------------------------------
+# Regenerated on every test run; noisy in git status.
+client/test-results/
+client/playwright-report/
+client/playwright/.cache/
 
 # ----- Secrets & environment ------------------------------------------------
 .env
