@@ -144,7 +144,7 @@ function poDeliveryStatusLabel(status: string | null): {
     case "pending_approver":
       return { label: "Awaiting approver", tone: "amber" };
     case "pending_director":
-      return { label: "Awaiting director", tone: "amber" };
+      return { label: "Awaiting authoriser", tone: "amber" };
     case "approved":
       return { label: "Approved, sending to supplier", tone: "amber" };
     case "ordered":
