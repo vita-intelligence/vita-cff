@@ -309,6 +309,11 @@ def _collect_projects(
     rows = list(
         _projects_queryset(customer_ids, search)
         .filter(_cursor_filter(cursor))
+        # ``resolve_stage`` now peeks at ``psp_production_status`` so
+        # the badge tracks the live PSP phase instead of getting stuck
+        # on ``label_approved``. Pull it in the same query to avoid an
+        # N+1 per row on the activity feed.
+        .select_related("psp_production_status")
         .order_by("-updated_at", "-id")[:cap]
     )
     if not rows:

@@ -713,6 +713,57 @@ class PortalSampleDispatchConfirmView(PortalAPIView):
         return Response(result, status=200)
 
 
+class PortalSamplePickupEventDeliveryView(PortalAPIView):
+    """``POST /api/portal/samples/<payment_id>/dispatch/pickup-events/<event_uuid>/confirm-delivery/``
+    — per-event customer-driven POD for multi-visit shipments.
+
+    Each pickup event confirms independently — a Tuesday truck's
+    delivery can be signed off without touching a Thursday truck's
+    row. Same ownership guard as the whole-shipment confirm view.
+
+    Body: ``{"recipient_signatory": "...", "delivery_notes": "..."}``.
+    """
+
+    def post(self, request: Request, payment_id, event_uuid) -> Response:
+        from apps.client_portal.queries import customer_ids_for_account
+        from apps.psp.services import (
+            confirm_psp_dispatch_event_delivery_for_payment,
+        )
+
+        customer_ids = customer_ids_for_account(request.user)
+        payment = get_object_or_404(
+            Payment.objects.select_related(
+                "formulation", "organization", "customer"
+            ),
+            id=payment_id,
+            kind=PaymentKind.FINAL,
+            formulation__project_type="ready_to_go",
+            customer_id__in=customer_ids,
+        )
+
+        signatory = (request.data.get("recipient_signatory") or "").strip()
+        if not signatory:
+            signatory = (getattr(payment.customer, "name", "") or "").strip()
+        if not signatory:
+            return Response(
+                {"detail": "recipient_signatory_required"}, status=400
+            )
+
+        notes = (request.data.get("delivery_notes") or "").strip()
+
+        result = confirm_psp_dispatch_event_delivery_for_payment(
+            payment=payment,
+            event_uuid=event_uuid,
+            recipient_signatory=signatory,
+            delivery_notes=notes,
+        )
+        if result is None:
+            return Response(
+                {"detail": "confirmation_failed"}, status=502
+            )
+        return Response(result, status=200)
+
+
 class PortalSampleDispatchPhotoView(PortalAPIView):
     """``GET /api/portal/samples/<payment_id>/dispatch/photos/<file_uuid>/``
     — proxy-download one truck-arrival photo for a customer.

@@ -36,6 +36,15 @@ type Stage =
   | "label_review"
   | "label_customer_approval"
   | "label_approved"
+  // PSP-driven production overlay states. Once production is
+  // actually running the badge tracks the goods, not the label
+  // workflow that finished a week ago.
+  | "production_planning"
+  | "production_in_progress"
+  | "production_quality_check"
+  | "awaiting_dispatch"
+  | "dispatched"
+  | "delivered"
   | "on_hold"
   | "unknown"
   // Pre-project CFF states. Not real project stages — these only
@@ -118,6 +127,12 @@ const STAGE_TONE: Record<Stage, string> = {
   label_review: "bg-blue-200 text-black",
   label_customer_approval: "bg-orange-500 text-black",
   label_approved: "bg-emerald-300 text-black",
+  production_planning: "bg-blue-200 text-black",
+  production_in_progress: "bg-blue-200 text-black",
+  production_quality_check: "bg-purple-200 text-black",
+  awaiting_dispatch: "bg-amber-200 text-black",
+  dispatched: "bg-amber-200 text-black",
+  delivered: "bg-emerald-300 text-black",
   on_hold: "bg-rose-200 text-black",
   unknown: "bg-neutral-100 text-black",
   // CFF stages read as pending / declined, not as "urgent" — a

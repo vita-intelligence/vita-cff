@@ -141,7 +141,13 @@ interface ReleaseDocument {
 
 
 interface SlotDispatch {
-  readonly status: "picked_up" | "delivered";
+  /** Widened from ``picked_up | delivered`` when multi-visit landed.
+   *  ``partially_picked`` means at least one truck has taken part of
+   *  the qty and more visits are still owed. */
+  readonly status: "partially_picked" | "picked_up" | "delivered";
+  readonly qty: string | null;
+  readonly picked_up_qty: string | null;
+  readonly remaining_qty: string | null;
   readonly picked_up_at: string | null;
   readonly delivered_at: string | null;
   readonly carrier: string | null;
@@ -151,17 +157,48 @@ interface SlotDispatch {
   readonly tracking_number: string | null;
   readonly seal_number: string | null;
   readonly temperature_c: string | null;
-  readonly checklist: {
-    readonly packaging_intact: boolean | null;
-    readonly labels_verified: boolean | null;
-    readonly vehicle_clean_suitable: boolean | null;
-    readonly transport_condition_acceptable: boolean | null;
-    readonly dispatch_approved: boolean | null;
-  };
+  readonly checklist: SlotDispatchChecklist;
   readonly photos: readonly {
     readonly uuid: string;
     readonly filename: string;
   }[];
+  /** Per-truck timeline. One row per visit with its own qty, checklist,
+   *  driver, paperwork, photos, and delivery POD. Empty on legacy
+   *  single-visit shipments (in which case the ``checklist`` + top-
+   *  level fields carry the whole story). */
+  readonly pickup_events: readonly SlotPickupEvent[];
+}
+
+interface SlotDispatchChecklist {
+  readonly packaging_intact: boolean | null;
+  readonly labels_verified: boolean | null;
+  readonly vehicle_clean_suitable: boolean | null;
+  readonly transport_condition_acceptable: boolean | null;
+  readonly dispatch_approved: boolean | null;
+}
+
+interface SlotPickupEventPhoto {
+  readonly uuid: string;
+  readonly filename: string;
+  readonly mime: string;
+}
+
+interface SlotPickupEvent {
+  readonly uuid: string;
+  readonly qty: string;
+  readonly picked_up_at: string;
+  readonly driver_name: string | null;
+  readonly vehicle_registration: string | null;
+  readonly consignment_note_ref: string | null;
+  readonly tracking_number: string | null;
+  readonly seal_number: string | null;
+  readonly temperature_c: string | null;
+  readonly notes: string | null;
+  readonly checklist: SlotDispatchChecklist;
+  readonly delivered_at: string | null;
+  readonly recipient_signatory: string | null;
+  readonly delivery_notes: string | null;
+  readonly photos: readonly SlotPickupEventPhoto[];
 }
 
 
@@ -451,8 +488,17 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
       {/* Dispatch details live inside the active slot's expanded
           story now — no duplicate below-ladder card. */}
 
-      {inProduction && activeSlot && activeSlot.trial_batch_id
-        && isShippedOrLater(activeSlot.production_phase) ? (
+      {/* Whole-shipment "I've received it" fallback — kept only for
+          legacy single-visit shipments where PSP didn't emit any
+          pickup events (pre multi-visit). Once events exist, each
+          truck has its own confirm-receipt affordance rendered inside
+          ``DispatchDetailsCard`` per-event block, so we hide this
+          catch-all to avoid double-confirmation. */}
+      {inProduction &&
+      activeSlot &&
+      activeSlot.trial_batch_id &&
+      isShippedOrLater(activeSlot.production_phase) &&
+      (activeSlot.dispatch?.pickup_events?.length ?? 0) === 0 ? (
         <div className="mt-4">
           <button
             type="button"
@@ -1335,6 +1381,14 @@ function DispatchDetailsCard({
   }));
 
   const isDelivered = dispatch.status === "delivered";
+  const events = dispatch.pickup_events ?? [];
+  const hasEvents = events.length > 0;
+  const pickedTotal = Number(dispatch.picked_up_qty ?? 0);
+  const totalQty = Number(dispatch.qty ?? 0);
+  const pickedPct =
+    totalQty > 0 && Number.isFinite(pickedTotal)
+      ? Math.min(100, Math.round((pickedTotal / totalQty) * 100))
+      : null;
 
   return (
     <section className="mt-4 border-2 border-black bg-white p-4">
@@ -1417,42 +1471,80 @@ function DispatchDetailsCard({
         ) : null}
       </div>
 
-      <div className="mt-3 border-t border-black/10 pt-3">
-        <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
-          Truck-arrival checklist
-        </p>
-        <ul className="mt-2 space-y-1">
-          {DISPATCH_CHECKLIST.map(({ key, label }) => {
-            const passed = dispatch.checklist[key] === true;
-            return (
-              <li
-                key={key}
-                className="flex items-center gap-2 text-xs"
-              >
-                <span
-                  className={
-                    "flex h-4 w-4 shrink-0 items-center justify-center border border-black " +
-                    (passed
-                      ? "bg-emerald-200 text-emerald-800"
-                      : "bg-white text-neutral-400")
-                  }
-                >
-                  {passed ? (
-                    <Check className="h-2.5 w-2.5" />
-                  ) : (
-                    <span>—</span>
-                  )}
-                </span>
-                <span className={passed ? "text-neutral-900" : "text-neutral-500"}>
-                  {label}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
+      {hasEvents ? (
+        <div className="mt-3 border-t border-black/10 pt-3">
+          <div className="flex items-baseline justify-between">
+            <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+              Pickup progress ({events.length}{" "}
+              {events.length === 1 ? "visit" : "visits"})
+            </p>
+            {pickedPct !== null && dispatch.qty && dispatch.picked_up_qty ? (
+              <span className="text-[10px] text-neutral-600">
+                {dispatch.picked_up_qty} of {dispatch.qty} · {pickedPct}%
+              </span>
+            ) : null}
+          </div>
+          {pickedPct !== null ? (
+            <div className="mt-1 h-1.5 w-full overflow-hidden border border-black bg-white">
+              <div
+                className="h-full bg-orange-500"
+                style={{ width: `${pickedPct}%` }}
+              />
+            </div>
+          ) : null}
+          <ul className="mt-3 space-y-2">
+            {events.map((event, idx) => {
+              const firstOpenIdx = events.findIndex((e) => !e.delivered_at);
+              return (
+                <SlotPickupEventBlock
+                  key={event.uuid}
+                  event={event}
+                  eventIndex={idx}
+                  totalEvents={events.length}
+                  slotId={slotId}
+                  defaultOpen={idx === firstOpenIdx || events.length === 1}
+                />
+              );
+            })}
+          </ul>
+        </div>
+      ) : (
+        <div className="mt-3 border-t border-black/10 pt-3">
+          <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+            Truck-arrival checklist
+          </p>
+          <ul className="mt-2 space-y-1">
+            {DISPATCH_CHECKLIST.map(({ key, label }) => {
+              const passed = dispatch.checklist[key] === true;
+              return (
+                <li key={key} className="flex items-center gap-2 text-xs">
+                  <span
+                    className={
+                      "flex h-4 w-4 shrink-0 items-center justify-center border border-black " +
+                      (passed
+                        ? "bg-emerald-200 text-emerald-800"
+                        : "bg-white text-neutral-400")
+                    }
+                  >
+                    {passed ? (
+                      <Check className="h-2.5 w-2.5" />
+                    ) : (
+                      <span>—</span>
+                    )}
+                  </span>
+                  <span
+                    className={passed ? "text-neutral-900" : "text-neutral-500"}
+                  >
+                    {label}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
-      {lightboxPhotos.length > 0 ? (
+      {!hasEvents && lightboxPhotos.length > 0 ? (
         <div className="mt-3 border-t border-black/10 pt-3">
           <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
             Loading photos ({lightboxPhotos.length})
@@ -1521,6 +1613,337 @@ function DispatchField({
         {shown || "—"}
       </p>
     </div>
+  );
+}
+
+
+/** Per-truck expandable block. Matches the samples/projects portal
+ *  layout so the customer sees a consistent per-visit story across
+ *  all three portals — collapsed header (visit qty + driver + status
+ *  pill), expanded body with the carrier slab, checklist chips, load
+ *  photos, and a per-visit "Confirm receipt" modal. Backend hits the
+ *  slot-scoped confirm-delivery endpoint the sample per-event flow
+ *  shares. */
+function SlotPickupEventBlock({
+  event,
+  eventIndex,
+  totalEvents,
+  slotId,
+  defaultOpen,
+}: {
+  event: SlotPickupEvent;
+  eventIndex: number;
+  totalEvents: number;
+  slotId: string;
+  defaultOpen: boolean;
+}) {
+  const router = useRouter();
+  const [expanded, setExpanded] = useState(defaultOpen);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [signatory, setSignatory] = useState("");
+  const [notes, setNotes] = useState("");
+  const [pending, setPending] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const delivered = Boolean(event.delivered_at);
+  const hasPhotos = event.photos && event.photos.length > 0;
+
+  const pickedAt = new Date(event.picked_up_at).toLocaleString();
+  const deliveredAt = event.delivered_at
+    ? new Date(event.delivered_at).toLocaleString()
+    : null;
+
+  const lightboxPhotos = event.photos.map((photo) => ({
+    uuid: photo.uuid,
+    filename: photo.filename,
+    href:
+      `/api/portal/trial-batches/slots/${encodeURIComponent(slotId)}` +
+      `/dispatch-photos/${encodeURIComponent(photo.uuid)}/`,
+  }));
+
+  const visitLabel =
+    totalEvents === 1 ? "Pickup" : `Visit ${eventIndex + 1} of ${totalEvents}`;
+
+  async function submitConfirm() {
+    if (!signatory.trim()) {
+      setConfirmError("Please enter who signed for the delivery.");
+      return;
+    }
+    setPending(true);
+    setConfirmError(null);
+    try {
+      await apiClient.post(
+        `/api/portal/trial-batches/slots/${slotId}/pickup-events/${event.uuid}/confirm-delivery/`,
+        {
+          recipient_signatory: signatory.trim(),
+          ...(notes.trim() ? { delivery_notes: notes.trim() } : {}),
+        },
+      );
+      setConfirmOpen(false);
+      router.refresh();
+    } catch (err: unknown) {
+      setConfirmError(portalErrorMessage(err));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <li className="border-2 border-black bg-white">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-neutral-50 focus:outline-none focus-visible:bg-neutral-50"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <p className="text-sm font-bold text-black">{visitLabel}</p>
+            <span className="font-mono text-xs text-neutral-700">
+              {event.qty} units
+            </span>
+            <span className="text-[11px] text-neutral-500">· {pickedAt}</span>
+          </div>
+          <p className="mt-0.5 text-[11px] text-neutral-600">
+            {event.driver_name || "Driver name unavailable"}
+            {event.vehicle_registration ? ` · ${event.vehicle_registration}` : ""}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {delivered ? (
+            <span className="border border-black bg-emerald-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-emerald-900">
+              Received
+            </span>
+          ) : (
+            <span className="border border-black bg-orange-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-orange-900">
+              In transit
+            </span>
+          )}
+          {expanded ? (
+            <ChevronDown className="h-4 w-4 text-neutral-500" aria-hidden />
+          ) : (
+            <ChevronDown
+              className="h-4 w-4 -rotate-90 text-neutral-500"
+              aria-hidden
+            />
+          )}
+        </div>
+      </button>
+
+      {expanded ? (
+        <div className="space-y-3 border-t border-black bg-neutral-50 p-3">
+          <div className="border border-black/60 bg-white p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+              Carrier
+            </p>
+            <div className="mt-2 grid gap-3 text-sm sm:grid-cols-2">
+              <DispatchField label="Driver" value={event.driver_name} />
+              <DispatchField
+                label="Vehicle registration"
+                value={event.vehicle_registration}
+                mono
+              />
+              <DispatchField
+                label="Consignment note"
+                value={event.consignment_note_ref}
+                mono
+              />
+              <DispatchField
+                label="Tracking number"
+                value={event.tracking_number}
+                mono
+              />
+              <DispatchField
+                label="Seal number"
+                value={event.seal_number}
+                mono
+              />
+              <DispatchField
+                label="Temperature"
+                value={event.temperature_c ? `${event.temperature_c} °C` : null}
+                mono
+              />
+              <DispatchField label="Picked up" value={pickedAt} />
+              {deliveredAt ? (
+                <DispatchField label="Delivered" value={deliveredAt} />
+              ) : null}
+              {event.recipient_signatory ? (
+                <DispatchField
+                  label="Signed by"
+                  value={event.recipient_signatory}
+                />
+              ) : null}
+            </div>
+          </div>
+
+          <div className="border border-black/60 bg-white p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+              Truck-arrival checklist
+            </p>
+            <ul className="mt-2 space-y-1">
+              {DISPATCH_CHECKLIST.map(({ key, label }) => {
+                const passed = event.checklist[key] === true;
+                return (
+                  <li key={key} className="flex items-center gap-2 text-xs">
+                    <span
+                      className={
+                        "flex h-4 w-4 shrink-0 items-center justify-center border border-black " +
+                        (passed
+                          ? "bg-emerald-200 text-emerald-800"
+                          : "bg-white text-neutral-400")
+                      }
+                    >
+                      {passed ? (
+                        <Check className="h-2.5 w-2.5" />
+                      ) : (
+                        <span>—</span>
+                      )}
+                    </span>
+                    <span
+                      className={passed ? "text-neutral-900" : "text-neutral-500"}
+                    >
+                      {label}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+
+          {hasPhotos ? (
+            <div className="border border-black/60 bg-white p-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+                Loading photos ({lightboxPhotos.length})
+              </p>
+              <ul className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {lightboxPhotos.map((photo, index) => (
+                  <li key={photo.uuid}>
+                    <button
+                      type="button"
+                      onClick={() => setLightboxIndex(index)}
+                      title={photo.filename}
+                      aria-label={`Open ${photo.filename} in a larger view`}
+                      className="block aspect-square w-full overflow-hidden border-2 border-black bg-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] focus:outline-none focus-visible:shadow-[3px_3px_0_0_black]"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element --
+                          operator-uploaded evidence served via ownership-
+                          scoped proxy at unknown resolutions. */}
+                      <img
+                        src={photo.href}
+                        alt={photo.filename}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                      />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {event.notes ? (
+            <p className="text-xs italic text-neutral-600">{event.notes}</p>
+          ) : null}
+
+          {!delivered ? (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setConfirmOpen(true)}
+                className="inline-flex items-center gap-2 border-2 border-black bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest text-black transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black]"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Confirm receipt of this visit
+              </button>
+            </div>
+          ) : null}
+
+          {confirmOpen && !delivered ? (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+              onClick={() => !pending && setConfirmOpen(false)}
+            >
+              <div
+                className="w-full max-w-md border-2 border-black bg-white p-5"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <p className="text-sm font-bold text-black">
+                  Confirm receipt of {event.qty} units
+                </p>
+                <p className="mt-1 text-xs text-neutral-600">
+                  Picked up on {pickedAt}. Enter the name of whoever signed
+                  for this delivery on your side.
+                </p>
+                <div className="mt-3 space-y-2 text-xs">
+                  <div>
+                    <label className="font-bold text-neutral-800">
+                      Recipient name
+                    </label>
+                    <input
+                      autoFocus
+                      type="text"
+                      value={signatory}
+                      onChange={(e) => setSignatory(e.target.value)}
+                      className="mt-1 w-full border-2 border-black px-2 py-1.5"
+                      placeholder="e.g. Anna Kowalski"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-bold text-neutral-800">
+                      Notes{" "}
+                      <span className="font-normal text-neutral-500">
+                        (optional)
+                      </span>
+                    </label>
+                    <textarea
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      rows={2}
+                      className="mt-1 w-full border-2 border-black px-2 py-1.5"
+                    />
+                  </div>
+                  {confirmError ? (
+                    <p className="text-xs text-red-700">{confirmError}</p>
+                  ) : null}
+                </div>
+                <div className="mt-4 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmOpen(false)}
+                    disabled={pending}
+                    className="px-3 py-1.5 text-xs text-neutral-700"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={submitConfirm}
+                    disabled={pending}
+                    className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:opacity-50"
+                  >
+                    {pending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                    )}
+                    Record delivery
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {lightboxIndex !== null && lightboxPhotos.length > 0 ? (
+            <DispatchPhotoLightbox
+              photos={lightboxPhotos}
+              openIndex={lightboxIndex}
+              onClose={() => setLightboxIndex(null)}
+              onIndexChange={setLightboxIndex}
+            />
+          ) : null}
+        </div>
+      ) : null}
+    </li>
   );
 }
 

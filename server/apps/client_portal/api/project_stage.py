@@ -49,6 +49,19 @@ STAGE_LABELS: dict[str, str] = {
     "label_review": "Label design — internal review",
     "label_customer_approval": "Label design — your approval needed",
     "label_approved": "Label approved · ready for production",
+    # PSP-driven production stages. Once production is in flight
+    # the customer cares about "where is my product?" — the label
+    # workflow's terminal-good ``label_approved`` badge stopped
+    # telling the truth as soon as MOs started running. These
+    # stages override ``label_approved`` (and the internal
+    # label-in-progress / label-review states) when PSP reports
+    # them, so the badge tracks the goods, not the label.
+    "production_planning": "Production planning",
+    "production_in_progress": "In production",
+    "production_quality_check": "Quality release",
+    "awaiting_dispatch": "Preparing dispatch",
+    "dispatched": "On the way",
+    "delivered": "Delivered",
     "on_hold": "On hold",
     "unknown": "In progress",
     # Pre-project stages for un-converted CFFs — used by the
@@ -87,12 +100,65 @@ STAGE_TONES: dict[str, tuple[str, bool]] = {
     "label_review": ("in_progress", False),
     "label_customer_approval": ("attention", True),
     "label_approved": ("success", False),
+    "production_planning": ("in_progress", False),
+    "production_in_progress": ("in_progress", False),
+    "production_quality_check": ("in_progress", False),
+    "awaiting_dispatch": ("in_progress", False),
+    "dispatched": ("in_progress", False),
+    "delivered": ("success", False),
     "on_hold": ("danger", False),
     "unknown": ("in_progress", False),
     "cff_under_review": ("in_progress", False),
     "cff_rejected": ("danger", False),
     "cff_awaiting_proposal": ("in_progress", False),
 }
+
+
+#: Map PSP's wizard phase key → NPD portal stage_key. Anything
+#: mapped to ``None`` means PSP hasn't yet made enough progress to
+#: override the label badge (early setup / awaiting first approval
+#: — the customer's active workstream is still on the label).
+_PSP_PHASE_TO_STAGE: dict[str, str | None] = {
+    # Pre-production PSP phases — still too early to override the
+    # label workflow which is running in parallel.
+    "setup": None,
+    "approval": None,
+    # Production planning / raw material inbound.
+    "production_planning": "production_planning",
+    "awaiting_ingredients": "production_planning",
+    # Actively making the product.
+    "in_production": "production_in_progress",
+    "closeout": "production_in_progress",
+    # Final quality release ceremony.
+    "final_release": "production_quality_check",
+    # Post-production, awaiting shipment paperwork / truck.
+    "awaiting_routing": "awaiting_dispatch",
+    "ready_to_dispatch": "awaiting_dispatch",
+    "awaiting_pickup": "awaiting_dispatch",
+    # In transit / delivered.
+    "dispatched": "dispatched",
+    "delivered": "delivered",
+}
+
+
+def _psp_derived_stage(formulation: Formulation) -> str | None:
+    """Return a portal stage_key based on PSP's live production phase,
+    or ``None`` when PSP hasn't reported anything yet OR the reported
+    phase is too early to override the label workflow (still in setup
+    / awaiting-approval territory).
+
+    Reads the OneToOneField ``psp_production_status`` — a soft ``None``
+    when the row hasn't been pushed yet keeps existing "label-only"
+    resolution intact.
+    """
+
+    status = getattr(formulation, "psp_production_status", None)
+    if status is None:
+        return None
+    phase = (status.phase or "").strip()
+    if not phase:
+        return None
+    return _PSP_PHASE_TO_STAGE.get(phase)
 
 
 def resolve_stage(
@@ -111,22 +177,17 @@ def resolve_stage(
     not "proposal pending".
     """
 
+    # Priority 1: label design states that BLOCK the customer (they
+    # need to click something on their side). Attention-tone stages
+    # always win — production can still be running in parallel, but
+    # the customer's own action is the newest thing on their plate.
     if label_design is not None:
         status = label_design.status
-        if status == LabelDesignStatus.LABEL_APPROVED:
-            return ("label_approved", None)
         if status == LabelDesignStatus.CUSTOMER_APPROVAL:
             return (
                 "label_customer_approval",
                 f"/portal/label-designs/{label_design.id}/approve",
             )
-        if status in (
-            LabelDesignStatus.SCIENTIST_REVIEW,
-            LabelDesignStatus.DIRECTOR_REVIEW,
-        ):
-            return ("label_review", f"/portal/label-designs/{label_design.id}")
-        if status == LabelDesignStatus.DESIGN_IN_PROGRESS:
-            return ("label_in_progress", f"/portal/label-designs/{label_design.id}")
         if status == LabelDesignStatus.DESIGN_PREFERENCES_PENDING:
             return (
                 "label_preferences_pending",
@@ -138,9 +199,42 @@ def resolve_stage(
                 f"/portal/label-designs/{label_design.id}/choose-path",
             )
         if status == LabelDesignStatus.PAYMENT_PENDING:
-            return ("approved_awaiting_payment", f"/portal/label-designs/{label_design.id}")
+            return (
+                "approved_awaiting_payment",
+                f"/portal/label-designs/{label_design.id}",
+            )
         if status == LabelDesignStatus.ON_HOLD:
             return ("on_hold", f"/portal/label-designs/{label_design.id}")
+
+    # Priority 2: PSP's live production phase. Label design and
+    # production run in parallel, but once production has actually
+    # started (or the goods are already dispatched / delivered) the
+    # "Label approved · ready for production" chip is stale — it was
+    # true a week ago but the customer's product has moved on. The
+    # PSP-derived stage now wins over the terminal-good label states
+    # and the internal label-in-progress / label-review states so the
+    # badge always tracks the newest fact about the product.
+    psp_stage = _psp_derived_stage(formulation)
+    if psp_stage is not None:
+        return (psp_stage, None)
+
+    # Priority 3: informational label design states (approved / in
+    # progress / in review). No customer action needed; only reached
+    # when PSP hasn't overridden.
+    if label_design is not None:
+        status = label_design.status
+        if status == LabelDesignStatus.LABEL_APPROVED:
+            return ("label_approved", None)
+        if status in (
+            LabelDesignStatus.SCIENTIST_REVIEW,
+            LabelDesignStatus.DIRECTOR_REVIEW,
+        ):
+            return ("label_review", f"/portal/label-designs/{label_design.id}")
+        if status == LabelDesignStatus.DESIGN_IN_PROGRESS:
+            return (
+                "label_in_progress",
+                f"/portal/label-designs/{label_design.id}",
+            )
 
     # No label design row yet. Walk the spec/project lifecycle.
     sent_final = next(

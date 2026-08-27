@@ -23,6 +23,8 @@ import {
   ProductionSection,
   type ProductionMoRoadmap,
 } from "./production-section";
+import { DispatchSection } from "./dispatch-section";
+import { ReleaseDocumentsSection } from "./release-documents-section";
 
 
 type StageState = "done" | "current" | "future" | "skipped";
@@ -98,6 +100,73 @@ interface ProductDetail {
    *  kicks off; the ProductionSection renders nothing in that
    *  case. */
   readonly production_status: ProductionStatusPayload | null;
+}
+
+/* Extra PSP-mirrored fields inside ``production_status`` — added
+ * alongside the multi-visit pickup + release-documents work.
+ * Kept as a separate augment interface so ``ProductionStatusPayload``
+ * defined in ``production-section.tsx`` doesn't need to know about
+ * them (it just needs ``manufacturing_orders``). */
+interface ProjectDispatchPickupEventPhoto {
+  readonly uuid: string;
+  readonly filename: string;
+  readonly mime: string;
+}
+
+interface ProjectDispatchChecklist {
+  readonly packaging_intact: boolean | null;
+  readonly labels_verified: boolean | null;
+  readonly vehicle_clean_suitable: boolean | null;
+  readonly transport_condition_acceptable: boolean | null;
+  readonly dispatch_approved: boolean | null;
+}
+
+interface ProjectDispatchPickupEvent {
+  readonly uuid: string;
+  readonly qty: string;
+  readonly picked_up_at: string;
+  readonly driver_name: string | null;
+  readonly vehicle_registration: string | null;
+  readonly consignment_note_ref: string | null;
+  /** Per-truck carrier tracking number. */
+  readonly tracking_number: string | null;
+  /** Per-truck seal + temperature. */
+  readonly seal_number: string | null;
+  readonly temperature_c: string | null;
+  readonly notes: string | null;
+  readonly checklist: ProjectDispatchChecklist;
+  readonly delivered_at: string | null;
+  readonly recipient_signatory: string | null;
+  readonly delivery_notes: string | null;
+  readonly photos: ReadonlyArray<ProjectDispatchPickupEventPhoto>;
+}
+
+interface ProjectDispatch {
+  readonly status: "partially_picked" | "picked_up" | "delivered";
+  readonly qty: string | null;
+  readonly picked_up_qty: string | null;
+  readonly remaining_qty: string | null;
+  readonly picked_up_at: string | null;
+  readonly delivered_at: string | null;
+  readonly carrier: string | null;
+  readonly seal_number: string | null;
+  readonly temperature_c: string | null;
+  readonly tracking_number: string | null;
+  readonly pickup_events: ReadonlyArray<ProjectDispatchPickupEvent>;
+}
+
+interface ProjectReleaseDocument {
+  readonly uuid: string;
+  readonly kind: string;
+  readonly filename: string;
+  readonly mime: string;
+  readonly byte_size: number;
+  readonly uploaded_at: string;
+}
+
+interface ExtendedProductionStatus extends ProductionStatusPayload {
+  readonly dispatch?: ProjectDispatch | null;
+  readonly release_documents?: ReadonlyArray<ProjectReleaseDocument>;
 }
 
 
@@ -217,6 +286,32 @@ export default async function PortalProductDetailPage({
             />
           </div>
         </section>
+      ) : null}
+
+      {/* Dispatch — multi-visit pickup timeline + evidence photos +
+          per-event Confirm-receipt CTA. Mirrors the website portal's
+          ProjectDispatchCard so a customer looking at the same
+          project on either surface sees identical information. */}
+      {(data.production_status as ExtendedProductionStatus | null)?.dispatch ? (
+        <DispatchSection
+          dispatch={
+            (data.production_status as ExtendedProductionStatus).dispatch!
+          }
+          productId={id}
+        />
+      ) : null}
+
+      {/* Release documents — CoA, BMR, micro, label proof,
+          retain-sample photos. BRCGS § 5.6 evidence pack. Hidden
+          until the release ceremony lands on PSP. */}
+      {(data.production_status as ExtendedProductionStatus | null)?.release_documents &&
+      ((data.production_status as ExtendedProductionStatus).release_documents ?? []).length > 0 ? (
+        <ReleaseDocumentsSection
+          documents={
+            (data.production_status as ExtendedProductionStatus).release_documents ?? []
+          }
+          productId={id}
+        />
       ) : null}
 
       {data.documents.length > 0 ? (

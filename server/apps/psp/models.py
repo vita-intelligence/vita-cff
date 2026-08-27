@@ -216,6 +216,59 @@ class PspProductionStatus(models.Model):
     #: predates the roadmap fields (backward compat).
     manufacturing_orders = models.JSONField(default=list, blank=True)
 
+    #: Customer-driven 3PL vs shipment routing request for bespoke
+    #: NPD-formulation COs. ``None`` on standard commercial COs (the
+    #: PSP operator picks routing per lot) OR on custom COs before
+    #: any output lot has reached ``awaiting_release`` (nothing
+    #: meaningful to show).
+    #:
+    #: Shape when present::
+    #:
+    #:     {
+    #:       "uuid": "...",
+    #:       "state": "awaiting_customer" | "awaiting_team_review" |
+    #:                "applied_three_pl" | "applied_shipment",
+    #:       "customer_choice": "three_pl" | "shipment" | None,
+    #:       "team_decision_reason": str | None,
+    #:       "customer_chose_at": iso-datetime | None,
+    #:       "team_reviewed_at": iso-datetime | None,
+    #:       "team_reviewed_by": {"name": str} | None,
+    #:       "frozen_snapshot": {…}  # customer-facing numbers at submit
+    #:       "current_snapshot": {…} # live numbers as of last push
+    #:     }
+    #:
+    #: The portal reads this to decide which card to render on the
+    #: production-detail page:
+    #:
+    #:   * ``awaiting_customer`` → decision cards (3PL vs Direct) +
+    #:     ``current_snapshot`` for the estimated charge / capacity.
+    #:   * ``awaiting_team_review`` → "Team has received your request"
+    #:     message with the frozen snapshot echoed.
+    #:   * ``applied_*``          → "Routed to X" confirmation.
+    #:
+    #: Also drives the ``routing_choice`` portal endpoint: the
+    #: customer's submit is forwarded to PSP's relay + the answer
+    #: rolls back here on the next push.
+    routing_request = models.JSONField(null=True, blank=True, default=None)
+
+    #: Multi-visit pickup progress across every shipment on this CO.
+    #: Nil when there are no live shipments yet. Portal reads this to
+    #: override the generic "Awaiting carrier pickup" copy with real
+    #: partial-progress text ("1 of 3 trucks loaded, 8,500 units left").
+    #:
+    #: Shape when present::
+    #:
+    #:     {
+    #:       "total_qty": "9500.0000000000",
+    #:       "picked_up_qty": "1000.0000000000",
+    #:       "remaining_qty": "8500.0000000000",
+    #:       "events_count": 1,
+    #:       "shipments_count": 1,
+    #:       "any_partial": true,
+    #:       "all_picked_up": false
+    #:     }
+    dispatch_progress = models.JSONField(null=True, blank=True, default=None)
+
     #: PSP's own ``updated_at`` for the CO — freshness anchor
     #: distinct from ``pushed_at`` (which reflects when NPD received
     #: the snapshot). Useful when auditing a "why did the portal

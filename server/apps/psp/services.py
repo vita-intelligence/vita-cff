@@ -1086,6 +1086,69 @@ class PspClient:
         )
         return response if isinstance(response, dict) else None
 
+    def confirm_customer_order_event_delivery(
+        self,
+        co_uuid: Any,
+        event_uuid: Any,
+        *,
+        recipient_signatory: str,
+        delivery_notes: str = "",
+    ) -> dict | None:
+        """``POST /api/integration/customer-orders/:uuid/dispatch/pickup-events/:event_uuid/confirm-delivery``.
+
+        Per-event customer-driven POD. Each pickup event confirms
+        independently — the customer taps "Confirm receipt" on the
+        Tuesday truck's row without touching Thursday's row.
+        """
+
+        cleaned_co = str(co_uuid or "").strip()
+        cleaned_event = str(event_uuid or "").strip()
+        signatory = (recipient_signatory or "").strip()
+        if not cleaned_co or not cleaned_event or not signatory:
+            return None
+
+        payload: dict[str, str] = {"recipient_signatory": signatory}
+        notes = (delivery_notes or "").strip()
+        if notes:
+            payload["delivery_notes"] = notes
+
+        response = self._request(
+            f"api/integration/customer-orders/{cleaned_co}/dispatch/pickup-events/{cleaned_event}/confirm-delivery",
+            method="POST",
+            body=payload,
+        )
+        return response if isinstance(response, dict) else None
+
+    def submit_customer_order_routing_choice(
+        self, co_uuid: Any, *, choice: str
+    ) -> dict | None:
+        """POST ``/api/integration/customer-orders/:uuid/routing-choice``.
+
+        Portal-driven customer routing decision on a bespoke
+        NPD-formulation CO. Body: ``{"choice": "three_pl" | "shipment"}``.
+
+        Returns PSP's ``{"routing_request": {...}}`` echo on success —
+        the caller upserts the local ``PspProductionStatus.routing_request``
+        with this so the portal card reflects the new state without
+        waiting for PSP's next production_status push.
+
+        Returns ``None`` on any transport / validation error.
+        """
+
+        cleaned = str(co_uuid or "").strip()
+        if not cleaned or choice not in ("three_pl", "shipment"):
+            return None
+
+        response = self._request(
+            f"api/integration/customer-orders/{cleaned}/routing-choice",
+            method="POST",
+            body={"choice": choice},
+        )
+        if not isinstance(response, dict):
+            return None
+        request_row = response.get("routing_request")
+        return request_row if isinstance(request_row, dict) else None
+
     def fetch_customer_order_dispatch_photo(
         self, co_uuid: Any, file_uuid: Any
     ) -> tuple[bytes, str, str] | None:
@@ -6750,6 +6813,87 @@ def confirm_psp_dispatch_delivery_for_payment(
     try:
         return client.confirm_customer_order_delivery(
             co_uuid,
+            recipient_signatory=recipient_signatory,
+            delivery_notes=delivery_notes,
+        )
+    except PspError:
+        return None
+
+
+def confirm_psp_dispatch_event_delivery_for_payment(
+    *,
+    payment: Any,
+    event_uuid: Any,
+    recipient_signatory: str,
+    delivery_notes: str = "",
+) -> dict | None:
+    """Per-event customer-driven POD (multi-visit shipments). Same
+    silent-degrade contract as
+    :func:`confirm_psp_dispatch_delivery_for_payment`, but confirms
+    ONE pickup event on the CO's shipment rather than the whole
+    shipment.
+    """
+
+    if payment is None:
+        return None
+    organization = getattr(payment, "organization", None)
+    if organization is None or not is_psp_live(organization):
+        return None
+
+    co_uuid = _resolve_co_uuid_for_payment(payment)
+    if not co_uuid:
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.confirm_customer_order_event_delivery(
+            co_uuid,
+            event_uuid,
+            recipient_signatory=recipient_signatory,
+            delivery_notes=delivery_notes,
+        )
+    except PspError:
+        return None
+
+
+def confirm_psp_dispatch_event_delivery_for_co(
+    *,
+    organization: Any,
+    co_uuid: Any,
+    event_uuid: Any,
+    recipient_signatory: str,
+    delivery_notes: str = "",
+) -> dict | None:
+    """Per-event customer-driven POD, keyed by CO uuid + event uuid.
+    Custom-formulation counterpart to
+    :func:`confirm_psp_dispatch_event_delivery_for_payment` — used by
+    the projects portal path where the CO on PSP is keyed by the
+    formulation's linked ``psp_customer_order_uuid`` (not a payment).
+
+    Silent-degrade to ``None`` on any failure (same contract as its
+    payment-keyed sibling).
+    """
+
+    if organization is None or not is_psp_live(organization):
+        return None
+    cleaned_co = str(co_uuid or "").strip()
+    cleaned_event = str(event_uuid or "").strip()
+    if not cleaned_co or not cleaned_event:
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.confirm_customer_order_event_delivery(
+            cleaned_co,
+            cleaned_event,
             recipient_signatory=recipient_signatory,
             delivery_notes=delivery_notes,
         )

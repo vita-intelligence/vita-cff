@@ -74,7 +74,13 @@ from .views import (
 )
 from .dashboard_views import PortalDashboardView
 from .activity_views import PortalActivityView
-from .product_detail_views import PortalProductDetailView
+from .product_detail_views import (
+    PortalProductDetailView,
+    PortalProductDispatchPhotoView,
+    PortalProductPickupEventDeliveryView,
+    PortalProductReleaseDocumentView,
+    PortalProductRoutingChoiceView,
+)
 from .sample_selection_views import (
     PortalSampleSelectionConfirmView,
     PortalSampleSelectionView,
@@ -86,12 +92,14 @@ from .trial_batches_views import (
     PortalTrialBatchSlotConfirmDeliveryView,
     PortalTrialBatchSlotDispatchPhotoView,
     PortalTrialBatchSlotFeedbackView,
+    PortalTrialBatchSlotPickupEventDeliveryView,
     PortalTrialBatchSlotReleaseDocumentView,
 )
 from .sample_detail_views import (
     PortalSampleDetailView,
     PortalSampleDispatchConfirmView,
     PortalSampleDispatchPhotoView,
+    PortalSamplePickupEventDeliveryView,
     PortalSampleReleaseDocumentView,
 )
 from .template_views import PortalLabelDesignTemplateLibraryView
@@ -197,6 +205,42 @@ urlpatterns = [
         PortalProductDetailView.as_view(),
         name="product-detail",
     ),
+    # Customer-driven 3PL vs shipment routing choice for bespoke
+    # NPD-formulation projects. Portal forwards the submit to PSP
+    # via ``/api/integration/customer-orders/:uuid/routing-choice``
+    # and reflects the new state on the local PspProductionStatus
+    # row so the portal card updates without waiting for PSP's next
+    # push.
+    path(
+        "products/<uuid:formulation_id>/routing-choice/",
+        PortalProductRoutingChoiceView.as_view(),
+        name="product-routing-choice",
+    ),
+
+    # Custom-formulation dispatch photo proxy — mirrors the sample
+    # dispatch-photo view but keyed by formulation id (which the
+    # projects portal route uses).
+    path(
+        "products/<uuid:formulation_id>/dispatch/photos/<uuid:file_uuid>/",
+        PortalProductDispatchPhotoView.as_view(),
+        name="product-dispatch-photo",
+    ),
+
+    # Custom-formulation Final Product Release document proxy —
+    # mirrors the sample release-documents view.
+    path(
+        "products/<uuid:formulation_id>/release-documents/<uuid:file_uuid>/",
+        PortalProductReleaseDocumentView.as_view(),
+        name="product-release-document",
+    ),
+
+    # Per-event customer-driven POD for a custom-formulation
+    # project — customer confirms receipt of one truck's load.
+    path(
+        "products/<uuid:formulation_id>/dispatch/pickup-events/<uuid:event_uuid>/confirm-delivery/",
+        PortalProductPickupEventDeliveryView.as_view(),
+        name="product-dispatch-pickup-event-confirm-delivery",
+    ),
     # Sample-selection stage (post-proposal, pre-deposit): read the
     # org's pricing config + the customer's current allocation, then
     # confirm the chosen quantity. See
@@ -236,6 +280,13 @@ urlpatterns = [
         "trial-batches/slots/<uuid:slot_id>/confirm-delivery/",
         PortalTrialBatchSlotConfirmDeliveryView.as_view(),
         name="trial-batches-slot-confirm-delivery",
+    ),
+    # Per-event customer POD for trial-batch sample slots. Mirrors
+    # the custom-formulation per-event confirm — one row per truck.
+    path(
+        "trial-batches/slots/<uuid:slot_id>/pickup-events/<uuid:event_uuid>/confirm-delivery/",
+        PortalTrialBatchSlotPickupEventDeliveryView.as_view(),
+        name="trial-batches-slot-pickup-event-confirm-delivery",
     ),
     path(
         "trial-batches/slots/<uuid:slot_id>/feedback/",
@@ -289,6 +340,14 @@ urlpatterns = [
         "samples/<uuid:payment_id>/dispatch/confirm-delivery/",
         PortalSampleDispatchConfirmView.as_view(),
         name="sample-dispatch-confirm-delivery",
+    ),
+
+    # Per-event customer-driven POD (multi-visit shipments). Each
+    # pickup event confirms independently.
+    path(
+        "samples/<uuid:payment_id>/dispatch/pickup-events/<uuid:event_uuid>/confirm-delivery/",
+        PortalSamplePickupEventDeliveryView.as_view(),
+        name="sample-dispatch-pickup-event-confirm-delivery",
     ),
 
     # Inbox / bell — every thread the client account can see plus

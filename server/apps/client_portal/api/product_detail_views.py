@@ -197,6 +197,116 @@ _PRODUCTION_PHASE_COPY: dict[str, dict[str, str]] = {
 }
 
 
+def _dispatch_progress_phase_override(phase, dispatch_progress):
+    """Override phase label + detail when a multi-visit pickup is in
+    progress. Only fires on ``awaiting_pickup`` — other phases keep
+    their default copy from ``_PRODUCTION_PHASE_COPY``.
+    """
+
+    if phase != "awaiting_pickup" or not isinstance(dispatch_progress, dict):
+        return (None, None)
+
+    events_count = dispatch_progress.get("events_count") or 0
+    any_partial = bool(dispatch_progress.get("any_partial"))
+    picked = _format_dispatch_qty(dispatch_progress.get("picked_up_qty"))
+    total = _format_dispatch_qty(dispatch_progress.get("total_qty"))
+    remaining = _format_dispatch_qty(dispatch_progress.get("remaining_qty"))
+
+    if any_partial and events_count and picked and total:
+        return (
+            "Partial pickup in progress",
+            f"{picked} of {total} units picked up so far "
+            f"({events_count} truck{'s' if events_count != 1 else ''} "
+            f"loaded). {remaining} units still on our floor for the "
+            "next visit.",
+        )
+
+    return (None, None)
+
+
+def _format_dispatch_qty(raw):
+    """Portal-safe qty formatter — strips Decimal trailing zeros +
+    inserts thousands separators. Silent-degrade to the raw string
+    on any parsing miss."""
+
+    if raw is None:
+        return None
+    try:
+        from decimal import Decimal
+
+        d = Decimal(str(raw)).normalize()
+        # ``normalize`` on a small integer-valued decimal can slip
+        # into scientific notation (``1E+3``). Restore fixed-point
+        # for anything that fits comfortably in float precision.
+        text = format(d, "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        # Thousands separator on the whole-number part only — keeps
+        # any decimal tail intact.
+        if "." in text:
+            whole, frac = text.split(".", 1)
+            return f"{int(whole):,}.{frac}"
+        return f"{int(text):,}"
+    except Exception:
+        return str(raw)
+
+
+def _routing_request_phase_override(phase, routing_req):
+    """Override phase label + detail when a customer-driven routing
+    request is live. Only fires on ``awaiting_routing`` — every
+    other phase gets its default copy from ``_PRODUCTION_PHASE_COPY``.
+
+    Returns ``(label, detail)`` tuple; either / both can be ``None``
+    when the default copy is fine.
+    """
+
+    if phase != "awaiting_routing" or not isinstance(routing_req, dict):
+        return (None, None)
+
+    state = routing_req.get("state")
+    reason = routing_req.get("team_decision_reason")
+
+    if state == "awaiting_customer" and reason:
+        # Team declined a prior 3PL request; portal shows the reason
+        # inside the RoutingChoiceCard, but the ProductionCard header
+        # also needs to reflect that WE bounced the ball back.
+        return (
+            "3PL unavailable — pick again below",
+            "We can't take your batch into 3PL storage right now. "
+            "See the reason and pick Direct shipment below to proceed.",
+        )
+
+    if state == "awaiting_customer":
+        return (
+            "Your batch is ready — choose next step",
+            "Positive Release cleared your batch. Pick 3PL storage "
+            "or Direct shipment on the card below.",
+        )
+
+    if state == "awaiting_team_review":
+        return (
+            "3PL request received — team review",
+            "Thanks for choosing 3PL storage. Our team is confirming "
+            "availability; we'll update you as soon as it's approved.",
+        )
+
+    if state == "applied_three_pl":
+        return (
+            "3PL storage confirmed",
+            "Your goods are under 3PL bailee custody. Request "
+            "dispatch anytime from this project page.",
+        )
+
+    if state == "applied_shipment":
+        return (
+            "Preparing your dispatch",
+            "Direct shipment applied. Your batch is being staged; "
+            "shipment paperwork will appear here soon.",
+        )
+
+    return (None, None)
+
+
 def _build_production_status(*, formulation) -> dict | None:
     """Return the customer-safe production snapshot for the portal, or
     ``None`` when PSP hasn't pushed anything yet (i.e. the project
@@ -213,10 +323,33 @@ def _build_production_status(*, formulation) -> dict | None:
         return None
 
     copy = _PRODUCTION_PHASE_COPY.get(row.phase, {})
+    # When a customer-driven routing request is live, override the
+    # generic phase copy so the ProductionCard doesn't misleadingly
+    # tell the customer "our logistics team is finalising the
+    # carrier" while WE are actually waiting on THEIR routing pick.
+    # The RoutingChoiceCard right below carries the actionable UI —
+    # ProductionCard just needs to be honest about the state.
+    routing_req = row.routing_request or None
+    override_label, override_detail = _routing_request_phase_override(
+        row.phase, routing_req
+    )
+    # Multi-visit pickup progress override — a shipment being drained
+    # over multiple visits shouldn't read as "Awaiting carrier
+    # pickup" while a truck has already loaded 1_000 of 9_500 units.
+    # Only fires on the ``awaiting_pickup`` phase; other phases keep
+    # their default copy.
+    dispatch_progress = row.dispatch_progress or None
+    dp_label, dp_detail = _dispatch_progress_phase_override(
+        row.phase, dispatch_progress
+    )
+    if dp_label or dp_detail:
+        override_label = dp_label or override_label
+        override_detail = dp_detail or override_detail
+
     return {
         "phase": row.phase,
-        "phase_label": copy.get("label") or row.phase_label or row.phase,
-        "phase_detail": copy.get("detail") or "",
+        "phase_label": override_label or copy.get("label") or row.phase_label or row.phase,
+        "phase_detail": override_detail or copy.get("detail") or "",
         # Forward PSP's next-action fields raw — the FE renders them
         # under a "What our team is doing" heading. Empty when the
         # phase has no explicit next-action (terminal states).
@@ -242,7 +375,74 @@ def _build_production_status(*, formulation) -> dict | None:
         # timestamps. Empty list = still in earlier phase OR PSP push
         # predates the roadmap fields (backward compat).
         "manufacturing_orders": list(row.manufacturing_orders or []),
+        # Customer-driven 3PL vs shipment routing decision. Present
+        # only for bespoke NPD-formulation COs after at least one
+        # output lot has reached ``awaiting_release``. Portal renders
+        # the decision cards / status message off this.
+        "routing_request": row.routing_request or None,
+        # PSP CO uuid — passed back on ``POST routing-choice`` so the
+        # portal doesn't have to plumb it separately.
+        "psp_customer_order_uuid": row.psp_customer_order_uuid
+        and str(row.psp_customer_order_uuid),
+        # PSP dispatch snapshot + release documents for the CO
+        # backing this bespoke formulation. Silent-degrade to
+        # ``None`` / ``[]`` on any PSP failure — the portal FE hides
+        # the corresponding cards in that case rather than showing
+        # placeholders.
+        "dispatch": _dispatch_for_formulation(formulation),
+        "release_documents": _release_documents_for_formulation(formulation),
     }
+
+
+def _dispatch_for_formulation(formulation):
+    """Fetch the PSP dispatch snapshot for the CO backing this
+    formulation. ``None`` when no shipment has reached
+    ``partially_picked`` / ``picked_up`` / ``delivered`` yet — the
+    portal hides the card until there's something meaningful to
+    render.
+    """
+
+    row = getattr(formulation, "psp_production_status", None)
+    if row is None or not row.psp_customer_order_uuid:
+        return None
+    organization = getattr(formulation, "organization", None)
+    if organization is None:
+        return None
+
+    try:
+        from apps.psp.services import get_psp_dispatch_for_co
+
+        return get_psp_dispatch_for_co(
+            organization=organization,
+            co_uuid=row.psp_customer_order_uuid,
+        )
+    except Exception:
+        return None
+
+
+def _release_documents_for_formulation(formulation):
+    """Fetch PSP's Final Product Release documents for the CO backing
+    this formulation. Empty list on any PSP failure. Same shape as
+    the sample-detail path so the portal FE can reuse its
+    ``ReleaseDocumentsCard`` component.
+    """
+
+    row = getattr(formulation, "psp_production_status", None)
+    if row is None or not row.psp_customer_order_uuid:
+        return []
+    organization = getattr(formulation, "organization", None)
+    if organization is None:
+        return []
+
+    try:
+        from apps.psp.services import list_psp_release_documents_for_co
+
+        return list_psp_release_documents_for_co(
+            organization=organization,
+            co_uuid=row.psp_customer_order_uuid,
+        ) or []
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -880,14 +1080,25 @@ def _build_pipeline(
     elif production_started:
         # PSP is actively working on it — show the live phase label.
         phase_copy = _PRODUCTION_PHASE_COPY.get(production_phase, {})
+        # Custom-formulation routing gate: override the generic phase
+        # copy when a customer-driven routing request is live, so the
+        # pipeline stage doesn't misleadingly say "logistics team is
+        # finalising" while WE are actually waiting on the customer's
+        # 3PL vs Direct pick.
+        routing_req = getattr(production_status, "routing_request", None)
+        override_label, override_detail = _routing_request_phase_override(
+            production_phase, routing_req
+        )
         production_stage = {
             "key": "production",
-            "label": phase_copy.get("label")
+            "label": override_label
+            or phase_copy.get("label")
             or getattr(production_status, "phase_label", "")
             or "Production in progress",
             "state": "current",
             "completed_at": None,
-            "detail": phase_copy.get("detail")
+            "detail": override_detail
+            or phase_copy.get("detail")
             or "Your batch is being manufactured.",
         }
     else:
@@ -1612,3 +1823,251 @@ def _build_cancellation(
             ),
         }
     return None
+
+
+class PortalProductRoutingChoiceView(PortalAPIView):
+    """``POST /api/portal/products/<formulation_id>/routing-choice/`` —
+    customer submits their 3PL vs direct-shipment choice for a bespoke
+    NPD-formulation project.
+
+    Body::
+
+        {"choice": "three_pl" | "shipment"}
+
+    Ownership: same customer_ids union guard as the product detail
+    view. The choice is relayed to PSP; on 200 we upsert the local
+    ``PspProductionStatus.routing_request`` with PSP's echo so the
+    portal card reflects the new state without waiting for PSP's
+    next production_status push. Websocket broadcast fires so
+    other open tabs update.
+
+    Responses:
+      * 200 — ``{"routing_request": {...updated}}``
+      * 400 — bad or missing choice
+      * 404 — formulation not visible to this account / no CO uuid
+      * 409 — request in wrong state (already applied, etc.)
+      * 502 — PSP unreachable / relay failed
+    """
+
+    def post(self, request: Request, formulation_id) -> Response:
+        from apps.client_portal.queries import (
+            customer_ids_for_account,
+            customer_owns_formulation,
+        )
+        from apps.psp.models import PspProductionStatus
+        from apps.psp.services import get_psp_config, PspClient
+
+        choice = (request.data.get("choice") or "").strip()
+        if choice not in ("three_pl", "shipment"):
+            return Response(
+                {"detail": "invalid_choice"},
+                status=400,
+            )
+
+        customer_ids = customer_ids_for_account(request.user)
+        if not customer_owns_formulation(
+            customer_ids=customer_ids, formulation_id=formulation_id,
+        ):
+            raise NotFound()
+
+        formulation = get_object_or_404(Formulation, id=formulation_id)
+
+        status_row = getattr(formulation, "psp_production_status", None)
+        if status_row is None or not status_row.psp_customer_order_uuid:
+            return Response(
+                {"detail": "no_routing_request"},
+                status=404,
+            )
+
+        # Relay to PSP.
+        config = get_psp_config(organization=formulation.organization)
+        client = PspClient(config)
+        echo = client.submit_customer_order_routing_choice(
+            status_row.psp_customer_order_uuid, choice=choice,
+        )
+
+        if echo is None:
+            return Response(
+                {"detail": "psp_relay_failed"},
+                status=502,
+            )
+
+        # Merge PSP's echo into the locally-stored routing_request
+        # block. Keep any keys the current model already carries so a
+        # partial echo doesn't wipe our snapshot cache.
+        existing = status_row.routing_request or {}
+        merged = {
+            **existing,
+            "uuid": echo.get("uuid") or existing.get("uuid"),
+            "state": echo.get("state") or existing.get("state"),
+            "customer_choice": echo.get("customer_choice"),
+            "team_decision_reason": echo.get("team_decision_reason"),
+            "customer_chose_at": echo.get("customer_chose_at"),
+            "team_reviewed_at": echo.get("team_reviewed_at"),
+            "frozen_snapshot": echo.get("estimate_snapshot")
+            or existing.get("frozen_snapshot"),
+        }
+        status_row.routing_request = merged
+        status_row.save(update_fields=["routing_request", "updated_at"])
+
+        # Portal WebSocket fanout — other open tabs update without
+        # polling. Silent no-op if Channels isn't wired.
+        try:
+            from apps.client_portal.consumers import (
+                broadcast_production_status_changed,
+            )
+
+            broadcast_production_status_changed(formulation)
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+        return Response(
+            {"routing_request": merged},
+            status=200,
+        )
+
+
+class PortalProductPickupEventDeliveryView(PortalAPIView):
+    """``POST /api/portal/products/<formulation_id>/dispatch/pickup-events/<event_uuid>/confirm-delivery/``
+    — per-event customer POD for a custom-formulation project.
+
+    Same shape as the sample-detail per-event confirmation view
+    (:class:`~apps.client_portal.api.sample_detail_views.PortalSamplePickupEventDeliveryView`).
+    Body: ``{"recipient_signatory": "...", "delivery_notes": "..."}``.
+    """
+
+    def post(self, request: Request, formulation_id, event_uuid) -> Response:
+        from apps.client_portal.queries import (
+            customer_ids_for_account,
+            customer_owns_formulation,
+        )
+        from apps.psp.services import (
+            confirm_psp_dispatch_event_delivery_for_co,
+        )
+
+        signatory = (request.data.get("recipient_signatory") or "").strip()
+        if not signatory:
+            return Response(
+                {"detail": "recipient_signatory_required"}, status=400
+            )
+
+        customer_ids = customer_ids_for_account(request.user)
+        if not customer_owns_formulation(
+            customer_ids=customer_ids, formulation_id=formulation_id,
+        ):
+            raise NotFound()
+
+        formulation = get_object_or_404(Formulation, id=formulation_id)
+
+        status_row = getattr(formulation, "psp_production_status", None)
+        co_uuid = status_row and status_row.psp_customer_order_uuid
+        if not co_uuid:
+            return Response({"detail": "no_dispatch"}, status=404)
+
+        notes = (request.data.get("delivery_notes") or "").strip()
+
+        result = confirm_psp_dispatch_event_delivery_for_co(
+            organization=formulation.organization,
+            co_uuid=str(co_uuid),
+            event_uuid=str(event_uuid),
+            recipient_signatory=signatory,
+            delivery_notes=notes,
+        )
+        if result is None:
+            return Response(
+                {"detail": "confirmation_failed"}, status=502
+            )
+        return Response(result, status=200)
+
+
+class PortalProductDispatchPhotoView(PortalAPIView):
+    """``GET /api/portal/products/<formulation_id>/dispatch/photos/<file_uuid>/``
+    — proxy-download one truck-arrival photo for the CO backing this
+    formulation. Custom-formulation counterpart to
+    :class:`~apps.client_portal.api.sample_detail_views.PortalSampleDispatchPhotoView`.
+
+    Ownership guard matches :class:`PortalProductDetailView`: the
+    account must own the formulation via a proposal covering it. The
+    guard here stops a leaked file uuid from downloading for an
+    unrelated account.
+    """
+
+    def get(self, request: Request, formulation_id, file_uuid) -> Response:
+        from apps.client_portal.queries import (
+            customer_ids_for_account,
+            customer_owns_formulation,
+        )
+        from apps.psp.services import fetch_psp_dispatch_photo_for_co
+        from django.http import HttpResponse
+
+        customer_ids = customer_ids_for_account(request.user)
+        if not customer_owns_formulation(
+            customer_ids=customer_ids, formulation_id=formulation_id,
+        ):
+            raise NotFound()
+
+        formulation = get_object_or_404(Formulation, id=formulation_id)
+        status_row = getattr(formulation, "psp_production_status", None)
+        co_uuid = status_row and status_row.psp_customer_order_uuid
+        if not co_uuid:
+            raise NotFound("dispatch_photo_not_found")
+
+        result = fetch_psp_dispatch_photo_for_co(
+            organization=formulation.organization,
+            co_uuid=str(co_uuid),
+            file_uuid=file_uuid,
+        )
+        if result is None:
+            raise NotFound("dispatch_photo_not_found")
+
+        body, mime, filename = result
+        response = HttpResponse(body, content_type=mime)
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
+        response["Cache-Control"] = "private, max-age=86400, immutable"
+        return response
+
+
+class PortalProductReleaseDocumentView(PortalAPIView):
+    """``GET /api/portal/products/<formulation_id>/release-documents/<file_uuid>/``
+    — proxy-download one Final Product Release document (CoA / BMR
+    / micro / label proof / retain-sample photo) for the CO backing
+    this formulation. Custom-formulation counterpart to
+    :class:`~apps.client_portal.api.sample_detail_views.PortalSampleReleaseDocumentView`.
+    """
+
+    def get(self, request: Request, formulation_id, file_uuid) -> Response:
+        from apps.client_portal.queries import (
+            customer_ids_for_account,
+            customer_owns_formulation,
+        )
+        from apps.psp.services import fetch_psp_release_document_for_co
+        from django.http import HttpResponse
+
+        customer_ids = customer_ids_for_account(request.user)
+        if not customer_owns_formulation(
+            customer_ids=customer_ids, formulation_id=formulation_id,
+        ):
+            raise NotFound()
+
+        formulation = get_object_or_404(Formulation, id=formulation_id)
+        status_row = getattr(formulation, "psp_production_status", None)
+        co_uuid = status_row and status_row.psp_customer_order_uuid
+        if not co_uuid:
+            raise NotFound("release_document_not_found")
+
+        result = fetch_psp_release_document_for_co(
+            organization=formulation.organization,
+            co_uuid=str(co_uuid),
+            file_uuid=file_uuid,
+        )
+        if result is None:
+            raise NotFound("release_document_not_found")
+
+        body, mime, filename = result
+        # PDFs render inline in the portal iframe; everything else
+        # (Word / Excel / photos) suggests a filename download.
+        disposition = "inline" if (mime or "").lower().startswith("application/pdf") else "attachment"
+        response = HttpResponse(body, content_type=mime)
+        response["Content-Disposition"] = f'{disposition}; filename="{filename}"'
+        response["Cache-Control"] = "private, max-age=86400, immutable"
+        return response

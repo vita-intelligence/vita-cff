@@ -730,6 +730,52 @@ def _portal_actor_display_name(actor: Any) -> str:
     return email or "Customer"
 
 
+class PortalTrialBatchSlotPickupEventDeliveryView(PortalAPIView):
+    """``POST /api/portal/trial-batches/slots/<slot_id>/pickup-events/<event_uuid>/confirm-delivery/``.
+
+    Per-event customer POD for a trial-batch sample slot's shipment.
+    Same shape as the custom-formulation version — the customer
+    confirms receipt of ONE truck's worth of goods; the shipment as
+    a whole flips to ``delivered`` on PSP only after every
+    outstanding event has been confirmed. The slot itself flips to
+    ``DELIVERED`` on NPD once the shipment as a whole becomes
+    ``delivered`` (bounced back via the reconcile pass).
+    """
+
+    def post(self, request: Request, slot_id, event_uuid) -> Response:
+        signatory = (request.data.get("recipient_signatory") or "").strip()
+        if not signatory:
+            signatory = _portal_actor_display_name(request.user)
+        if not signatory:
+            return Response(
+                {"detail": "recipient_signatory_required"}, status=400
+            )
+
+        slot = _load_owned_slot(request, slot_id)
+        notes = (request.data.get("delivery_notes") or "").strip()
+
+        try:
+            from apps.psp.services import (
+                confirm_psp_dispatch_event_delivery_for_co,
+            )
+
+            result = confirm_psp_dispatch_event_delivery_for_co(
+                organization=slot.cycle.organization,
+                co_uuid=slot.id,
+                event_uuid=event_uuid,
+                recipient_signatory=signatory,
+                delivery_notes=notes or "Confirmed via customer portal",
+            )
+        except Exception:  # noqa: BLE001 — silent-degrade
+            result = None
+
+        if result is None:
+            return Response(
+                {"detail": "confirmation_failed"}, status=502
+            )
+        return Response(result, status=200)
+
+
 class PortalTrialBatchSlotFeedbackView(PortalAPIView):
     """``POST /api/portal/trial-batches/slots/<slot_id>/feedback/``.
 

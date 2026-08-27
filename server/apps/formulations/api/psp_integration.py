@@ -178,6 +178,119 @@ def _sanitise_sessions(raw) -> list[dict]:
     return out
 
 
+_ROUTING_STATES = {
+    "awaiting_customer",
+    "awaiting_team_review",
+    "applied_three_pl",
+    "applied_shipment",
+}
+
+_ROUTING_CHOICES = {"three_pl", "shipment"}
+
+_ROUTING_SNAPSHOT_KEYS = {
+    "required_m3",
+    "free_m3",
+    "capacity_ok",
+    "rate_per_m3_per_day",
+    "estimated_days",
+    "estimated_daily_charge",
+    "estimated_period_charge",
+    "currency_code",
+}
+
+
+def _sanitise_routing_snapshot(raw):
+    """Whitelist the routing snapshot fields we render on the portal.
+    Silent-degrade: bad values become ``None`` rather than raising —
+    keeps the endpoint's ``push always succeeds`` contract even if a
+    later PSP release adds new keys."""
+
+    if not isinstance(raw, dict):
+        return None
+
+    out: dict = {}
+    for key in _ROUTING_SNAPSHOT_KEYS:
+        value = raw.get(key)
+        if key == "capacity_ok":
+            out[key] = bool(value)
+        elif key == "estimated_days":
+            try:
+                out[key] = int(value) if value is not None else None
+            except (TypeError, ValueError):
+                out[key] = None
+        else:
+            out[key] = str(value)[:64] if value is not None else None
+    return out
+
+
+_DISPATCH_PROGRESS_STRING_KEYS = ("total_qty", "picked_up_qty", "remaining_qty")
+
+
+def _sanitise_dispatch_progress(raw):
+    """Coerce PSP's ``dispatch_progress`` block into a portal-safe
+    dict or ``None`` when the CO has no live shipments yet."""
+
+    if not isinstance(raw, dict):
+        return None
+
+    out: dict = {}
+    for key in _DISPATCH_PROGRESS_STRING_KEYS:
+        value = raw.get(key)
+        out[key] = str(value)[:64] if value is not None else None
+
+    for key in ("events_count", "shipments_count"):
+        value = raw.get(key)
+        try:
+            out[key] = int(value) if value is not None else 0
+        except (TypeError, ValueError):
+            out[key] = 0
+
+    for key in ("any_partial", "all_picked_up"):
+        out[key] = bool(raw.get(key))
+
+    return out
+
+
+def _sanitise_routing_request(raw):
+    """Coerce PSP's ``routing_request`` block into a portal-safe dict
+    or ``None`` when the CO doesn't have one (standard commercial /
+    no released lots yet). Unknown state or choice values are
+    ignored (the portal maps unknowns to a generic label)."""
+
+    if not isinstance(raw, dict):
+        return None
+
+    state = raw.get("state")
+    if state not in _ROUTING_STATES:
+        return None
+
+    choice = raw.get("customer_choice")
+    if choice not in _ROUTING_CHOICES and choice is not None:
+        choice = None
+
+    reviewed_by = raw.get("team_reviewed_by")
+    reviewed_by_name = None
+    if isinstance(reviewed_by, dict):
+        reviewed_by_name = str(reviewed_by.get("name") or "")[:120] or None
+
+    return {
+        "uuid": str(raw.get("uuid") or "")[:64] or None,
+        "state": state,
+        "customer_choice": choice,
+        "team_decision_reason": str(raw.get("team_decision_reason") or "")[:4000]
+        or None,
+        "customer_chose_at": str(raw.get("customer_chose_at") or "")[:64]
+        or None,
+        "team_reviewed_at": str(raw.get("team_reviewed_at") or "")[:64]
+        or None,
+        "team_reviewed_by": {"name": reviewed_by_name}
+        if reviewed_by_name
+        else None,
+        "frozen_snapshot": _sanitise_routing_snapshot(raw.get("frozen_snapshot")),
+        "current_snapshot": _sanitise_routing_snapshot(raw.get("current_snapshot")),
+    }
+
+
 def _sanitise_manufacturing_orders(raw) -> list[dict]:
     """Coerce PSP's push into a customer-safe list of MO roadmap
     entries. Drops unknown keys, caps strings, coerces int/ISO
@@ -745,6 +858,12 @@ class PspProductionStatusUpsertView(APIView):
         from django.utils import timezone as _tz
 
         mos = _sanitise_manufacturing_orders(payload.get("manufacturing_orders"))
+        routing_request = _sanitise_routing_request(
+            payload.get("routing_request")
+        )
+        dispatch_progress = _sanitise_dispatch_progress(
+            payload.get("dispatch_progress")
+        )
 
         row, _created = PspProductionStatus.objects.update_or_create(
             formulation=formulation,
@@ -763,6 +882,8 @@ class PspProductionStatusUpsertView(APIView):
                 "mos_in_production": _int("mos_in_production"),
                 "mos_awaiting_closeout": _int("mos_awaiting_closeout"),
                 "manufacturing_orders": mos,
+                "routing_request": routing_request,
+                "dispatch_progress": dispatch_progress,
                 "psp_updated_at": psp_updated_at,
                 "pushed_at": _tz.now(),
             },
