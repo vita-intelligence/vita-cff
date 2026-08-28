@@ -122,7 +122,14 @@ def _push_label_state_to_psp(sender, instance: LabelDesign, **kwargs) -> None:
     try:
         from apps.payments.services import _sync_formulation_proposal_to_psp
 
-        _sync_formulation_proposal_to_psp(formulation)
+        # Pass the label's own proposal so RTG multi-order scenarios
+        # sync the CORRECT customer order's PSP CO — without it the
+        # helper picks the newest signed proposal on the formulation,
+        # which would push order-2's label state onto order-1's CO
+        # when order-1's label changes.
+        _sync_formulation_proposal_to_psp(
+            formulation, proposal=getattr(instance, "proposal", None)
+        )
     except Exception:  # pragma: no cover - defence in depth
         logger.exception(
             "label_design PSP mirror sync failed for label_design %s",

@@ -137,29 +137,48 @@ class PspAccessToken(models.Model):
 
 
 class PspProductionStatus(models.Model):
-    """One row per formulation — the latest PSP-derived production
-    phase + sub-stage snapshot.
+    """One row per (formulation, PSP customer order) — the latest
+    PSP-derived production phase + sub-stage snapshot for a specific
+    order on that formulation.
 
     Populated by PSP's outbound ``Backend.NpdCallbacks.push_production_status``
     on every ``OrderWizard.notify_co_changed`` — so every MO
     creation, PO approve, ingredient arrival, session start, closeout
     stamp lands here without a poll. NPD owns the row; PSP just POSTs
-    updates.
+    updates and carries ``psp_customer_order_uuid`` as the unique key.
 
-    The portal reads this to render a live "Production" card next to
-    the "Labelling" card so the customer sees the two concurrent
-    workflows in parallel — production and label design run
-    simultaneously once FINAL payment lands.
+    Was OneToOne on formulation historically — fine for Custom projects
+    (1 formulation = 1 PSP CO forever) but broken for RTG catalog
+    products where the customer places N independent orders. Now
+    ``ForeignKey`` + a unique constraint on
+    ``(formulation, psp_customer_order_uuid)`` so each order carries
+    its own status row. See :doc:`docs/rtg-multi-order-fix.md`.
+
+    The portal reads this via ``product_detail_views`` — the URL
+    identifies the order (proposal_id for RTG, formulation_id for
+    Custom's 1:1 case), which resolves to the correct row via
+    ``psp_customer_order_uuid`` lookup.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
-    formulation = models.OneToOneField(
+    formulation = models.ForeignKey(
         "formulations.Formulation",
         on_delete=models.CASCADE,
-        related_name="psp_production_status",
+        related_name="psp_production_statuses",
     )
+    #: PSP-side CustomerOrder uuid this snapshot belongs to. Was
+    #: nullable historically but is now the second half of the
+    #: uniqueness key — every incoming push carries it (the PSP
+    #: pusher has always sent this field; only the receiver ignored
+    #: it before this fix).
     psp_customer_order_uuid = models.UUIDField(null=True, blank=True)
+    #: NPD proposal uuid on the PSP CO. Lets the portal resolve a
+    #: ``/portal/projects/<proposal_id>`` URL for an RTG order to the
+    #: right status row without the URL having to know the PSP CO
+    #: uuid (which doesn't exist until PSP has pushed back at least
+    #: once). Nullable for Custom rows and for pre-fix data.
+    npd_proposal_uuid = models.UUIDField(null=True, blank=True)
 
     #: The wizard phase key from PSP's ``@phases`` list. Free-form
     #: string so PSP can add new phases without a coordinated
@@ -285,10 +304,27 @@ class PspProductionStatus(models.Model):
         verbose_name = "PSP production status"
         verbose_name_plural = "PSP production statuses"
         ordering = ("-updated_at",)
+        constraints = [
+            # One row per (formulation, PSP CO). NULL psp_customer_order_uuid
+            # is legal on legacy rows created before the pusher started
+            # sending it — the (formulation, NULL) slot behaves as the
+            # single "unknown-CO" row, mirroring the pre-fix OneToOne
+            # semantics for anything not yet re-pushed.
+            models.UniqueConstraint(
+                fields=("formulation", "psp_customer_order_uuid"),
+                name="pspproductionstatus_formulation_co_uuid_unique",
+            ),
+        ]
         indexes = [
             models.Index(fields=("phase",)),
             models.Index(fields=("-updated_at",)),
+            models.Index(fields=("formulation",)),
+            models.Index(fields=("psp_customer_order_uuid",)),
+            models.Index(fields=("npd_proposal_uuid",)),
         ]
 
     def __str__(self) -> str:  # pragma: no cover
-        return f"PspProductionStatus({self.formulation_id}, {self.phase})"
+        return (
+            f"PspProductionStatus({self.formulation_id}, "
+            f"{self.psp_customer_order_uuid}, {self.phase})"
+        )

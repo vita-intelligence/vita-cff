@@ -172,6 +172,11 @@ class PortalLabelDesignChoosePathView(PortalAPIView):
 
             payment = ensure_label_design_payment_for_formulation(
                 formulation=ld.formulation,
+                # Scope the invoice to THIS label's order so RTG
+                # multi-order customers each get their own design-fee
+                # invoice rather than adopting whichever formulation-
+                # wide invoice happened to be sitting on the queue.
+                proposal=ld.proposal,
                 actor=None,
             )
             target = (

@@ -20,6 +20,8 @@ to be added in one place.
 
 from __future__ import annotations
 
+from typing import Any
+
 from apps.formulations.models import Formulation, ProjectStatus, ProjectType
 from apps.label_design.constants import LabelDesignStatus
 from apps.label_design.models import LabelDesign
@@ -193,18 +195,26 @@ _PSP_PHASE_TO_STAGE: dict[str, str | None] = {
 }
 
 
-def _psp_derived_stage(formulation: Formulation) -> str | None:
+def _psp_derived_stage(
+    formulation: Formulation,
+    *,
+    proposal_uuid: Any | None = None,
+) -> str | None:
     """Return a portal stage_key based on PSP's live production phase,
     or ``None`` when PSP hasn't reported anything yet OR the reported
     phase is too early to override the label workflow (still in setup
     / awaiting-approval territory).
 
-    Reads the OneToOneField ``psp_production_status`` — a soft ``None``
-    when the row hasn't been pushed yet keeps existing "label-only"
-    resolution intact.
+    ``proposal_uuid`` disambiguates for RTG multi-order scenarios —
+    each order has its own PspProductionStatus row keyed by
+    ``(formulation, psp_customer_order_uuid)``. For Custom (1:1) and
+    for the aggregate list contexts, ``None`` falls back to the
+    single row / newest row. See :mod:`apps.psp.status_lookup`.
     """
 
-    status = getattr(formulation, "psp_production_status", None)
+    from apps.psp.status_lookup import get_production_status_for
+
+    status = get_production_status_for(formulation, proposal_uuid=proposal_uuid)
     if status is None:
         return None
     phase = (status.phase or "").strip()
@@ -219,6 +229,7 @@ def resolve_stage(
     proposals: list[Proposal],
     sheets: list[SpecificationSheet],
     label_design: LabelDesign | None,
+    proposal_uuid: Any | None = None,
 ) -> tuple[str, str | None]:
     """Pick the single most-current stage for a project.
 
@@ -277,7 +288,7 @@ def resolve_stage(
     # pay the invoice). We only trust the PSP-derived stage on RTG
     # once the customer has settled the invoice — anything before
     # that is our internal setup work, not a real production signal.
-    psp_stage = _psp_derived_stage(formulation)
+    psp_stage = _psp_derived_stage(formulation, proposal_uuid=proposal_uuid)
     is_rtg = (
         getattr(formulation, "project_type", "")
         == ProjectType.READY_TO_GO.value

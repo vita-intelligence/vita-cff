@@ -840,6 +840,9 @@ class PspProductionStatusUpsertView(APIView):
 
         payload = request.data
         psp_co_uuid = (payload.get("psp_customer_order_uuid") or "").strip() or None
+        npd_proposal_uuid = (
+            (payload.get("npd_proposal_uuid") or "").strip() or None
+        )
         psp_updated_at_raw = payload.get("psp_updated_at") or ""
         psp_updated_at = (
             parse_datetime(psp_updated_at_raw) if psp_updated_at_raw else None
@@ -865,10 +868,22 @@ class PspProductionStatusUpsertView(APIView):
             payload.get("dispatch_progress")
         )
 
+        # Key by (formulation, psp_customer_order_uuid). RTG catalog
+        # products are ordered N times per formulation, so the pusher
+        # must provide the PSP CO uuid to keep each order's status
+        # isolated. Custom projects always send the same CO uuid
+        # (1:1 with the formulation today) so their single row keeps
+        # updating in place.
         row, _created = PspProductionStatus.objects.update_or_create(
             formulation=formulation,
+            psp_customer_order_uuid=psp_co_uuid,
             defaults={
-                "psp_customer_order_uuid": psp_co_uuid,
+                # ``npd_proposal_uuid`` is captured on the status so
+                # the portal's ``/portal/projects/<proposal_id>`` URL
+                # (used for RTG multi-order rows) can resolve to the
+                # right status row without a PSP CO uuid the customer
+                # wouldn't have at URL-build time.
+                "npd_proposal_uuid": npd_proposal_uuid,
                 "phase": _str("phase", 48),
                 "phase_label": _str("phase_label", 120),
                 "next_action_title": _str("next_action_title", 200),

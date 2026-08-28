@@ -330,6 +330,17 @@ class LabelDesignListItemSerializer(serializers.ModelSerializer):
     formulation_name = serializers.CharField(
         source="formulation.name", read_only=True
     )
+    # RTG products carry a marketing-facing name distinct from the
+    # internal ``formulation.name`` (which stays as the R&D
+    # identifier — e.g. "PROT-042 · Vanilla Protein v3.2"). Surfaced
+    # so the labelling queue can show "Signature Vanilla Whey" —
+    # the label the customer + designer actually recognise.
+    formulation_rtg_display_name = serializers.CharField(
+        source="formulation.rtg_display_name", read_only=True, default=""
+    )
+    formulation_project_type = serializers.CharField(
+        source="formulation.project_type", read_only=True, default=""
+    )
     # See the read serializer comment — needed so multi-spec
     # projects don't render as duplicate rows in the queue.
     specification_sheet_code = serializers.CharField(
@@ -346,6 +357,8 @@ class LabelDesignListItemSerializer(serializers.ModelSerializer):
             "formulation",
             "formulation_code",
             "formulation_name",
+            "formulation_rtg_display_name",
+            "formulation_project_type",
             "specification_sheet",
             "specification_sheet_code",
             "status",

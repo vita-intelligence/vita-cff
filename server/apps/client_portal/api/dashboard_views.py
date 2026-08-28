@@ -407,12 +407,13 @@ def _build_products(customer_ids) -> list[dict]:
     if not formulation_ids:
         return []
 
-    # ``resolve_stage`` now peeks at ``psp_production_status`` so the
-    # customer sees the live PSP phase on the badge instead of getting
-    # stuck on ``label_approved``. Pull it in the same query so the
+    # ``resolve_stage`` now peeks at ``psp_production_statuses`` (per
+    # PSP CO after the RTG multi-order fix) so the customer sees the
+    # live PSP phase on the badge instead of getting stuck on
+    # ``label_approved``. Pre-fetch the reverse relation so the
     # dashboard doesn't fan out into an N+1 per card.
-    formulations = Formulation.objects.filter(id__in=formulation_ids).select_related(
-        "psp_production_status"
+    formulations = Formulation.objects.filter(id__in=formulation_ids).prefetch_related(
+        "psp_production_statuses"
     )
 
     # Per-project proposal grouping. A proposal that bundles 2

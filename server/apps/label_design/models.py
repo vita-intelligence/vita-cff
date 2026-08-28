@@ -141,13 +141,29 @@ class LabelDesign(models.Model):
         on_delete=models.CASCADE,
         related_name="label_designs",
         help_text=_(
-            "The project this label belongs to. Exactly one "
-            "LabelDesign per formulation — enforced by the unique "
-            "constraint in Meta. Revised spec sheets on the same "
-            "project reuse the existing row rather than spawning a "
-            "second label workflow (labels are per-product, and a "
-            "spec revision on the same product doesn't change the "
-            "artwork surface)."
+            "The formulation (product) this label workflow covers. "
+            "One LabelDesign per (formulation, proposal) pair — "
+            "Custom projects have one proposal today so this stays "
+            "1:1 per formulation; RTG catalog products get ordered "
+            "N times and each order's proposal spawns its own label "
+            "workflow so revisions + approvals stay scoped to the "
+            "order the customer is looking at."
+        ),
+    )
+    proposal = models.ForeignKey(
+        "proposals.Proposal",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="label_designs",
+        help_text=_(
+            "The proposal / customer order this label belongs to. "
+            "Nullable for legacy rows created before the per-proposal "
+            "split; new rows always populate. Combined with "
+            "``formulation`` as the uniqueness key so a customer "
+            "placing a second RTG order on the same catalog product "
+            "gets a fresh label workflow instead of reusing the "
+            "first order's."
         ),
     )
     specification_sheet = models.ForeignKey(
@@ -160,10 +176,9 @@ class LabelDesign(models.Model):
             "The customer-signed final spec sheet whose acceptance "
             "gated entry to this workflow. Kept for audit — points "
             "at the spec whose signature originally triggered the "
-            "bootstrap. When a later revision is signed the pointer "
-            "stays put; the workflow doesn't restart. SET_NULL on "
-            "delete because losing the spec row shouldn't cascade "
-            "into losing the label workflow that followed from it."
+            "bootstrap. SET_NULL on delete because losing the spec "
+            "row shouldn't cascade into losing the label workflow "
+            "that followed from it."
         ),
     )
 
@@ -278,23 +293,30 @@ class LabelDesign(models.Model):
         indexes = [
             models.Index(fields=("organization", "status")),
             models.Index(fields=("organization", "-updated_at")),
-            # Per-formulation lookups are now hot: the dashboard,
-            # the staff queue, and the payment-approval fan-out all
-            # walk every label-design row for a project.
+            # Per-formulation lookups are hot: the dashboard, the
+            # staff queue, and the payment-approval fan-out walk
+            # every label-design row for a project. Per-proposal
+            # lookups back the RTG multi-order portal disambiguation.
             models.Index(fields=("formulation",)),
+            models.Index(fields=("proposal",)),
         ]
         constraints = [
-            # Exactly one label workflow per formulation. The
-            # previous (formulation, specification_sheet) pair was
-            # a design mistake — it let a customer signing three
-            # spec revisions on the same product spawn three
-            # duplicate label-design queues. Labels are per-product,
-            # not per-spec-revision. Multi-PRODUCT proposals still
-            # get one label per formulation as expected because each
-            # product IS a separate formulation.
+            # One label workflow per (formulation, proposal). Custom
+            # projects have a single proposal today so this behaves
+            # exactly like the old ``formulation``-only constraint;
+            # RTG catalog orders each get their own proposal and
+            # therefore their own label workflow (each customer order
+            # is an independent business object — the same product
+            # ordered twice does NOT share a label queue).
+            #
+            # Postgres treats NULL != NULL in unique constraints, so
+            # legacy rows with ``proposal IS NULL`` (pre-migration
+            # data before the split) can co-exist with new
+            # per-proposal rows without a UNIQUE violation on
+            # re-bootstrap.
             models.UniqueConstraint(
-                fields=("formulation",),
-                name="label_design_unique_per_formulation",
+                fields=("formulation", "proposal"),
+                name="label_design_unique_per_formulation_proposal",
             ),
         ]
 

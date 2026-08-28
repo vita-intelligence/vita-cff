@@ -154,6 +154,15 @@ export interface LabelDesignListItemDto {
   readonly formulation: string;
   readonly formulation_code: string;
   readonly formulation_name: string;
+  //: Marketing-facing display name — only set on RTG formulations,
+  //: empty string otherwise. UIs should prefer this over
+  //: ``formulation_name`` when non-empty so operators see the label
+  //: the customer recognises ("Signature Vanilla Whey") instead of
+  //: the internal R&D identifier ("PROT-042 · Vanilla Protein v3.2").
+  readonly formulation_rtg_display_name: string;
+  //: "custom" | "ready_to_go" | "" — drives the RTG badge and the
+  //: "prefer display name" branch in the queue row.
+  readonly formulation_project_type: string;
   readonly specification_sheet: string | null;
   readonly specification_sheet_code: string;
   readonly status: LabelDesignStatus;

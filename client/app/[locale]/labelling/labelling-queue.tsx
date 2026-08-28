@@ -407,10 +407,38 @@ function QueueRow({ item }: { item: LabelDesignListItemDto }) {
           </span>
         ) : null}
       </td>
-      <td className="px-3 py-2 text-ink-700">{item.formulation_name || "—"}</td>
+      <td className="px-3 py-2 text-ink-700">
+        {/* Prefer the marketing display name (RTG) so the operator
+            recognises the product from the customer's language.
+            Falls back to the internal name for custom projects. If
+            both exist AND differ, the internal name shows as a
+            small caption so R&D still has the technical handle. */}
+        {item.formulation_rtg_display_name ? (
+          <>
+            <div className="font-medium text-ink-1000">
+              {item.formulation_rtg_display_name}
+            </div>
+            {item.formulation_name &&
+            item.formulation_name !== item.formulation_rtg_display_name ? (
+              <div className="text-[11px] text-ink-500">{item.formulation_name}</div>
+            ) : null}
+          </>
+        ) : (
+          item.formulation_name || "—"
+        )}
+      </td>
       <td className="px-3 py-2">
         <div className="flex flex-wrap items-center gap-1.5">
           <StatusChip status={item.status} />
+          {/* RTG chip — lights up teal so a designer scanning the
+              queue can spot Ready-to-Go rows (which come with a
+              pre-approved artwork template + faster turnaround)
+              apart from custom builds. */}
+          {item.formulation_project_type === "ready_to_go" ? (
+            <span className="inline-flex items-center gap-1 rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-teal-800 ring-1 ring-inset ring-teal-200">
+              RTG
+            </span>
+          ) : null}
           {/* Path chip — "Customer" lights up amber so a designer
               skimming the queue can tell at a glance which rows
               they have no upload responsibility for. "Vita"
@@ -640,13 +668,19 @@ function AttentionLaneCard({
               <Link
                 href={`/labelling/${it.id}`}
                 className="block truncate rounded px-1.5 py-1 text-[11px] text-ink-800 hover:bg-ink-0 hover:text-ink-1000"
-                title={it.formulation_name || it.formulation_code}
+                title={
+                  it.formulation_rtg_display_name ||
+                  it.formulation_name ||
+                  it.formulation_code
+                }
               >
                 <span className="font-mono font-semibold">
                   {it.formulation_code || "—"}
                 </span>
-                {it.formulation_name ? (
-                  <span className="ml-1 text-ink-600">· {it.formulation_name}</span>
+                {it.formulation_rtg_display_name || it.formulation_name ? (
+                  <span className="ml-1 text-ink-600">
+                    · {it.formulation_rtg_display_name || it.formulation_name}
+                  </span>
                 ) : null}
               </Link>
             </li>

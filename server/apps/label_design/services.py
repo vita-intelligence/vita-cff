@@ -136,14 +136,17 @@ def transition_status(
 
 
 def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
-    """Create-or-return the :class:`LabelDesign` for the formulation
-    that ``spec_sheet`` belongs to.
+    """Create-or-return the :class:`LabelDesign` for the
+    ``(formulation, proposal)`` this ``spec_sheet`` belongs to.
 
-    Exactly one LabelDesign per formulation — enforced by the DB
-    constraint installed in migration 0005. Revised spec sheets on
-    the same project reuse the existing row rather than spawning a
-    second label workflow. Labels are per-product; a spec revision
-    on the same product doesn't change the artwork surface.
+    One LabelDesign per (formulation, proposal). Custom projects
+    have one proposal today so this behaves as one label per
+    formulation — spec revisions on the same product reuse the
+    existing row (labels are per-product, not per-revision). RTG
+    catalog products get ordered N times and each order's proposal
+    spawns its own label workflow so the customer's second-order
+    artwork lifecycle doesn't clobber their first order's approved
+    label.
 
     Filters out draft-kind specs: only a customer-signed **final**
     spec authorises production, which is what unlocks the label
@@ -172,11 +175,52 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
     if getattr(spec_sheet, "document_kind", None) != SpecificationDocumentKind.FINAL:
         return None
 
-    existing = LabelDesign.objects.filter(formulation=formulation).first()
+    # Resolve the proposal that owns this spec sheet. Each customer
+    # order has its own proposal + its own spec sheet + its own
+    # label workflow — for RTG the second order's spec-sign must NOT
+    # adopt the first order's label queue. Fall back to the
+    # accepted / signed proposal on the formulation for legacy
+    # Custom rows whose ProposalLine → spec link wasn't populated at
+    # sheet-creation time.
+    from apps.proposals.models import ProposalLine, ProposalStatus
+    from django.db.models import Q
+
+    proposal_line = (
+        ProposalLine.objects.filter(specification_sheet=spec_sheet)
+        .select_related("proposal")
+        .order_by("-proposal__updated_at")
+        .first()
+    )
+    proposal = proposal_line.proposal if proposal_line else None
+    if proposal is None:
+        # Legacy fallback — no explicit line link. Take the newest
+        # accepted / sent+signed proposal on the formulation. Safe
+        # for Custom (1 proposal per formulation); would misfire for
+        # RTG but RTG always populates the spec link at checkout so
+        # this branch is unreachable in that flow.
+        fallback_line = (
+            ProposalLine.objects.filter(
+                Q(proposal__status=ProposalStatus.ACCEPTED.value)
+                | Q(
+                    proposal__status=ProposalStatus.SENT.value,
+                    proposal__customer_signed_at__isnull=False,
+                ),
+                formulation_version__formulation=formulation,
+            )
+            .select_related("proposal")
+            .order_by("-proposal__updated_at")
+            .first()
+        )
+        proposal = fallback_line.proposal if fallback_line else None
+
+    existing = LabelDesign.objects.filter(
+        formulation=formulation, proposal=proposal
+    ).first()
     if existing is not None:
         # Keep the existing row's spec pointer — it's an audit anchor
         # to the spec that originally triggered the bootstrap. Later
-        # revisions ARE the same product for label purposes.
+        # revisions on the SAME (formulation, proposal) ARE the same
+        # product order for label purposes.
         return existing
 
     # Skip the PAYMENT_PENDING stage when the customer already paid
@@ -185,22 +229,12 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
     # at LABEL_PATH_PENDING. Same logic as the deposit-side skip:
     # a 0% edge means no gate applies.
     from decimal import Decimal
-    from apps.proposals.models import ProposalLine, ProposalStatus
 
-    accepted_line = (
-        ProposalLine.objects.filter(
-            formulation_version__formulation=formulation,
-            proposal__status=ProposalStatus.ACCEPTED.value,
-        )
-        .select_related("proposal")
-        .order_by("-proposal__updated_at")
-        .first()
-    )
     skip_payment_stage = False
-    if accepted_line and accepted_line.proposal.deposit_percent is not None:
+    if proposal is not None and proposal.deposit_percent is not None:
         try:
             skip_payment_stage = (
-                Decimal(accepted_line.proposal.deposit_percent) >= Decimal("100")
+                Decimal(proposal.deposit_percent) >= Decimal("100")
             )
         except Exception:  # noqa: BLE001
             skip_payment_stage = False
@@ -214,6 +248,7 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
     label_design = LabelDesign.objects.create(
         organization=formulation.organization,
         formulation=formulation,
+        proposal=proposal,
         specification_sheet=spec_sheet,
         status=initial_status,
     )
@@ -252,48 +287,44 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
         },
     )
 
-    # If the FINAL payment for this formulation is already approved
-    # (bootstrap raced the payment approval, or the label workflow
-    # is being back-filled after the fact), advance PAYMENT_PENDING
-    # → LABEL_PATH_PENDING right away so the customer isn't stuck
-    # staring at "Awaiting final payment" for a paid project.
-    advance_label_if_final_paid(formulation)
+    # If the FINAL payment for this (formulation, proposal) is
+    # already approved (bootstrap raced the payment approval, or the
+    # label workflow is being back-filled after the fact), advance
+    # PAYMENT_PENDING → LABEL_PATH_PENDING right away so the
+    # customer isn't stuck staring at "Awaiting final payment" for a
+    # paid order.
+    advance_label_if_final_paid_for(label_design)
     return label_design
 
 
-def advance_label_if_final_paid(formulation) -> None:
-    """Auto-advance a label workflow past ``PAYMENT_PENDING`` when the
-    FINAL payment for the formulation is already approved.
+def advance_label_if_final_paid_for(label_design: LabelDesign) -> None:
+    """Auto-advance ``label_design`` past ``PAYMENT_PENDING`` when
+    a FINAL payment scoped to its ``(formulation, proposal)`` is
+    already approved.
 
-    Called from two places:
-
-    * :func:`bootstrap_for_spec` after the row is created, so a label
-      bootstrapped after the FINAL was approved isn't stuck at the
-      payment gate.
-    * :func:`apps.payments.services.approve_payment` when a FINAL
-      payment lands, so a label bootstrapped before payment approval
-      moves forward the moment finance clicks approve.
-
-    Idempotent: no-op when the label is past ``PAYMENT_PENDING`` OR
-    when no approved FINAL payment exists yet. Silent on any
-    transition error — never blocks the payment or bootstrap.
+    Takes the label_design directly (not the formulation) so we can
+    scope the payment check to the specific order the label belongs
+    to. Formulation-scoped lookups would leak an approved payment
+    from a first RTG order onto the second order's fresh
+    PAYMENT_PENDING label.
     """
 
     from apps.payments.constants import PaymentKind, PaymentStatus
     from apps.payments.models import Payment
 
-    label_design = LabelDesign.objects.filter(formulation=formulation).first()
     if label_design is None:
         return
     if label_design.status != LabelDesignStatus.PAYMENT_PENDING:
         return
 
-    has_approved_final = Payment.objects.filter(
-        formulation=formulation,
-        kind=PaymentKind.FINAL,
-        status=PaymentStatus.APPROVED,
-    ).exists()
-    if not has_approved_final:
+    payment_filter = {
+        "formulation_id": label_design.formulation_id,
+        "kind": PaymentKind.FINAL,
+        "status": PaymentStatus.APPROVED,
+    }
+    if label_design.proposal_id is not None:
+        payment_filter["proposal_id"] = label_design.proposal_id
+    if not Payment.objects.filter(**payment_filter).exists():
         return
 
     try:
@@ -307,20 +338,43 @@ def advance_label_if_final_paid(formulation) -> None:
         pass
 
 
-def advance_label_after_design_fee_paid(formulation) -> None:
-    """Advance a label workflow past ``DESIGN_FEE_PENDING`` when the
-    ``LABEL_DESIGN`` payment for the formulation lands as APPROVED.
+def advance_label_if_final_paid(formulation) -> None:
+    """Legacy formulation-scoped wrapper. New callers should use
+    :func:`advance_label_if_final_paid_for` with a specific label
+    design so RTG multi-order scenarios don't bleed a first order's
+    payment approval onto a second order's fresh label workflow.
 
-    Called from :func:`apps.payments.services.approve_payment` on
-    every LABEL_DESIGN approval. Idempotent no-op when the label
-    isn't in ``DESIGN_FEE_PENDING`` or no matching label workflow
-    exists.
+    Retained temporarily for any external caller; walks every
+    LabelDesign on the formulation and checks each.
     """
 
-    label_design = LabelDesign.objects.filter(formulation=formulation).first()
+    for ld in LabelDesign.objects.filter(formulation=formulation):
+        advance_label_if_final_paid_for(ld)
+
+
+def advance_label_after_design_fee_paid_for(label_design: LabelDesign) -> None:
+    """Advance ``label_design`` past ``DESIGN_FEE_PENDING`` when a
+    LABEL_DESIGN fee payment scoped to its ``(formulation, proposal)``
+    is APPROVED. Called from the payment-approve hook with the
+    resolved label design so RTG multi-order stays isolated.
+    """
+
+    from apps.payments.constants import PaymentKind, PaymentStatus
+    from apps.payments.models import Payment
+
     if label_design is None:
         return
     if label_design.status != LabelDesignStatus.DESIGN_FEE_PENDING:
+        return
+
+    payment_filter = {
+        "formulation_id": label_design.formulation_id,
+        "kind": PaymentKind.LABEL_DESIGN,
+        "status": PaymentStatus.APPROVED,
+    }
+    if label_design.proposal_id is not None:
+        payment_filter["proposal_id"] = label_design.proposal_id
+    if not Payment.objects.filter(**payment_filter).exists():
         return
 
     try:
@@ -332,6 +386,17 @@ def advance_label_after_design_fee_paid(formulation) -> None:
         )
     except InvalidStatusTransition:  # pragma: no cover — belt + braces
         pass
+
+
+def advance_label_after_design_fee_paid(formulation) -> None:
+    """Legacy wrapper. Walks every LabelDesign on the formulation
+    (Custom = 1, RTG = N) and calls the per-label variant. New
+    callers should reach for :func:`advance_label_after_design_fee_paid_for`
+    with the resolved label directly.
+    """
+
+    for ld in LabelDesign.objects.filter(formulation=formulation):
+        advance_label_after_design_fee_paid_for(ld)
 
 
 def bootstrap_for_formulation(

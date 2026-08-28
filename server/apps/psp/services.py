@@ -2683,12 +2683,23 @@ def sync_customer_order_to_psp(
     # They shouldn't ride the CustomerOrder mirror — until a customer
     # actually orders one via the portal, they have no owner. When
     # someone does order, the Proposal → CustomerOrder merge path
-    # (``PspClient.merge_customer_orders_from_proposal``) handles the
-    # push separately.
+    # (``PspClient.merge_customer_orders_from_proposal``) creates the
+    # CO on PSP; *after that* label / header / photo updates from
+    # this path must reach it (otherwise the LabelArtworkCard + hero
+    # image never light up on the PSP project page). LabelDesign
+    # existence is the reliable "a customer has ordered" proxy: it
+    # only bootstraps after a customer signs a spec, which requires
+    # a committed proposal.
     from apps.formulations.models import ProjectType
 
     if getattr(formulation, "project_type", None) == ProjectType.READY_TO_GO:
-        return None
+        from apps.label_design.models import LabelDesign
+
+        has_label_design = LabelDesign.objects.filter(
+            formulation_id=formulation.id
+        ).exists()
+        if not has_label_design:
+            return None
 
     try:
         config = get_psp_config(organization=organization)
@@ -2718,6 +2729,11 @@ def sync_customer_order_to_psp(
         # we send it every sync. Falls back to nil when the org
         # hasn't configured an `app_base_url`.
         "app_url": _formulation_app_url(organization, formulation),
+        # Project flavour. Lets PSP's ``upsert_from_npd`` decide
+        # whether to insert a new formulation-scoped CO (Custom) or
+        # skip because the CO already exists per-proposal (RTG). Also
+        # drives the RTG-safe branches on the proposal-merge path.
+        "project_type": getattr(formulation, "project_type", "") or "",
         # Customer identity — nil when the project hasn't been linked
         # yet. PSP uses this to swap the placeholder customer for the
         # real name on its kanban / project page. The uuid lets PSP
@@ -2904,7 +2920,7 @@ def _header_image_url_for_formulation(formulation: Any) -> str:
         .select_related("current_revision")
         .first()
     )
-    if label is not None and label.customer_approved_at is not None:
+    if _label_customer_approved_at(label) is not None:
         revision = getattr(label, "current_revision", None)
         # Preferred: a generated thumbnail from the PDF pipeline.
         preview_url = _absolute_media_url(
@@ -3213,39 +3229,74 @@ def _final_spec_state_for_proposal(proposal: Any) -> dict:
         cycle.customer_confirmed_done_at if cycle is not None else None
     )
 
-    # Active FINAL — approved / sent / accepted. Rejected + draft +
-    # in_review don't count.
-    active_final = (
-        SpecificationSheet.objects.filter(
-            formulation_version__formulation_id=primary_formulation_id,
-            document_kind=SpecificationDocumentKind.FINAL,
-            status__in=(
-                SpecificationStatus.APPROVED.value,
-                SpecificationStatus.SENT.value,
-                SpecificationStatus.ACCEPTED.value,
-            ),
-        )
-        .order_by("-updated_at")
-        .first()
+    # RTG multi-order isolation: for each downstream state below,
+    # narrow to spec sheets + payments attached to THIS specific
+    # proposal (not the whole formulation). Without this the second
+    # RTG order's PSP CO would receive the first order's final-spec
+    # status + payment timestamps and think it was already
+    # production-authorised.
+    from apps.proposals.models import ProposalLine
+
+    proposal_line_spec_ids = list(
+        ProposalLine.objects.filter(proposal=proposal)
+        .exclude(specification_sheet__isnull=True)
+        .values_list("specification_sheet_id", flat=True)
     )
 
-    # Most recent rejection (any FINAL). Kept as a distinct field so
-    # PSP can surface "customer rejected on <date>" without walking
-    # the audit trail.
-    latest_rejected = (
-        SpecificationSheet.objects.filter(
-            formulation_version__formulation_id=primary_formulation_id,
-            document_kind=SpecificationDocumentKind.FINAL,
-            status=SpecificationStatus.REJECTED.value,
-        )
-        .order_by("-customer_rejected_at")
-        .first()
+    # Active FINAL — approved / sent / accepted. Rejected + draft +
+    # in_review don't count. Prefer sheets linked to THIS proposal
+    # (RTG-safe); fall back to any FINAL on the formulation for
+    # legacy Custom sheets that predate the ProposalLine → spec link.
+    active_final_qs = SpecificationSheet.objects.filter(
+        document_kind=SpecificationDocumentKind.FINAL,
+        status__in=(
+            SpecificationStatus.APPROVED.value,
+            SpecificationStatus.SENT.value,
+            SpecificationStatus.ACCEPTED.value,
+        ),
     )
+    if proposal_line_spec_ids:
+        active_final = (
+            active_final_qs.filter(id__in=proposal_line_spec_ids)
+            .order_by("-updated_at")
+            .first()
+        )
+    else:
+        active_final = (
+            active_final_qs.filter(
+                formulation_version__formulation_id=primary_formulation_id
+            )
+            .order_by("-updated_at")
+            .first()
+        )
+
+    # Most recent rejection scoped the same way.
+    rejected_qs = SpecificationSheet.objects.filter(
+        document_kind=SpecificationDocumentKind.FINAL,
+        status=SpecificationStatus.REJECTED.value,
+    )
+    if proposal_line_spec_ids:
+        latest_rejected = (
+            rejected_qs.filter(id__in=proposal_line_spec_ids)
+            .order_by("-customer_rejected_at")
+            .first()
+        )
+    else:
+        latest_rejected = (
+            rejected_qs.filter(
+                formulation_version__formulation_id=primary_formulation_id
+            )
+            .order_by("-customer_rejected_at")
+            .first()
+        )
 
     # FINAL payment approval — the "production authorised" signal.
+    # Scoped to this proposal so RTG order 2's CO isn't marked
+    # authorised by order 1's payment approval.
     final_payment_approved_at = (
         Payment.objects.filter(
             formulation_id=primary_formulation_id,
+            proposal=proposal,
             kind=PaymentKind.FINAL,
             status=PaymentStatus.APPROVED,
         )
@@ -3342,7 +3393,7 @@ def _label_design_state_for_proposal(proposal: Any) -> dict:
         "npd_label_design_uuid": str(label.id),
         "npd_label_status": label.status,
         "npd_label_design_path": label.design_path or "",
-        "npd_label_approved_at": _iso_or_none(label.customer_approved_at),
+        "npd_label_approved_at": _iso_or_none(_label_customer_approved_at(label)),
         "npd_label_rejection_count": label.rejection_count,
         "npd_label_updated_at": _iso_or_none(label.updated_at),
         "npd_label_preview_png_url": _absolute_media_url(
@@ -3364,6 +3415,33 @@ def _label_design_url(label: Any) -> str:
     if not base or not label:
         return ""
     return f"{base}/labelling/{label.id}/"
+
+
+def _label_customer_approved_at(label: Any) -> Any:
+    """Return the moment the customer's approval landed, regardless
+    of design path.
+
+    ``LabelDesign.customer_approved_at`` is only stamped on the
+    ``design_by_us`` path (customer signs off *our* artwork via the
+    explicit CUSTOMER_APPROVAL step). On ``design_by_customer`` the
+    customer's approval is implicit in the upload — captured on the
+    revision as ``customer_approved_own_design=True`` — and there's
+    no separate approval step to stamp the label row. Fall back to
+    the revision's submit time so downstream mirrors (PSP header
+    image, PSP LabelArtworkCard gate) treat the workflow as approved
+    on both paths.
+    """
+
+    if label is None:
+        return None
+    if label.customer_approved_at is not None:
+        return label.customer_approved_at
+    revision = getattr(label, "current_revision", None)
+    if revision is not None and getattr(
+        revision, "customer_approved_own_design", False
+    ):
+        return getattr(revision, "submitted_at", None)
+    return None
 
 
 def _safe_file_url(file_field: Any) -> str:
@@ -3813,6 +3891,16 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         # payload for why sending these is load-bearing on RTG.
         "primary_formulation_display_name": primary_display_name,
         "primary_formulation_code": primary_code,
+        # Project flavour drives PSP's ``proposal_merge.fresh_merge``
+        # branch — Custom reuses the existing formulation's CO (1:1
+        # forever), RTG spawns a brand-new CO per proposal (catalog
+        # products get ordered N times). Missing / empty string is
+        # treated as Custom on the PSP side for safety.
+        "npd_project_type": (
+            getattr(primary_formulation, "project_type", "") or ""
+            if primary_formulation is not None
+            else ""
+        ),
         # NPD-authoritative status. PSP mirrors it and derives the
         # wizard block from here (Awaiting approval → Ready to send
         # → Awaiting customer signature).

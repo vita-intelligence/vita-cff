@@ -301,8 +301,14 @@ def record_payment(
         if formulation is None or proposal is not None:
             raise PaymentKindConflict()
         organization = formulation.organization
-        if label_design is None:
-            label_design = LabelDesign.objects.filter(formulation=formulation).first()
+        # ``label_design`` is caller-provided when it matters. The
+        # previous "guess it via formulation" fallback silently picked
+        # whichever LabelDesign was created first for the formulation,
+        # which was fine for Custom (1:1) and picked the WRONG order's
+        # workflow for RTG multi-order. Sample-kit FINAL payments don't
+        # need a label link at all, so a nil label_design here is the
+        # right default; label-fee callers pass the specific label
+        # workflow explicitly.
 
     if customer is None:
         if formulation is not None:
@@ -532,9 +538,16 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
             if fresh is None or fresh.formulation_id is None:
                 return
             try:
-                proposal = _signed_or_accepted_proposal_for_formulation(
-                    fresh.formulation
-                )
+                # Prefer the payment's OWN proposal FK — that's the
+                # order this deposit belongs to. For RTG multi-order,
+                # a formulation-scoped lookup would return the newest
+                # signed proposal (first order) and push its deposit
+                # flag to the wrong CO.
+                proposal = fresh.proposal
+                if proposal is None:
+                    proposal = _signed_or_accepted_proposal_for_formulation(
+                        fresh.formulation
+                    )
                 if proposal is not None:
                     _schedule_proposal_psp_merge(proposal)
             except Exception:  # noqa: BLE001 — silent-degrade
@@ -565,6 +578,8 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
             else None
         )
         if formulation_pk is not None:
+            payment_proposal_pk = payment.proposal_id
+
             def _rtg_production_authorised() -> None:
                 from apps.formulations.models import (
                     Formulation as _Formulation,
@@ -576,10 +591,16 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
                 from apps.label_design.services import (
                     bootstrap_for_formulation,
                 )
+                from apps.proposals.models import Proposal as _Proposal
 
                 fresh = _Formulation.objects.filter(pk=formulation_pk).first()
                 if fresh is None:
                     return
+                fresh_proposal = (
+                    _Proposal.objects.filter(pk=payment_proposal_pk).first()
+                    if payment_proposal_pk is not None
+                    else None
+                )
                 try:
                     _maybe_advance_project_status(
                         formulation=fresh,
@@ -601,12 +622,18 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
                         formulation_pk,
                     )
                 try:
-                    _sync_formulation_proposal_to_psp(fresh)
+                    # Scope the PSP sync to THIS deposit's proposal —
+                    # RTG orders each have their own CO on PSP and the
+                    # deposit-approval push must target the correct one.
+                    _sync_formulation_proposal_to_psp(
+                        fresh, proposal=fresh_proposal
+                    )
                 except Exception:  # noqa: BLE001 — never break approve
                     logger.exception(
                         "RTG deposit approval: PSP sync bubbled for "
-                        "formulation %s",
+                        "formulation %s proposal %s",
                         formulation_pk,
+                        payment_proposal_pk,
                     )
 
             transaction.on_commit(_rtg_production_authorised)
@@ -638,20 +665,33 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
     # down at approve time.
     if payment.kind == PaymentKind.FINAL and payment.formulation_id is not None:
         formulation_pk = payment.formulation_id
+        payment_proposal_pk = payment.proposal_id
 
         def _push_final_payment_to_psp() -> None:
             from apps.formulations.models import Formulation as _Formulation
+            from apps.proposals.models import Proposal as _Proposal
 
             fresh = _Formulation.objects.filter(pk=formulation_pk).first()
             if fresh is None:
                 return
+            fresh_proposal = (
+                _Proposal.objects.filter(pk=payment_proposal_pk).first()
+                if payment_proposal_pk is not None
+                else None
+            )
             try:
-                _sync_formulation_proposal_to_psp(fresh)
+                # Scope by the payment's OWN proposal so RTG multi-
+                # order FINAL approvals don't push order 2's payment
+                # timestamp onto order 1's CO.
+                _sync_formulation_proposal_to_psp(
+                    fresh, proposal=fresh_proposal
+                )
             except Exception:  # noqa: BLE001 — never break approve
                 logger.exception(
                     "Failed to push FINAL payment approval to PSP for "
-                    "formulation %s",
+                    "formulation %s proposal %s",
                     formulation_pk,
+                    payment_proposal_pk,
                 )
 
         transaction.on_commit(_push_final_payment_to_psp)
@@ -662,44 +702,56 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
         # invoice. Kicking this on ``transaction.on_commit`` so a
         # rollback of the approve doesn't leave the label in a
         # never-should-have-happened state.
-        def _advance_label_after_final_approval() -> None:
-            from apps.formulations.models import Formulation as _Formulation
-            from apps.label_design.services import advance_label_if_final_paid
+        payment_proposal_pk = payment.proposal_id
 
-            fresh = _Formulation.objects.filter(pk=formulation_pk).first()
-            if fresh is None:
-                return
-            try:
-                advance_label_if_final_paid(fresh)
-            except Exception:  # noqa: BLE001 — never break approve
-                logger.exception(
-                    "Failed to advance label workflow after FINAL "
-                    "payment approval for formulation %s",
-                    formulation_pk,
-                )
+        def _advance_label_after_final_approval() -> None:
+            from apps.label_design.models import LabelDesign
+            from apps.label_design.services import (
+                advance_label_if_final_paid_for,
+            )
+
+            # Scope the label lookup to (formulation, proposal) so an
+            # RTG customer's second-order FINAL approval doesn't
+            # advance their first-order label workflow too.
+            qs = LabelDesign.objects.filter(formulation_id=formulation_pk)
+            if payment_proposal_pk is not None:
+                qs = qs.filter(proposal_id=payment_proposal_pk)
+            for label_design in qs:
+                try:
+                    advance_label_if_final_paid_for(label_design)
+                except Exception:  # noqa: BLE001 — never break approve
+                    logger.exception(
+                        "Failed to advance label workflow after FINAL "
+                        "payment approval for formulation %s proposal %s",
+                        formulation_pk,
+                        payment_proposal_pk,
+                    )
 
         transaction.on_commit(_advance_label_after_final_approval)
 
     if payment.kind == PaymentKind.LABEL_DESIGN and payment.formulation_id is not None:
         design_formulation_pk = payment.formulation_id
+        design_proposal_pk = payment.proposal_id
 
         def _advance_label_after_design_fee_approval() -> None:
-            from apps.formulations.models import Formulation as _Formulation
+            from apps.label_design.models import LabelDesign
             from apps.label_design.services import (
-                advance_label_after_design_fee_paid,
+                advance_label_after_design_fee_paid_for,
             )
 
-            fresh = _Formulation.objects.filter(pk=design_formulation_pk).first()
-            if fresh is None:
-                return
-            try:
-                advance_label_after_design_fee_paid(fresh)
-            except Exception:  # noqa: BLE001 — never break approve
-                logger.exception(
-                    "Failed to advance label workflow after LABEL_DESIGN "
-                    "payment approval for formulation %s",
-                    design_formulation_pk,
-                )
+            qs = LabelDesign.objects.filter(formulation_id=design_formulation_pk)
+            if design_proposal_pk is not None:
+                qs = qs.filter(proposal_id=design_proposal_pk)
+            for label_design in qs:
+                try:
+                    advance_label_after_design_fee_paid_for(label_design)
+                except Exception:  # noqa: BLE001 — never break approve
+                    logger.exception(
+                        "Failed to advance label workflow after LABEL_DESIGN "
+                        "payment approval for formulation %s proposal %s",
+                        design_formulation_pk,
+                        design_proposal_pk,
+                    )
 
         transaction.on_commit(_advance_label_after_design_fee_approval)
 
@@ -1301,18 +1353,26 @@ def confirm_sample_allocation(
     return allocation
 
 
-def _sync_formulation_proposal_to_psp(formulation) -> None:
-    """Kick a PSP sync for whichever proposal this formulation is
-    attached to. Deferred via ``transaction.on_commit`` so the
-    sample-allocation row is committed before PSP fetches — a race
-    would leave PSP staring at the old state. Silently no-ops when
-    no signed / accepted proposal is attached OR when PSP integration
-    isn't configured for the org.
+def _sync_formulation_proposal_to_psp(formulation, *, proposal=None) -> None:
+    """Kick a PSP sync for a specific proposal attached to this
+    formulation (or the newest signed / accepted one when the caller
+    doesn't specify). Deferred via ``transaction.on_commit`` so the
+    triggering row is committed before PSP fetches. Silently no-ops
+    when no proposal is attached OR when PSP integration isn't
+    configured for the org.
+
+    Pass ``proposal=`` when you know which specific customer order
+    triggered the sync — critical for RTG where a formulation
+    carries N proposals and picking the newest would sync the wrong
+    order's state. LabelDesign signal fanout, sample-allocation
+    confirm, spec approval, etc. all have the specific proposal in
+    scope and should pass it explicitly.
     """
 
     from django.db import transaction as _transaction
 
-    proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+    if proposal is None:
+        proposal = _signed_or_accepted_proposal_for_formulation(formulation)
     if proposal is None:
         return
 
@@ -1325,6 +1385,32 @@ def _sync_formulation_proposal_to_psp(formulation) -> None:
         _schedule_proposal_psp_merge(proposal)
 
     _transaction.on_commit(_do_sync)
+
+
+def _proposal_for_spec_sheet(sheet) -> Any | None:
+    """Return the proposal that ships this specific spec sheet, by
+    walking the ``ProposalLine.specification_sheet`` link.
+
+    Every RTG order's checkout lands its own spec sheet AND its own
+    proposal — the link between them is the ProposalLine. Custom
+    projects with a bundled kiosk-sign flow also set this link. When
+    the spec sheet is legacy (created before ProposalLines started
+    linking to specs) this returns ``None`` and the caller falls
+    back to the formulation-scoped helper.
+    """
+
+    if sheet is None:
+        return None
+
+    from apps.proposals.models import ProposalLine
+
+    line = (
+        ProposalLine.objects.filter(specification_sheet=sheet)
+        .select_related("proposal")
+        .order_by("-proposal__updated_at")
+        .first()
+    )
+    return line.proposal if line else None
 
 
 def _signed_or_accepted_proposal_for_formulation(formulation) -> Any | None:
@@ -1340,6 +1426,13 @@ def _signed_or_accepted_proposal_for_formulation(formulation) -> Any | None:
     AFTER finance accepted the proposal, but the user's design has
     the customer's sample-selection confirm as the trigger — before
     finance touches anything.
+
+    Formulation-scoped — for RTG multi-order the newest signed
+    proposal wins, which will be the WRONG order for anything
+    computed on the second order's spec / invoice / final-payment
+    surface. Callers on those surfaces should resolve the proposal
+    via :func:`_proposal_for_spec_sheet` (spec-scoped) or off the
+    proposal id they already hold.
     """
 
     from apps.proposals.models import ProposalLine, ProposalStatus
@@ -1539,9 +1632,32 @@ def compute_final_spec_delta(sheet) -> dict[str, Any] | None:
     if formulation is None:
         return None
 
-    proposal = _signed_or_accepted_proposal_for_formulation(formulation)
-    if proposal is None:
+    # RTG catalog products have no "trials" phase — the customer
+    # picks a canonical spec at checkout and the proposal IS the
+    # invoice. There's nothing to compare a "final spec" against, so
+    # the "The recipe evolved during trials …" acknowledgement banner
+    # is nonsensical. Skip the delta entirely; the FE falls back to
+    # the plain sign card + the proposal-driven invoice.
+    from apps.formulations.models import ProjectType
+
+    if getattr(formulation, "project_type", None) == ProjectType.READY_TO_GO:
         return None
+
+    # Resolve the proposal via the spec sheet itself, not via the
+    # formulation. Custom projects with a bundled kiosk-sign flow
+    # ship the ProposalLine → spec sheet link; walking it keeps the
+    # deposit + remainder scoped to THIS spec's proposal even when
+    # the formulation later carries a second proposal (future Custom
+    # reorder).
+    proposal = _proposal_for_spec_sheet(sheet)
+    if proposal is None:
+        # No spec-side proposal link. Fall back to the formulation
+        # lookup for legacy Custom sheets that predate the ProposalLine
+        # link being reliably populated. Kept intentionally narrow —
+        # for RTG the spec-line link is always present.
+        proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+        if proposal is None:
+            return None
     total_excl_vat = Decimal(str(getattr(proposal, "total_excl_vat", None) or 0))
     deposit_pct = Decimal(str(getattr(proposal, "deposit_percent", None) or 0))
     if total_excl_vat <= 0:
@@ -1553,7 +1669,7 @@ def compute_final_spec_delta(sheet) -> dict[str, Any] | None:
         total_excl_vat * remainder_pct / Decimal("100")
     ).quantize(Decimal("0.01"))
 
-    deposit_paid = deposit_paid_amount_for_formulation(formulation)
+    deposit_paid = deposit_paid_amount_for_proposal(proposal)
     amount_due = (final_total - deposit_paid).quantize(Decimal("0.01"))
     if amount_due < 0:
         amount_due = Decimal("0.00")
@@ -1590,9 +1706,27 @@ def deposit_paid_amount_for_formulation(formulation) -> Decimal:
     final-spec total when generating the final invoice — customer
     paid £X at deposit, so the final invoice is
     ``final_spec_total − X``.
+
+    Formulation-scoped lookup — safe for Custom (1 formulation = 1
+    proposal). For RTG multi-order use
+    :func:`deposit_paid_amount_for_proposal` directly with the
+    caller's specific proposal so the second order doesn't inherit
+    the first order's deposit.
     """
 
     proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+    if proposal is None:
+        return Decimal("0.00")
+    return deposit_paid_amount_for_proposal(proposal)
+
+
+def deposit_paid_amount_for_proposal(proposal) -> Decimal:
+    """Sum of APPROVED deposit Payment amounts on ONE specific
+    proposal. RTG-safe: a customer with two orders on the same
+    catalog product doesn't leak the first order's deposit into the
+    second order's spec / invoice cards.
+    """
+
     if proposal is None:
         return Decimal("0.00")
     approved = Payment.objects.filter(
@@ -1671,10 +1805,28 @@ def ensure_final_payment_for_formulation(
     ):
         return None
 
-    existing = Payment.objects.filter(
-        formulation=formulation,
-        kind=PaymentKind.FINAL,
-    ).first()
+    # Resolve the proposal via the spec sheet itself so this stays
+    # per-order for RTG multi-order scenarios (customer's second
+    # order must generate its OWN final invoice with its OWN
+    # deposit-paid credit — never inherit the first order's).
+    proposal = _proposal_for_spec_sheet(sheet)
+    if proposal is None:
+        # Legacy Custom rows may have no explicit ProposalLine → spec
+        # link. Fall back to the formulation-scoped helper (safe
+        # while Custom stays 1:1 with the formulation).
+        proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+
+    # Idempotency: (formulation, proposal) is the natural key. Under
+    # RTG multi-order two proposals share a formulation, so keying
+    # only on formulation would return the FIRST order's FINAL as
+    # "existing" and silently drop the second order's invoice
+    # creation. Include proposal in the filter — when None (legacy),
+    # falls back to formulation-only which preserves 1:1 semantics
+    # for Custom.
+    existing_filter = {"formulation": formulation, "kind": PaymentKind.FINAL}
+    if proposal is not None:
+        existing_filter["proposal"] = proposal
+    existing = Payment.objects.filter(**existing_filter).first()
     if existing is not None:
         return None
 
@@ -1687,7 +1839,11 @@ def ensure_final_payment_for_formulation(
         )
         return None
 
-    deposit_paid = deposit_paid_amount_for_formulation(formulation)
+    deposit_paid = (
+        deposit_paid_amount_for_proposal(proposal)
+        if proposal is not None
+        else deposit_paid_amount_for_formulation(formulation)
+    )
     amount_due = (total - deposit_paid).quantize(Decimal("0.01"))
     if amount_due < 0:
         # Customer paid more at deposit than the final spec now says —
@@ -1705,7 +1861,8 @@ def ensure_final_payment_for_formulation(
         amount_due = Decimal("0.00")
 
     currency = (getattr(sheet, "currency", "GBP") or "GBP").upper()[:3]
-    proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+    # ``proposal`` already resolved above via _proposal_for_spec_sheet
+    # — reuse to keep the FINAL payment attached to the same order.
     customer = (
         getattr(proposal, "customer", None)
         or getattr(formulation, "customer", None)
@@ -1720,6 +1877,7 @@ def ensure_final_payment_for_formulation(
         organization=formulation.organization,
         kind=PaymentKind.FINAL,
         formulation=formulation,
+        proposal=proposal,
         customer=customer,
         amount=amount_due,
         currency=currency,
@@ -1741,7 +1899,7 @@ def ensure_final_payment_for_formulation(
 
 
 def ensure_label_design_payment_for_formulation(
-    *, formulation, actor=None
+    *, formulation, actor=None, proposal=None
 ) -> Payment | None:
     """Idempotently create the LABEL_DESIGN invoice Payment when the
     customer picks ``design_by_us`` on the label workflow.
@@ -1751,6 +1909,12 @@ def ensure_label_design_payment_for_formulation(
     transition, so a rollback of the choose-path request tears the
     payment down too.
 
+    ``proposal`` scopes the invoice to a specific order — required
+    for RTG multi-order (each order gets its own design-fee invoice
+    even when the customer chose ``design_by_us`` on both). Custom
+    callers may pass ``None`` and the formulation's accepted proposal
+    is picked as a fallback.
+
     Amount pulled from
     :class:`~apps.payments.models.SamplePricingConfig.label_design_fee_amount`
     for the workflow's org. Returns ``None`` when the fee is 0 /
@@ -1759,11 +1923,21 @@ def ensure_label_design_payment_for_formulation(
     free design.
     """
 
-    existing = Payment.objects.filter(
-        formulation=formulation,
-        kind=PaymentKind.LABEL_DESIGN,
-        status__in=(PaymentStatus.PENDING, PaymentStatus.APPROVED),
-    ).first()
+    if proposal is None:
+        proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+
+    # Idempotency scoped to (formulation, proposal). Without the
+    # proposal filter, an RTG customer picking ``design_by_us`` on
+    # their second order would find the first order's design-fee
+    # Payment (already-approved) and skip creating their own invoice.
+    existing_filter = {
+        "formulation": formulation,
+        "kind": PaymentKind.LABEL_DESIGN,
+        "status__in": (PaymentStatus.PENDING, PaymentStatus.APPROVED),
+    }
+    if proposal is not None:
+        existing_filter["proposal"] = proposal
+    existing = Payment.objects.filter(**existing_filter).first()
     if existing is not None:
         return existing
 
@@ -1778,8 +1952,6 @@ def ensure_label_design_payment_for_formulation(
         or ""
     ).strip()
     currency = (currency_from_config or company_currency or "GBP").upper()[:3]
-
-    proposal = _signed_or_accepted_proposal_for_formulation(formulation)
     customer = (
         getattr(proposal, "customer", None)
         or getattr(formulation, "customer", None)
@@ -1815,6 +1987,7 @@ def ensure_label_design_payment_for_formulation(
         organization=formulation.organization,
         kind=PaymentKind.LABEL_DESIGN,
         formulation=formulation,
+        proposal=proposal,
         customer=customer,
         amount=amount,
         currency=currency,

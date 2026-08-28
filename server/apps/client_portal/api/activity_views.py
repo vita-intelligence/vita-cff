@@ -309,11 +309,12 @@ def _collect_projects(
     rows = list(
         _projects_queryset(customer_ids, search)
         .filter(_cursor_filter(cursor))
-        # ``resolve_stage`` now peeks at ``psp_production_status`` so
-        # the badge tracks the live PSP phase instead of getting stuck
-        # on ``label_approved``. Pull it in the same query to avoid an
-        # N+1 per row on the activity feed.
-        .select_related("psp_production_status")
+        # ``resolve_stage`` now peeks at ``psp_production_statuses``
+        # (per-CO after the RTG multi-order fix) so the badge tracks
+        # the live PSP phase instead of getting stuck on
+        # ``label_approved``. Pre-fetch the reverse relation to avoid
+        # an N+1 per row on the activity feed.
+        .prefetch_related("psp_production_statuses")
         .order_by("-updated_at", "-id")[:cap]
     )
     if not rows:
@@ -626,23 +627,17 @@ def _collect_rtg(
         status_label, tone, needs = _RTG_STATUS_MAP.get(
             row.status, ("In flight", "in_progress", False),
         )
-        # Route RTG orders to the shared per-project detail page —
-        # ``/portal/projects/<formulation_id>`` renders the same rich
-        # pipeline / documents / timeline surface Custom projects use,
-        # and ``PortalProductDetailView`` handles both project types
-        # (``_build_pipeline`` branches on ``project_type`` to swap the
-        # trial/final stages for the payment/label chain on RTG). The
-        # standalone ``/portal/orders/<proposal_id>`` route was never
-        # built out, so linking there just 404'd for the customer.
-        # ``formulation`` should never be None here because the RTG
-        # queryset joins through ``formulation_version__formulation``,
-        # but the fallback keeps the payload safe if a legacy row is
-        # missing the version FK.
-        href = (
-            f"/portal/projects/{formulation.id}"
-            if formulation is not None
-            else f"/portal/orders/{row.id}"
-        )
+        # Route each RTG order to the shared per-project detail page
+        # keyed by the PROPOSAL id, not the formulation id — the
+        # customer can order the same catalog product N times and
+        # each order is an independent business object (its own CO,
+        # its own status row, its own timeline). Formulation-id URLs
+        # would collide across orders on the same SKU and show the
+        # first order's state on every subsequent one's page.
+        # ``PortalProductDetailView`` accepts either shape and routes
+        # by looking up either Formulation or Proposal on ``[id]``.
+        # ``row`` is the Proposal here — see ``_rtg_queryset``.
+        href = f"/portal/projects/{row.id}"
         items.append(
             {
                 "kind": "rtg",

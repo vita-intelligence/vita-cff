@@ -2624,19 +2624,33 @@ def transition_status(
         and previous_status != next_status
     ):
         _formulation = sheet.formulation_version.formulation
+        _sheet_pk = sheet.pk
 
         def _fire_final_spec_psp_sync() -> None:
             from apps.payments.services import (
+                _proposal_for_spec_sheet,
                 _sync_formulation_proposal_to_psp,
+            )
+            from apps.specifications.models import (
+                SpecificationSheet as _Sheet,
             )
 
             try:
-                _sync_formulation_proposal_to_psp(_formulation)
+                # Resolve proposal via THIS sheet so RTG multi-order
+                # syncs the right order's PSP CO. Sheet is re-fetched
+                # so the ProposalLine link is fresh in the deferred
+                # on_commit context.
+                fresh_sheet = _Sheet.objects.filter(pk=_sheet_pk).first()
+                proposal = _proposal_for_spec_sheet(fresh_sheet)
+                _sync_formulation_proposal_to_psp(
+                    _formulation, proposal=proposal
+                )
             except Exception:
                 logger.exception(
                     "final-spec: PSP mirror sync bubbled for "
-                    "formulation %s",
+                    "formulation %s sheet %s",
                     _formulation.pk,
+                    _sheet_pk,
                 )
 
         transaction.on_commit(_fire_final_spec_psp_sync)
@@ -2955,19 +2969,25 @@ def accept_as_customer(
         def _push_final_sign_to_psp() -> None:
             from apps.formulations.models import Formulation as _Formulation
             from apps.payments.services import (
+                _proposal_for_spec_sheet,
                 _sync_formulation_proposal_to_psp,
             )
 
             fresh = _Formulation.objects.filter(pk=formulation_pk).first()
             if fresh is None:
                 return
+            # Resolve proposal via THIS sheet so RTG multi-order
+            # syncs the correct customer order's CO.
+            fresh_sheet = SpecificationSheet.objects.filter(pk=sheet_pk).first()
+            proposal = _proposal_for_spec_sheet(fresh_sheet)
             try:
-                _sync_formulation_proposal_to_psp(fresh)
+                _sync_formulation_proposal_to_psp(fresh, proposal=proposal)
             except Exception:
                 logger.exception(
                     "final-spec sign: PSP mirror sync bubbled for "
-                    "formulation %s",
+                    "formulation %s sheet %s",
                     formulation_pk,
+                    sheet_pk,
                 )
 
         transaction.on_commit(_push_final_sign_to_psp)
@@ -3080,14 +3100,19 @@ def reject_final_spec_as_customer(
     def _push_final_reject_to_psp() -> None:
         from apps.formulations.models import Formulation as _Formulation
         from apps.payments.services import (
+            _proposal_for_spec_sheet,
             _sync_formulation_proposal_to_psp,
         )
 
         fresh = _Formulation.objects.filter(pk=formulation_pk).first()
         if fresh is None:
             return
+        # Scope to this sheet's proposal so an RTG reject on order
+        # 2 doesn't ping order 1's PSP CO with the reject stamp.
+        fresh_sheet = SpecificationSheet.objects.filter(pk=sheet_pk).first()
+        proposal = _proposal_for_spec_sheet(fresh_sheet)
         try:
-            _sync_formulation_proposal_to_psp(fresh)
+            _sync_formulation_proposal_to_psp(fresh, proposal=proposal)
         except Exception:
             logger.exception(
                 "final-spec reject: PSP mirror sync bubbled for "

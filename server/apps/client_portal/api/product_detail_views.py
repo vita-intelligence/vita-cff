@@ -52,6 +52,73 @@ from apps.specifications.models import (
 # ---------------------------------------------------------------------------
 
 
+def _resolve_project_url_param(param_id: Any) -> tuple[Formulation, Any | None]:
+    """Translate a ``/portal/projects/<param_id>`` URL param into
+    ``(formulation, proposal_uuid_or_None)``.
+
+    Custom projects keep their historical 1:1 URL shape — ``param_id``
+    is the formulation id. RTG catalog products get ordered N times,
+    and each order's portal URL uses the *proposal* id so the two
+    orders don't collide on the same URL. The activity feed
+    (``activity_views._collect_rtg``) emits the RTG-shape URL; this
+    resolver handles both.
+
+    Returns ``(formulation, None)`` for Custom-style URLs and
+    ``(formulation, proposal_uuid)`` for RTG proposal URLs. Raises
+    ``Http404`` when nothing matches (bad id or the customer lost
+    the referenced row).
+    """
+
+    # Try formulation first — cheapest lookup and the common case for
+    # Custom projects. Second try covers RTG order URLs where the
+    # param is a Proposal id.
+    formulation = Formulation.objects.filter(id=param_id).first()
+    if formulation is not None:
+        return (formulation, None)
+
+    from django.http import Http404
+
+    proposal = (
+        Proposal.objects.filter(id=param_id)
+        .select_related("formulation_version__formulation")
+        .first()
+    )
+    if proposal is not None:
+        # Prefer the anchor formulation on the proposal; fall back to
+        # the first line's formulation for legacy proposals without an
+        # anchor. Both paths must land on a real formulation because
+        # every merged proposal has one — see ``PortalProductDetailView``
+        # ownership check that follows.
+        f = None
+        if proposal.formulation_version_id is not None:
+            f = getattr(proposal.formulation_version, "formulation", None)
+        if f is None:
+            line = proposal.lines.select_related(
+                "formulation_version__formulation"
+            ).first()
+            if line is not None and line.formulation_version_id is not None:
+                f = getattr(line.formulation_version, "formulation", None)
+        if f is not None:
+            return (f, proposal.id)
+
+    raise Http404("project not found")
+
+
+def _get_ps_row(formulation: Any, *, proposal_uuid: Any | None = None) -> Any | None:
+    """Portal-scoped shim for :func:`apps.psp.status_lookup.get_production_status_for`.
+
+    Every read site in this module used the ``formulation.psp_production_status``
+    OneToOne accessor before the RTG multi-order fix. That accessor is
+    gone (the model is now a ForeignKey with N rows per formulation);
+    this shim keeps the call sites terse and threads ``proposal_uuid``
+    for RTG disambiguation.
+    """
+
+    from apps.psp.status_lookup import get_production_status_for
+
+    return get_production_status_for(formulation, proposal_uuid=proposal_uuid)
+
+
 def _iso(dt: Any) -> str | None:
     return dt.isoformat() if dt else None
 
@@ -308,11 +375,19 @@ def _routing_request_phase_override(phase, routing_req):
 
 
 def _build_production_status(
-    *, formulation, proposals: list[Proposal] | None = None
+    *,
+    formulation,
+    proposals: list[Proposal] | None = None,
+    proposal_uuid: Any | None = None,
 ) -> dict | None:
     """Return the customer-safe production snapshot for the portal, or
     ``None`` when PSP hasn't pushed anything yet (i.e. the project
     isn't in production).
+
+    ``proposal_uuid`` disambiguates which order's status row to read
+    when the formulation has multiple (RTG catalog product ordered
+    more than once). Custom + single-order RTG pass ``None`` and
+    the helper falls back to the single/newest row.
 
     RTG guard: the storefront checkout mirrors an RTG order into PSP
     (creates a CO in ``production_planning``) the moment the customer
@@ -327,7 +402,7 @@ def _build_production_status(
     proposal hasn't been paid for.
     """
 
-    row = getattr(formulation, "psp_production_status", None)
+    row = _get_ps_row(formulation, proposal_uuid=proposal_uuid)
     if row is None:
         return None
     if not (row.phase or "").strip():
@@ -411,20 +486,28 @@ def _build_production_status(
         # ``None`` / ``[]`` on any PSP failure — the portal FE hides
         # the corresponding cards in that case rather than showing
         # placeholders.
-        "dispatch": _dispatch_for_formulation(formulation),
-        "release_documents": _release_documents_for_formulation(formulation),
+        "dispatch": _dispatch_for_formulation(
+            formulation, proposal_uuid=proposal_uuid
+        ),
+        "release_documents": _release_documents_for_formulation(
+            formulation, proposal_uuid=proposal_uuid
+        ),
     }
 
 
-def _dispatch_for_formulation(formulation):
+def _dispatch_for_formulation(formulation, *, proposal_uuid: Any | None = None):
     """Fetch the PSP dispatch snapshot for the CO backing this
     formulation. ``None`` when no shipment has reached
     ``partially_picked`` / ``picked_up`` / ``delivered`` yet — the
     portal hides the card until there's something meaningful to
     render.
+
+    ``proposal_uuid`` selects the right order's status row on RTG
+    multi-order formulations (each order has its own CO uuid and
+    therefore its own dispatch state).
     """
 
-    row = getattr(formulation, "psp_production_status", None)
+    row = _get_ps_row(formulation, proposal_uuid=proposal_uuid)
     if row is None or not row.psp_customer_order_uuid:
         return None
     organization = getattr(formulation, "organization", None)
@@ -442,14 +525,19 @@ def _dispatch_for_formulation(formulation):
         return None
 
 
-def _release_documents_for_formulation(formulation):
+def _release_documents_for_formulation(
+    formulation, *, proposal_uuid: Any | None = None
+):
     """Fetch PSP's Final Product Release documents for the CO backing
     this formulation. Empty list on any PSP failure. Same shape as
     the sample-detail path so the portal FE can reuse its
     ``ReleaseDocumentsCard`` component.
+
+    ``proposal_uuid`` picks the correct order on RTG multi-order
+    formulations — each order's release documents are per-CO.
     """
 
-    row = getattr(formulation, "psp_production_status", None)
+    row = _get_ps_row(formulation, proposal_uuid=proposal_uuid)
     if row is None or not row.psp_customer_order_uuid:
         return []
     organization = getattr(formulation, "organization", None)
@@ -584,6 +672,7 @@ def _build_pipeline(
     label_design: LabelDesign | None,
     payment: Payment | None,
     cff: CFFSubmission | None,
+    proposal_uuid: Any | None = None,
 ) -> list[dict]:
     """Return the eight pipeline stages with ``done`` / ``current`` /
     ``future`` state.
@@ -593,6 +682,9 @@ def _build_pipeline(
     if staff started the project directly) still appears but is
     marked ``done`` with a "Not applicable" note so the timeline
     visual stays the same length on every product card.
+
+    ``proposal_uuid`` scopes the PSP-derived pipeline stages to the
+    correct order on RTG multi-order formulations.
     """
 
     # ---- Stage 1: Request submitted -------------------------------------
@@ -1190,7 +1282,7 @@ def _build_pipeline(
     # the customer by tagging both stages with the same
     # ``parallel_group`` value; the FE renders them bracketed under a
     # shared step number with a "running in parallel" note.
-    production_status = getattr(formulation, "psp_production_status", None)
+    production_status = _get_ps_row(formulation, proposal_uuid=proposal_uuid)
     production_phase = getattr(production_status, "phase", "") or ""
     production_started = production_phase not in ("", "delivered", "cancelled")
     production_done_terminal = production_phase == "delivered"
@@ -1741,8 +1833,15 @@ def _build_timeline(
 
 
 class PortalProductDetailView(PortalAPIView):
-    """``GET /api/portal/products/<formulation_id>/`` — pipeline +
-    documents + timeline for a single project the customer owns."""
+    """``GET /api/portal/products/<param_id>/`` — pipeline +
+    documents + timeline for a single project the customer owns.
+
+    ``<param_id>`` is either the formulation id (Custom projects,
+    which are 1:1 with the formulation) or a Proposal id (RTG orders,
+    where the customer places N independent orders on the same
+    catalog product). The resolver normalises both shapes into
+    ``(formulation, proposal_uuid_or_None)``.
+    """
 
     def get(self, request: Request, formulation_id) -> Response:
         from apps.client_portal.queries import (
@@ -1750,6 +1849,13 @@ class PortalProductDetailView(PortalAPIView):
             customer_owns_formulation,
             proposals_covering_formulation,
         )
+
+        # Resolve URL param → (formulation, proposal_uuid). The URL
+        # kwarg is still named ``formulation_id`` for backwards-compat
+        # with older RTG rows / bookmarks even though it now accepts
+        # either shape.
+        formulation, proposal_uuid = _resolve_project_url_param(formulation_id)
+        formulation_id = formulation.id
 
         # Union of every Customer id the account can read through —
         # the FK target plus any sibling rows sharing the email so
@@ -1766,37 +1872,50 @@ class PortalProductDetailView(PortalAPIView):
         ):
             raise NotFound()
 
-        formulation = get_object_or_404(Formulation, id=formulation_id)
-
         proposals = list(
             proposals_covering_formulation(
                 customer_ids=customer_ids, formulation_id=formulation_id,
             ).select_related("formulation_version")
         )
+        # RTG multi-order isolation: when the URL identifies a
+        # specific order (proposal_uuid), narrow every downstream
+        # collection to THAT order. Without this the pipeline /
+        # payment / documents builders walk both orders' state and
+        # bleed "you already paid" / "here's your invoice" from the
+        # first order onto the second order's page.
+        if proposal_uuid is not None:
+            proposals = [p for p in proposals if p.id == proposal_uuid]
+            sheets_qs_filter = {
+                "formulation_version__formulation_id": formulation_id,
+                "proposal_lines__proposal_id": proposal_uuid,
+            }
+        else:
+            sheets_qs_filter = {
+                "formulation_version__formulation_id": formulation_id,
+            }
         sheets = list(
-            SpecificationSheet.objects.filter(
-                formulation_version__formulation_id=formulation_id
-            )
+            SpecificationSheet.objects.filter(**sheets_qs_filter)
             .select_related("formulation_version")
             .order_by("-updated_at")
+            .distinct()
         )
         validations = list(
             ProductValidation.objects.filter(
                 trial_batch__formulation_version__formulation_id=formulation_id,
             ).order_by("-updated_at")
         )
-        # Multi-spec projects carry multiple label-design rows.
-        # The helpers below were designed against the 1:1 model so
-        # we keep them stable by featuring the "most-blocking" row
-        # (the least-advanced status, which is whichever spec is
-        # waiting on the customer the loudest). The dashboard's
-        # action queue + the documents list still surface every
-        # row individually so nothing gets hidden.
-        label_designs_all = list(
-            LabelDesign.objects.filter(formulation_id=formulation_id)
-            .select_related("specification_sheet")
-            .order_by("created_at")
-        )
+        # Multi-spec projects carry multiple label-design rows. For
+        # RTG multi-order also carry N rows (one per proposal); we
+        # narrow to the URL's proposal so the customer only sees
+        # THEIR order's label workflow. Custom stays as before —
+        # ``proposal_uuid`` is None and every LabelDesign on the
+        # formulation surfaces.
+        label_designs_qs = LabelDesign.objects.filter(
+            formulation_id=formulation_id
+        ).select_related("specification_sheet").order_by("created_at")
+        if proposal_uuid is not None:
+            label_designs_qs = label_designs_qs.filter(proposal_id=proposal_uuid)
+        label_designs_all = list(label_designs_qs)
 
         # Status priority — lower number wins as the "feature"
         # row. Order mirrors the customer's mental "what blocks
@@ -1836,15 +1955,21 @@ class PortalProductDetailView(PortalAPIView):
         # even though the invoice is already on the finance queue.
         # ``-created_at`` ordering surfaces the newest row so a
         # VOIDED-then-recreated cycle picks the current one.
+        # Scope by the URL's proposal for RTG multi-order isolation.
+        # Without this the first order's paid FINAL invoice would
+        # light up the second order's "Payment received" stage.
+        payment_filter = {
+            "formulation_id": formulation_id,
+            "status__in": (
+                PaymentStatus.APPROVED,
+                PaymentStatus.PENDING,
+            ),
+            "kind": PaymentKind.FINAL,
+        }
+        if proposal_uuid is not None:
+            payment_filter["proposal_id"] = proposal_uuid
         payment = (
-            Payment.objects.filter(
-                formulation_id=formulation_id,
-                status__in=(
-                    PaymentStatus.APPROVED,
-                    PaymentStatus.PENDING,
-                ),
-                kind=PaymentKind.FINAL,
-            )
+            Payment.objects.filter(**payment_filter)
             .order_by("-created_at")
             .first()
         )
@@ -1887,6 +2012,7 @@ class PortalProductDetailView(PortalAPIView):
                 "cancellation": _build_cancellation(
                     proposals=proposals,
                     formulation_id=formulation_id,
+                    proposal_uuid=proposal_uuid,
                 ),
                 "pipeline": _build_pipeline(
                     formulation=formulation,
@@ -1896,6 +2022,7 @@ class PortalProductDetailView(PortalAPIView):
                     label_design=label_design,
                     payment=payment,
                     cff=cff,
+                    proposal_uuid=proposal_uuid,
                 ),
                 "next_action": _build_next_action(
                     formulation=formulation,
@@ -1932,6 +2059,7 @@ class PortalProductDetailView(PortalAPIView):
                 "production_status": _build_production_status(
                     formulation=formulation,
                     proposals=proposals,
+                    proposal_uuid=proposal_uuid,
                 ),
             }
         )
@@ -1957,6 +2085,7 @@ def _build_cancellation(
     *,
     proposals: list[Proposal],
     formulation_id,
+    proposal_uuid: Any | None = None,
 ) -> dict | None:
     """Compact "why did this stop moving" block for the FE banner.
 
@@ -1967,6 +2096,10 @@ def _build_cancellation(
       2. Voided payment on this formulation — reason lives in the
          payment's notes, appended by ``void_payment`` under a
          ``--- voided ---`` marker.
+
+    ``proposal_uuid`` scopes the voided-payment lookup to a specific
+    order on RTG multi-order formulations. Custom + single-order RTG
+    pass ``None`` and the newest void on the formulation wins.
 
     Returns ``None`` when neither condition holds so the FE can
     ``!== null`` gate the banner cheaply.
@@ -1993,12 +2126,15 @@ def _build_cancellation(
     # back into its terminal-choice prompt (see
     # ``reject_additional_samples_on_payment_voided``) and mustn't
     # nuke the whole project card with a fatal red banner.
+    voided_filter = {
+        "formulation_id": formulation_id,
+        "status": PaymentStatus.VOIDED,
+        "kind__in": (PaymentKind.DEPOSIT, PaymentKind.FINAL),
+    }
+    if proposal_uuid is not None:
+        voided_filter["proposal_id"] = proposal_uuid
     voided = (
-        Payment.objects.filter(
-            formulation_id=formulation_id,
-            status=PaymentStatus.VOIDED,
-            kind__in=(PaymentKind.DEPOSIT, PaymentKind.FINAL),
-        )
+        Payment.objects.filter(**voided_filter)
         .order_by("-updated_at")
         .first()
     )
@@ -2073,15 +2209,16 @@ class PortalProductRoutingChoiceView(PortalAPIView):
                 status=400,
             )
 
+        formulation, proposal_uuid = _resolve_project_url_param(formulation_id)
+        formulation_id = formulation.id
+
         customer_ids = customer_ids_for_account(request.user)
         if not customer_owns_formulation(
             customer_ids=customer_ids, formulation_id=formulation_id,
         ):
             raise NotFound()
 
-        formulation = get_object_or_404(Formulation, id=formulation_id)
-
-        status_row = getattr(formulation, "psp_production_status", None)
+        status_row = _get_ps_row(formulation, proposal_uuid=proposal_uuid)
         if status_row is None or not status_row.psp_customer_order_uuid:
             return Response(
                 {"detail": "no_routing_request"},
@@ -2160,15 +2297,16 @@ class PortalProductPickupEventDeliveryView(PortalAPIView):
                 {"detail": "recipient_signatory_required"}, status=400
             )
 
+        formulation, proposal_uuid = _resolve_project_url_param(formulation_id)
+        formulation_id = formulation.id
+
         customer_ids = customer_ids_for_account(request.user)
         if not customer_owns_formulation(
             customer_ids=customer_ids, formulation_id=formulation_id,
         ):
             raise NotFound()
 
-        formulation = get_object_or_404(Formulation, id=formulation_id)
-
-        status_row = getattr(formulation, "psp_production_status", None)
+        status_row = _get_ps_row(formulation, proposal_uuid=proposal_uuid)
         co_uuid = status_row and status_row.psp_customer_order_uuid
         if not co_uuid:
             return Response({"detail": "no_dispatch"}, status=404)
@@ -2209,14 +2347,16 @@ class PortalProductDispatchPhotoView(PortalAPIView):
         from apps.psp.services import fetch_psp_dispatch_photo_for_co
         from django.http import HttpResponse
 
+        formulation, proposal_uuid = _resolve_project_url_param(formulation_id)
+        formulation_id = formulation.id
+
         customer_ids = customer_ids_for_account(request.user)
         if not customer_owns_formulation(
             customer_ids=customer_ids, formulation_id=formulation_id,
         ):
             raise NotFound()
 
-        formulation = get_object_or_404(Formulation, id=formulation_id)
-        status_row = getattr(formulation, "psp_production_status", None)
+        status_row = _get_ps_row(formulation, proposal_uuid=proposal_uuid)
         co_uuid = status_row and status_row.psp_customer_order_uuid
         if not co_uuid:
             raise NotFound("dispatch_photo_not_found")
@@ -2252,14 +2392,16 @@ class PortalProductReleaseDocumentView(PortalAPIView):
         from apps.psp.services import fetch_psp_release_document_for_co
         from django.http import HttpResponse
 
+        formulation, proposal_uuid = _resolve_project_url_param(formulation_id)
+        formulation_id = formulation.id
+
         customer_ids = customer_ids_for_account(request.user)
         if not customer_owns_formulation(
             customer_ids=customer_ids, formulation_id=formulation_id,
         ):
             raise NotFound()
 
-        formulation = get_object_or_404(Formulation, id=formulation_id)
-        status_row = getattr(formulation, "psp_production_status", None)
+        status_row = _get_ps_row(formulation, proposal_uuid=proposal_uuid)
         co_uuid = status_row and status_row.psp_customer_order_uuid
         if not co_uuid:
             raise NotFound("release_document_not_found")
