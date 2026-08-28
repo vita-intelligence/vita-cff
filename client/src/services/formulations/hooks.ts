@@ -27,6 +27,7 @@ import {
   fetchFormulationVersions,
   fetchFormulations,
   fetchFormulationsPage,
+  fetchRTGCatalogPage,
   fetchRtgCatalogCounts,
   fetchPackagingCombos,
   replacePackagingCombos,
@@ -95,6 +96,7 @@ import {
   type FormulationPhotosListDto,
   type PspCertificateCatalogDto,
   type UpdateFormulationCertificateRequestDto,
+  type PaginatedRTGCatalogDto,
 } from "./api";
 import type {
   AssignLeadScientistRequestDto,
@@ -292,6 +294,65 @@ export function useRtgCatalogCounts(orgId: string) {
     ] as const,
     queryFn: () => fetchRtgCatalogCounts(orgId),
     enabled: Boolean(orgId),
+  });
+}
+
+
+/**
+ * Cursor-paginated infinite fetch backed by the dedicated
+ * ``rtg-catalog-list/`` endpoint. Distinct from
+ * :func:`useInfiniteFormulations` because it ships a lean per-row
+ * payload (catalog card fields only) and skips the general list's
+ * 13 M2M prefetches — so a million-SKU catalog opens in one
+ * round-trip instead of dragging the shared endpoint down.
+ */
+export function useInfiniteRTGCatalog(
+  orgId: string,
+  options: {
+    pageSize?: number;
+    search?: string;
+    isRtgPublished?: boolean;
+    initialFirstPage?: PaginatedRTGCatalogDto | null;
+  },
+): UseInfiniteQueryResult<
+  InfiniteData<PaginatedRTGCatalogDto, string | null>,
+  ApiError
+> {
+  const { pageSize, search, isRtgPublished, initialFirstPage } = options;
+  const normalisedSearch = search?.trim() ?? "";
+  // Any tab / search narrowing invalidates the "all rows" SSR seed.
+  const filtersActive =
+    Boolean(normalisedSearch) || typeof isRtgPublished === "boolean";
+  return useInfiniteQuery<
+    PaginatedRTGCatalogDto,
+    ApiError,
+    InfiniteData<PaginatedRTGCatalogDto, string | null>,
+    readonly unknown[],
+    string | null
+  >({
+    queryKey: [
+      ...formulationsQueryKeys.all,
+      orgId,
+      "rtg-catalog-list",
+      { search: normalisedSearch, isRtgPublished, pageSize },
+    ] as const,
+    queryFn: ({ pageParam }) =>
+      fetchRTGCatalogPage(orgId, {
+        pageSize,
+        search: normalisedSearch || undefined,
+        isRtgPublished,
+        cursorUrl: pageParam ?? undefined,
+      }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next,
+    getPreviousPageParam: (first) => first.previous,
+    initialData:
+      initialFirstPage && !filtersActive
+        ? {
+            pages: [initialFirstPage],
+            pageParams: [null],
+          }
+        : undefined,
   });
 }
 

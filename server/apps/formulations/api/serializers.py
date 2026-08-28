@@ -1343,3 +1343,78 @@ class SetApprovedVersionSerializer(serializers.Serializer):
     version_number = serializers.IntegerField(
         min_value=1, required=False, allow_null=True
     )
+
+
+class RTGCatalogListSerializer(serializers.ModelSerializer):
+    """Lean read shape for the staff RTG Catalog grid.
+
+    Distinct from :class:`FormulationReadSerializer` because the
+    catalog cards need ~15 fields — no recipe lines, no stage graph,
+    no allergen matrix, no M2M excipient echoes. Reusing the full-fat
+    serializer on a 60-row page fires the 13-relation prefetch and
+    the 4 per-row derived checks (``has_approved_final_spec`` etc.)
+    that the card renderer never reads, which turns an O(1) page
+    fetch into hundreds of queries when the tenant grows.
+
+    Everything on this serializer resolves either from the row itself
+    or from the two annotations/prefetches the view attaches:
+
+    * ``packaging_combos_count`` — annotated ``Count`` on the queryset
+      (one JOIN, not N+1 ``.count()`` calls).
+    * ``catalog_photos`` — reads from the ``catalog_photos`` prefetch
+      the view sets on the queryset (a single scoped query for the
+      whole page, not one per row).
+    """
+
+    packaging_combos_count = serializers.IntegerField(read_only=True)
+    catalog_photos = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Formulation
+        fields = (
+            "id",
+            "code",
+            "name",
+            "is_rtg_published",
+            "rtg_display_name",
+            "rtg_short_description",
+            "rtg_hero_image",
+            "rtg_base_price",
+            "rtg_moq",
+            "rtg_currency_code",
+            "rtg_packaging_options",
+            "packaging_combos_count",
+            "catalog_photos",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+    def get_catalog_photos(self, obj: Formulation) -> list[dict[str, Any]]:
+        """Photos already filtered + ordered by the view's prefetch —
+        we just shape the payload. Reading ``_prefetched_catalog_photos``
+        (populated by ``Prefetch(..., to_attr="_prefetched_catalog_photos")``)
+        skips triggering a fresh query per row.
+        """
+
+        rows = getattr(obj, "_prefetched_catalog_photos", None)
+        if rows is None:
+            # Fallback for any caller that forgot the prefetch — still
+            # correct, just slower. Prevents an accidental production
+            # crash if the view wiring drifts.
+            from apps.formulations.models import FormulationPhoto
+
+            rows = list(
+                obj.photos.filter(
+                    purpose=FormulationPhoto.Purpose.CATALOG,
+                ).order_by("-is_primary", "sort_order", "uploaded_at")
+            )
+        return [
+            {
+                "id": str(p.id),
+                "url": p.image.url if p.image else None,
+                "caption": p.caption,
+                "is_primary": p.is_primary,
+                "sort_order": p.sort_order,
+            }
+            for p in rows
+        ]

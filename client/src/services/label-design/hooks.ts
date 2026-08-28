@@ -413,6 +413,8 @@ export function usePortalUploadArtwork(ldId: string) {
       artwork: File;
       signature_image: string;
       notes?: string;
+      additional_files?: ReadonlyArray<File>;
+      additional_labels?: ReadonlyArray<string>;
     }) => portalUploadArtwork(ldId, payload),
     onSuccess: () => _invalidatePortalLabel(qc, ldId),
   });

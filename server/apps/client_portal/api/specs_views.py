@@ -89,6 +89,19 @@ def _serialise_spec(sheet, proposal) -> dict[str, Any]:
             if sheet.formulation_version_id
             else ""
         ),
+        # Custom vs Ready-to-Go project the spec is bonded to. Drives
+        # the sign-affirmation swap on both portals — Custom asks the
+        # customer to confirm trial-batch review + recipe-matches-what-
+        # was-agreed (three affirmations), RTG collapses to a single
+        # "this is the final spec I'm signing for my order" line
+        # because there were no trials and the recipe wasn't
+        # negotiated. Empty string when the spec has no version bond
+        # (defensive; matches ``formulation_id`` above).
+        "formulation_project_type": (
+            sheet.formulation_version.formulation.project_type
+            if sheet.formulation_version_id
+            else ""
+        ),
         "formulation_version_number": (
             sheet.formulation_version.version_number
             if sheet.formulation_version_id

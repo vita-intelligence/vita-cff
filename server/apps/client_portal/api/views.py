@@ -639,13 +639,22 @@ class ProposalSignView(PortalAPIView):
         proposal = _load_owned_proposal(request, proposal_id)
 
         # Sequential sign gate — a customer cannot sign the proposal
-        # while any bundled draft spec is still ``sent`` + unsigned.
-        # Matches the pipeline chip logic in
+        # while ANY bundled spec (draft OR final) is still ``sent`` +
+        # unsigned. Matches the pipeline chip logic in
         # :func:`apps.client_portal.api.product_detail_views.
         # _build_pipeline`, so the visible state and the enforced
         # state can never disagree (previously the UI showed the
-        # draft as "current" but the customer could still hit the
+        # spec as "current" but the customer could still hit the
         # proposal-sign button and slip through).
+        #
+        # The filter deliberately spans both ``document_kind`` values:
+        # Custom projects attach a DRAFT spec at proposal time (final
+        # spec comes later after R&D); RTG storefront checkouts attach
+        # a FINAL spec cloned from the SKU template at checkout time.
+        # Both are the customer's contractual product spec at sign-off
+        # so both must be signed before the commercial commitment can
+        # land. A DRAFT-only filter would let the RTG customer commit
+        # to the deal without signing the recipe.
         #
         # Bundled specs live on two paths — legacy 1:1
         # ``Proposal.specification_sheet`` and per-line
@@ -661,27 +670,34 @@ class ProposalSignView(PortalAPIView):
             ).values_list("specification_sheet_id", flat=True)
         )
         if bundled_sheet_ids:
-            unsigned_draft = (
+            unsigned_spec = (
                 SpecificationSheet.objects.filter(
                     id__in=bundled_sheet_ids,
-                    document_kind=SpecificationDocumentKind.DRAFT,
                     status=SpecificationStatus.SENT,
                     customer_signed_at__isnull=True,
                 )
-                .only("id", "code")
+                .only("id", "code", "document_kind")
+                .order_by("document_kind")
                 .first()
             )
-            if unsigned_draft is not None:
+            if unsigned_spec is not None:
+                kind_word = (
+                    "final"
+                    if unsigned_spec.document_kind
+                    == SpecificationDocumentKind.FINAL
+                    else "draft"
+                )
                 return Response(
                     {
                         "code": "sign_spec_first",
                         "detail": "sign_spec_first",
                         "message": (
-                            f"Sign draft specification {unsigned_draft.code} "
-                            "before signing the proposal."
+                            f"Sign the {kind_word} specification "
+                            f"{unsigned_spec.code} before signing the "
+                            "proposal."
                         ),
-                        "spec_id": str(unsigned_draft.id),
-                        "spec_code": unsigned_draft.code,
+                        "spec_id": str(unsigned_spec.id),
+                        "spec_code": unsigned_spec.code,
                     },
                     status=status.HTTP_409_CONFLICT,
                 )

@@ -36,6 +36,7 @@ from apps.client_portal.api.views import PortalAPIView
 from apps.client_portal.queries import (
     customer_ids_for_account,
     customer_proposals_for_formulations,
+    formulation_display_name as _formulation_display_name,
     formulation_ids_for_customer,
 )
 from apps.formulations.models import Formulation, ProjectStatus
@@ -97,7 +98,7 @@ def _build_actions(customer_ids) -> list[dict]:
                 "urgency": URGENCY_HIGH,
                 "title": "Review your proposal",
                 "subtitle": (
-                    f"Open proposal {proposal.code} for {formulation.name or 'your product'} — read it through, then sign when you're ready."
+                    f"Open proposal {proposal.code} for {_formulation_display_name(formulation) or 'your product'} — read it through, then sign when you're ready."
                 ),
                 # Base proposal page — signing is inline on both
                 # portals now. See the same fix in
@@ -105,7 +106,7 @@ def _build_actions(customer_ids) -> list[dict]:
                 # ``project_stage.resolve_stage``.
                 "url": f"/portal/proposals/{proposal.id}",
                 "product_code": formulation.code,
-                "product_name": formulation.name,
+                "product_name": _formulation_display_name(formulation),
                 "reference_code": proposal.code,
                 "created_at": proposal.updated_at.isoformat(),
             }
@@ -148,13 +149,13 @@ def _build_actions(customer_ids) -> list[dict]:
                 "title": "Choose how many samples you want",
                 "subtitle": (
                     f"Pick your trial-sample quantity for "
-                    f"{formulation.name or 'your product'} — free "
+                    f"{_formulation_display_name(formulation) or 'your product'} — free "
                     "allowance is bundled with the deposit; extras "
                     "get priced on the page."
                 ),
                 "url": f"/portal/projects/{formulation.id}",
                 "product_code": formulation.code,
-                "product_name": formulation.name,
+                "product_name": _formulation_display_name(formulation),
                 "reference_code": proposal.code,
                 "created_at": proposal.updated_at.isoformat(),
             }
@@ -272,12 +273,12 @@ def _build_actions(customer_ids) -> list[dict]:
                 "urgency": URGENCY_HIGH,
                 "title": "Authorise production — final specification",
                 "subtitle": (
-                    f"{formulation.name or sheet.code} · "
+                    f"{_formulation_display_name(formulation) or sheet.code} · "
                     "your trial passed — sign the final spec to start production"
                 ),
                 "url": f"/portal/specs/{sheet.id}",
                 "product_code": formulation.code,
-                "product_name": formulation.name,
+                "product_name": _formulation_display_name(formulation),
                 "reference_code": sheet.code,
                 "created_at": sheet.updated_at.isoformat(),
             }
@@ -483,7 +484,11 @@ def _build_products(customer_ids) -> list[dict]:
                 "kind": "formulation",
                 "id": str(formulation.id),
                 "code": formulation.code,
-                "name": formulation.name,
+                # Customer-friendly title — see the same swap on
+                # ``PortalProductDetailView`` for the semantic. RTG
+                # cards read as "Ultimate Fat Burner Drink" instead
+                # of "RTG00001".
+                "name": _formulation_display_name(formulation),
                 "project_status": formulation.project_status,
                 "stage_key": stage_key,
                 "stage_label": _STAGE_LABELS.get(

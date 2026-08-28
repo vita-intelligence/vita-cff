@@ -8,7 +8,7 @@ import { redirectToLogin } from "@/lib/auth/redirects";
 import {
   getActiveOrganizationServer,
   getCurrentUserServer,
-  getFormulationsFirstPageServer,
+  getRTGCatalogFirstPageServer,
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
@@ -90,22 +90,19 @@ export default async function RTGCatalogPage({
     );
   }
 
-  // Fetch a generous first page — RTG catalogs are usually tens of
-  // SKUs, not thousands, so paginating server-side would add churn
-  // for a listing that fits on one screen. Falls back gracefully to
-  // an empty list on a fetch error rather than 500-ing the whole page.
-  const initialFirstPage = await getFormulationsFirstPageServer(
+  // SSR seed hits the dedicated ``rtg-catalog-list/`` endpoint — the
+  // general formulation list serializer's 13 M2M echoes + per-row
+  // ``.count()`` calls are wasted work for a catalog card, and at
+  // scale they blow up the TTFB on this page. Falls back to null on a
+  // fetch error so the client-side hook can retry rather than 500-ing
+  // the whole page.
+  const initialFirstPage = await getRTGCatalogFirstPageServer(
     primaryOrg.id,
     {
-      ordering: "-updated_at",
       // Kept in lock-step with the grid's ``PAGE_SIZE`` so the SSR
       // seed and the first client-side fetch don't misalign the
       // cursor pagination window.
       pageSize: 60,
-      projectType: "ready_to_go",
-      // Catalog page needs to see published RTG rows; the projects
-      // list defaults to hiding them.
-      includePublishedRtg: true,
     },
   );
   const canWrite = canManage || canPublish;

@@ -17,6 +17,7 @@ import type {
 import { customersEndpoints } from "@/services/customers/endpoints";
 import type { CustomerOverviewDto } from "@/services/customers/types";
 import { formulationsEndpoints } from "@/services/formulations/endpoints";
+import type { PaginatedRTGCatalogDto } from "@/services/formulations/api";
 import type {
   FormulationDto,
   PaginatedFormulationsDto,
@@ -486,6 +487,36 @@ export async function getFormulationServer(
   return serverFetch<FormulationDto>(
     formulationsEndpoints.detail(orgId, formulationId),
   );
+}
+
+
+/**
+ * SSR seed for the staff RTG Catalog grid.
+ *
+ * Hits the dedicated ``rtg-catalog-list/`` endpoint (lean serializer,
+ * annotated packaging count, scoped catalog-photo prefetch, composite
+ * index) — so the first paint doesn't wait on the general formulation
+ * list's 13 M2M prefetches. Returns ``null`` on backend error so the
+ * client-side hook falls back to a fresh fetch instead of 500-ing the
+ * whole catalog page.
+ */
+export async function getRTGCatalogFirstPageServer(
+  orgId: string,
+  options: {
+    pageSize?: number;
+    isRtgPublished?: boolean;
+  } = {},
+): Promise<PaginatedRTGCatalogDto | null> {
+  const params = new URLSearchParams();
+  if (options.pageSize) params.set("page_size", String(options.pageSize));
+  if (typeof options.isRtgPublished === "boolean") {
+    params.set("is_rtg_published", options.isRtgPublished ? "true" : "false");
+  }
+  const query = params.toString();
+  const url = `${formulationsEndpoints.rtgCatalogList(orgId)}${
+    query ? `?${query}` : ""
+  }`;
+  return serverFetch<PaginatedRTGCatalogDto>(url);
 }
 
 export async function getProjectOverviewServer(

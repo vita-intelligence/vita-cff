@@ -6,26 +6,84 @@ import {
   ChevronDown,
   ExternalLink,
   FileText,
+  Loader2,
   MessageSquare,
+  Search,
   Sparkles,
+  Trash2,
+  X,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { apiClient } from "@/lib/api";
 import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link } from "@/i18n/navigation";
+import { useDebouncedValue } from "@/lib/utils/use-debounced-value";
 import {
   useFormulationVersions,
   type FormulationVersionDto,
 } from "@/services/formulations";
-import type {
-  PaginatedSpecificationsDto,
-  SpecificationSheetDto,
-  SpecificationStatus,
+import {
+  useDeleteSpecification,
+  useInfiniteSpecifications,
+  type PaginatedSpecificationsDto,
+  type SpecificationSheetDto,
+  type SpecificationStatus,
 } from "@/services/specifications";
 
 import { NewSpecSheetButton } from "../new-spec-sheet-button";
+
+
+// Matches the ``-ORDER-<n>`` suffix that ``_next_checkout_sheet_code``
+// on the backend appends when the RTG checkout clones a FINAL
+// template for a customer order. Extracting the integer lets the card
+// render a compact "Order #N" badge so an operator scanning a
+// popular RTG catalog SKU can tell a first purchase apart from a
+// repeat immediately.
+const ORDER_SUFFIX_REGEX = /-ORDER-(\d+)$/i;
+
+
+function extractOrderNumber(code: string | null | undefined): number | null {
+  if (!code) return null;
+  const match = code.match(ORDER_SUFFIX_REGEX);
+  if (!match) return null;
+  const n = Number.parseInt(match[1]!, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+
+const SEARCH_DEBOUNCE_MS = 300;
+const PAGE_SIZE = 50;
+
+
+// Compact, timezone-stable date renderer used on the card. Kept
+// deterministic (no ``Intl.DateTimeFormat`` locale reliance) so the
+// SSR paint and the client hydration don't flash different strings.
+function formatCreatedAt(iso: string): { short: string; iso: string } {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return { short: "—", iso };
+  const d = new Date(ms);
+  const day = String(d.getDate()).padStart(2, "0");
+  const month = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ][d.getMonth()]!;
+  const year = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return { short: `${day} ${month} ${year} · ${hh}:${mm}`, iso };
+}
 
 
 /**
@@ -111,13 +169,58 @@ export function SpecSheetsList({
   });
   const cycle = cycleQuery.data ?? null;
 
-  const sheets = initialPage.results;
+  // Debounced customer / code search. Any input flips the SSR seed
+  // off — a filtered result set has a different shape than the "all
+  // sheets" first page so re-using the seed would render stale rows
+  // for the first frame after the user types.
+  const [searchInput, setSearchInput] = useState("");
+  const debouncedSearch = useDebouncedValue(searchInput, SEARCH_DEBOUNCE_MS);
+  const trimmedSearch = debouncedSearch.trim();
+
+  const list = useInfiniteSpecifications(orgId, {
+    formulationId,
+    pageSize: PAGE_SIZE,
+    search: trimmedSearch || undefined,
+    initialFirstPage: trimmedSearch ? null : initialPage,
+  });
+
+  const sheets = useMemo<readonly SpecificationSheetDto[]>(
+    () => list.data?.pages.flatMap((p) => p.results) ?? [],
+    [list.data],
+  );
+
+  // IntersectionObserver-driven infinite scroll — matches the RTG
+  // catalog grid pattern so both surfaces have identical UX at scale.
+  // The sentinel re-mounts when the fetch state flips so a fresh
+  // page swap gets picked up automatically.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node) return;
+    if (!list.hasNextPage || list.isFetchingNextPage) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          void list.fetchNextPage();
+        }
+      },
+      { root: null, rootMargin: "240px", threshold: 0 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [list, sheets.length]);
+
   // Only ACTIVE final sheets block the banner. A ``rejected`` final
   // means the customer sent us back to trial batches — once they've
   // re-confirmed done we owe them a fresh FINAL against the new
   // approved version, so the banner should re-appear. Mirrors the
   // ``_awaiting_final_projects`` rule on the /final-specs/ kanban.
-  const hasActiveFinalSheet = sheets.some(
+  //
+  // We look at the SSR seed for this check rather than the paged
+  // ``sheets`` state because the banner should stay true to the
+  // whole-project verdict even when the operator has typed a filter
+  // that hides FINAL rows.
+  const hasActiveFinalSheet = initialPage.results.some(
     (s) =>
       s.document_kind === "final" &&
       s.status !== "rejected" &&
@@ -126,6 +229,9 @@ export function SpecSheetsList({
   );
   const customerConfirmedDone = cycle?.customer_confirmed_done_at != null;
   const showFinalSpecBanner = customerConfirmedDone && !hasActiveFinalSheet;
+
+  const isSearching = trimmedSearch.length > 0;
+  const isBusy = list.isFetching && !list.isFetchingNextPage;
 
   return (
     <section className="flex flex-col gap-4">
@@ -136,7 +242,7 @@ export function SpecSheetsList({
           orgId={orgId}
           projectCode={projectCode}
           versions={versions}
-          sheets={sheets}
+          sheets={initialPage.results}
         />
       ) : null}
 
@@ -146,29 +252,115 @@ export function SpecSheetsList({
             {tTabs("spec_sheets")}
           </h2>
           <p className="mt-1 text-sm text-ink-500">
-            {tSpec("tab.subtitle", { count: sheets.length })}
+            {isSearching
+              ? `Matches for “${trimmedSearch}” · ${sheets.length}${
+                  list.hasNextPage ? "+" : ""
+                }`
+              : tSpec("tab.subtitle", { count: sheets.length })}
           </p>
         </div>
-        {canWrite ? (
-          <NewSpecSheetButton
-            orgId={orgId}
-            projectCode={projectCode}
-            versions={versions}
-            existingSheets={sheets}
+        <div className="flex flex-wrap items-center gap-2">
+          <SpecSheetsSearchBox
+            value={searchInput}
+            onChange={setSearchInput}
+            busy={isBusy}
           />
-        ) : null}
+          {canWrite ? (
+            <NewSpecSheetButton
+              orgId={orgId}
+              projectCode={projectCode}
+              versions={versions}
+              existingSheets={sheets}
+            />
+          ) : null}
+        </div>
       </div>
 
-      {sheets.length === 0 ? (
-        <EmptyState />
+      {sheets.length === 0 && !list.isLoading ? (
+        isSearching ? (
+          <p className="rounded-2xl bg-ink-50 p-8 text-center text-sm text-ink-500 ring-1 ring-ink-200">
+            No spec sheets match “{trimmedSearch}”.
+          </p>
+        ) : (
+          <EmptyState />
+        )
       ) : (
-        <ul className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          {sheets.map((sheet) => (
-            <SpecSheetCard key={sheet.id} sheet={sheet} />
-          ))}
-        </ul>
+        <>
+          <ul className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {sheets.map((sheet) => (
+              <SpecSheetCard
+                key={sheet.id}
+                sheet={sheet}
+                orgId={orgId}
+                canWrite={canWrite}
+              />
+            ))}
+          </ul>
+          {list.hasNextPage ? (
+            <div
+              ref={sentinelRef}
+              className="flex items-center justify-center py-6 text-xs text-ink-500"
+            >
+              {list.isFetchingNextPage ? (
+                <>
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                  Loading more…
+                </>
+              ) : (
+                <span aria-hidden />
+              )}
+            </div>
+          ) : sheets.length > PAGE_SIZE ? (
+            <p className="py-4 text-center text-xs text-ink-500">
+              End of list.
+            </p>
+          ) : null}
+        </>
       )}
     </section>
+  );
+}
+
+
+function SpecSheetsSearchBox({
+  value,
+  onChange,
+  busy,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  busy: boolean;
+}) {
+  return (
+    <div className="relative w-full sm:w-72">
+      <Search
+        aria-hidden
+        className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+      />
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Search customer, company, or code…"
+        aria-label="Search spec sheets"
+        className="h-10 w-full rounded-full bg-ink-50 pl-9 pr-9 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 placeholder:text-ink-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-orange-400"
+      />
+      {busy && value ? (
+        <Loader2
+          aria-hidden
+          className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-orange-500"
+        />
+      ) : value ? (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          aria-label="Clear search"
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -352,51 +544,182 @@ function TrialHistoryRow({
 }
 
 
-function SpecSheetCard({ sheet }: { sheet: SpecificationSheetDto }) {
+function SpecSheetCard({
+  sheet,
+  orgId,
+  canWrite,
+}: {
+  sheet: SpecificationSheetDto;
+  orgId: string;
+  canWrite: boolean;
+}) {
   const tSpec = useTranslations("specifications");
+  // For Custom projects the project-linked customer is authoritative
+  // (one customer per project). For RTG projects the formulation
+  // itself has no customer — each per-order clone carries the buyer
+  // in ``client_name`` / ``client_company``, so the fallback chain
+  // still finds a name to show.
+  const customerLabel =
+    sheet.linked_customer?.name ||
+    sheet.linked_customer?.company ||
+    sheet.client_name ||
+    sheet.client_company ||
+    tSpec("no_client_yet");
+  const companyLabel =
+    sheet.linked_customer?.company || sheet.client_company || "";
+  // Show the company on the second line only when it differs from the
+  // primary label (otherwise it duplicates the row above).
+  const showSubCompany =
+    companyLabel && companyLabel !== customerLabel;
+  const orderNumber = extractOrderNumber(sheet.code);
+  const created = formatCreatedAt(sheet.created_at);
+  // Delete is only offered when BOTH: no proposal is attached AND the
+  // sheet is still a draft. The backend's ``delete_sheet`` guard is
+  // ``status == draft`` — offering it on approved/sent rows would
+  // spawn a rejected mutation the user can't act on. RTG clones ship
+  // as APPROVED + attached-to-proposal on creation, so this button
+  // never surfaces for them (which is the intent — order clones are
+  // audit artefacts, not scratch drafts).
+  const isDeletable =
+    canWrite &&
+    sheet.linked_proposal === null &&
+    sheet.status === "draft";
   return (
-    <li>
+    <li className="group relative">
       <Link
         href={`/specifications/${sheet.id}`}
         className="flex flex-col gap-3 rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200 transition-shadow hover:shadow-md"
       >
         <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-2">
+          <div className="flex min-w-0 items-start gap-2">
             <span className="mt-0.5 flex-shrink-0 text-ink-400">
               <LinkIconSlot
                 idleIcon={<FileText className="h-4 w-4" />}
                 spinnerSizeClassName="h-4 w-4"
               />
             </span>
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-                {sheet.code || tSpec("untitled")}
+            <div className="min-w-0">
+              {/* Customer first, code second — on a popular RTG SKU
+                  with thousands of order clones the operator scans by
+                  buyer, not by opaque code. */}
+              <p className="truncate text-sm font-semibold text-ink-1000">
+                {customerLabel}
               </p>
-              <p className="text-sm font-medium text-ink-1000">
-                {/* One customer per project — prefer the project-linked
-                    customer over the sheet's own client fields (which
-                    are scientist-typed at draft time and often left
-                    empty). Falls back to the sheet fields only for
-                    legacy sheets whose formulation still has no
-                    customer linked. */}
-                {sheet.linked_customer?.name ||
-                  sheet.linked_customer?.company ||
-                  sheet.client_name ||
-                  sheet.client_company ||
-                  tSpec("no_client_yet")}
+              {showSubCompany ? (
+                <p className="truncate text-xs text-ink-500">
+                  {companyLabel}
+                </p>
+              ) : null}
+              <p className="mt-1 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-500">
+                <span className="truncate">
+                  {sheet.code || tSpec("untitled")}
+                </span>
+                {orderNumber !== null ? (
+                  <span
+                    className="inline-flex flex-shrink-0 items-center rounded-full bg-orange-50 px-1.5 py-0.5 text-[10px] font-semibold text-orange-700 ring-1 ring-inset ring-orange-200"
+                    title="Sheet was auto-cloned from the FINAL template when this customer placed order N"
+                  >
+                    #{orderNumber}
+                  </span>
+                ) : null}
               </p>
             </div>
           </div>
           <StatusChip status={sheet.status} tSpec={tSpec} />
         </div>
-        <div className="flex items-center justify-between text-xs text-ink-500">
-          <span>
+        <div className="flex items-center justify-between gap-2 text-xs text-ink-500">
+          <span className="truncate">
             v{sheet.formulation_version_number} · {sheet.formulation_name}
           </span>
-          <ExternalLink className="h-3 w-3" />
+          <time
+            dateTime={created.iso}
+            title={`Created ${created.iso}`}
+            className="flex-shrink-0 whitespace-nowrap text-[11px] tabular-nums text-ink-500"
+          >
+            {created.short}
+          </time>
         </div>
       </Link>
+      {isDeletable ? (
+        <DeleteSheetButton orgId={orgId} sheet={sheet} />
+      ) : null}
     </li>
+  );
+}
+
+
+function DeleteSheetButton({
+  orgId,
+  sheet,
+}: {
+  orgId: string;
+  sheet: SpecificationSheetDto;
+}) {
+  // Two-click confirmation kept inline in the card so a
+  // mis-click can't wipe the row silently. First click flips to a
+  // "Delete?" state that auto-resets after 4s; second click within
+  // that window fires the mutation. Prevents a modal + keeps the
+  // affordance quiet enough that scrolling by never triggers it.
+  const [armed, setArmed] = useState(false);
+  const disarmRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deleteMut = useDeleteSpecification(orgId);
+
+  useEffect(() => {
+    return () => {
+      if (disarmRef.current) clearTimeout(disarmRef.current);
+    };
+  }, []);
+
+  const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    // The delete affordance sits inside the same <li> as the card's
+    // <Link>. Without stopPropagation the click bubbles to the link
+    // and navigates away mid-mutation. preventDefault covers the
+    // (rare) case where the button is nested inside an <a> ancestor
+    // in a future refactor.
+    e.stopPropagation();
+    e.preventDefault();
+    if (deleteMut.isPending) return;
+    if (!armed) {
+      setArmed(true);
+      if (disarmRef.current) clearTimeout(disarmRef.current);
+      disarmRef.current = setTimeout(() => setArmed(false), 4000);
+      return;
+    }
+    if (disarmRef.current) clearTimeout(disarmRef.current);
+    deleteMut.mutate(sheet.id);
+  };
+
+  const label = deleteMut.isPending
+    ? "Deleting…"
+    : armed
+      ? "Click again to confirm"
+      : "Delete draft";
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      aria-label={armed ? "Confirm delete" : "Delete spec sheet"}
+      title={
+        armed
+          ? "Click again within 4s to confirm delete"
+          : "Delete this draft spec sheet (no proposal attached)"
+      }
+      disabled={deleteMut.isPending}
+      className={
+        "absolute right-3 top-3 z-10 inline-flex h-7 items-center gap-1 rounded-full px-2 text-[11px] font-medium ring-1 ring-inset transition-colors " +
+        (armed
+          ? "bg-danger text-white ring-danger opacity-100"
+          : "bg-white text-ink-500 ring-ink-200 opacity-0 hover:bg-danger/10 hover:text-danger hover:ring-danger/30 group-hover:opacity-100 focus-visible:opacity-100")
+      }
+    >
+      {deleteMut.isPending ? (
+        <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+      ) : (
+        <Trash2 className="h-3 w-3" aria-hidden />
+      )}
+      <span>{label}</span>
+    </button>
   );
 }
 

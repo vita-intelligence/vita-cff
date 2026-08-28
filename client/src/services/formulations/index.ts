@@ -25,6 +25,8 @@ export type {
   UpdateFormulationCertificateRequestDto,
 } from "./api";
 export type {
+  PaginatedRTGCatalogDto,
+  RTGCatalogRowDto,
   UpsertPageBuilderTemplateRequestDto,
   UpsertStageTemplateRequestDto,
 } from "./api";
@@ -45,6 +47,7 @@ export {
   fetchFormulationVersions,
   fetchFormulations,
   fetchFormulationsPage,
+  fetchRTGCatalogPage,
   fetchPageBuilderTemplate,
   fetchPageBuilderTemplates,
   fetchProjectOverview,
@@ -81,6 +84,7 @@ export {
   useFormulationVersions,
   useFormulations,
   useInfiniteFormulations,
+  useInfiniteRTGCatalog,
   useRtgCatalogCounts,
   usePackagingCombos,
   useReplacePackagingCombos,

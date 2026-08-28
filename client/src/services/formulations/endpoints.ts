@@ -4,6 +4,8 @@
 
 export const formulationsEndpoints = {
   list: (orgId: string) => `/api/organizations/${orgId}/formulations/`,
+  rtgCatalogList: (orgId: string) =>
+    `/api/organizations/${orgId}/formulations/rtg-catalog-list/`,
   detail: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/`,
   lines: (orgId: string, formulationId: string) =>

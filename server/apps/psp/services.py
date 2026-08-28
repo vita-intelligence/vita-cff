@@ -3777,10 +3777,42 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
     # revert-and-redo cycles).
     timeline = _build_full_timeline(organization, proposal)
 
+    # Primary formulation for display. NPD's merge picks the first
+    # line as the primary CO; PSP renders that CO with the primary's
+    # customer-friendly name on the /projects kanban. Without a
+    # ``name`` + ``code`` here, PSP falls back to whatever the CO's
+    # ``customer_reference`` was BEFORE the merge — which on RTG is
+    # the sample-kit label ("Ultimate Fat Burner Drink · Sample #3")
+    # left over from ``sync_customer_order_to_psp``. The RTG kanban
+    # card then reads like another sample and disappears from the
+    # operator's mental map. Sending the display name + code here
+    # gives PSP's ``apply_proposal_identity`` a canonical source that
+    # overrides the stale sample label.
+    from apps.client_portal.queries import formulation_display_name
+
+    primary_formulation = (
+        lines[0].formulation_version.formulation if lines else None
+    )
+    primary_display_name = (
+        formulation_display_name(primary_formulation)
+        if primary_formulation is not None
+        else ""
+    )
+    primary_code = (
+        getattr(primary_formulation, "code", "") or ""
+        if primary_formulation is not None
+        else ""
+    ).strip()
+
     payload = {
         "npd_proposal_uuid": str(proposal.id),
         "npd_proposal_code": (getattr(proposal, "code", "") or "").strip(),
         "npd_proposal_url": _proposal_app_url(organization, proposal),
+        # Primary formulation identity — powers PSP's CO display name
+        # on the /projects kanban. See the block-comment above the
+        # payload for why sending these is load-bearing on RTG.
+        "primary_formulation_display_name": primary_display_name,
+        "primary_formulation_code": primary_code,
         # NPD-authoritative status. PSP mirrors it and derives the
         # wizard block from here (Awaiting approval → Ready to send
         # → Awaiting customer signature).

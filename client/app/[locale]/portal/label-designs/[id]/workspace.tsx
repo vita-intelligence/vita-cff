@@ -689,6 +689,16 @@ function ActionPanel({
 // ---------------------------------------------------------------------------
 
 
+// Max additional (non-primary) files per revision — matches the
+// backend ``MAX_ADDITIONAL_ASSETS`` cap in
+// ``apps/label_design/api/views.py``. Sending more raises 400.
+const MAX_ADDITIONAL_FILES = 10;
+
+interface ExtraArtworkFile {
+  readonly file: File;
+  readonly label: string;
+}
+
 function InlineUploadCard({
   id,
   onJumpTab,
@@ -698,15 +708,46 @@ function InlineUploadCard({
 }) {
   const upload = usePortalUploadArtwork(id);
   const [file, setFile] = useState<File | null>(null);
+  //: Supplementary files uploaded alongside the primary artwork.
+  //: Mirrors the shape the web-site portal ships + what the staff
+  //: /labelling/ workspace supports — the FIRST file is the primary
+  //: (front/canonical); everything else is a "back view", "side
+  //: view", "mockup on shelf", etc. Each carries an optional label
+  //: the reviewer sees on the revision panel.
+  const [extras, setExtras] = useState<ReadonlyArray<ExtraArtworkFile>>([]);
   const [notes, setNotes] = useState("");
   const [signature, setSignature] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const remainingExtras = MAX_ADDITIONAL_FILES - extras.length;
+
+  const handleAddExtras = (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    const incoming = Array.from(fileList).map((f) => ({
+      file: f,
+      label: "",
+    }));
+    setExtras((prev) => {
+      const next = [...prev, ...incoming];
+      return next.slice(0, MAX_ADDITIONAL_FILES);
+    });
+  };
+
+  const handleRemoveExtra = (idx: number) => {
+    setExtras((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleLabelExtra = (idx: number, label: string) => {
+    setExtras((prev) =>
+      prev.map((row, i) => (i === idx ? { ...row, label } : row)),
+    );
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (!file) {
-      setError("Pick a file to upload.");
+      setError("Pick a primary artwork file to upload.");
       return;
     }
     if (!signature) {
@@ -718,9 +759,12 @@ function InlineUploadCard({
         artwork: file,
         signature_image: signature,
         notes,
+        additional_files: extras.map((e) => e.file),
+        additional_labels: extras.map((e) => e.label),
       });
       // Reset on success so the next round-trip starts clean.
       setFile(null);
+      setExtras([]);
       setNotes("");
       setSignature("");
     } catch (e) {
@@ -736,7 +780,9 @@ function InlineUploadCard({
       <Eyebrow>UPLOAD ARTWORK</Eyebrow>
       <h3 className="mt-1 text-lg font-bold">Submit your design</h3>
       <p className="mt-1 text-sm text-neutral-600">
-        PDF, PNG or JPG. Use the{" "}
+        PDF, PNG or JPG. Upload one primary file, plus up to{" "}
+        {MAX_ADDITIONAL_FILES} extra views (back / side / mockup) in the
+        same submission. Use the{" "}
         <button
           type="button"
           onClick={() => onJumpTab("content-block")}
@@ -758,7 +804,7 @@ function InlineUploadCard({
       <form onSubmit={submit} className="mt-4 flex flex-col gap-3">
         <label className="flex flex-col gap-1">
           <span className="text-xs font-bold uppercase tracking-[0.15em] text-neutral-700">
-            File <span className="text-red-600">*</span>
+            Primary file <span className="text-red-600">*</span>
           </span>
           <input
             type="file"
@@ -766,7 +812,79 @@ function InlineUploadCard({
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
             className="border-2 border-black bg-white px-2 py-1.5 text-sm"
           />
+          <span className="text-[11px] text-neutral-500">
+            Front / canonical view. Shows first on every review + approval
+            surface.
+          </span>
         </label>
+
+        {/* Additional views. Each row is a file + optional label
+            (Back, Side, Mockup, …). Reviewer + printer both see the
+            label alongside the file so a spec query about "the
+            back label" resolves immediately. */}
+        <div className="flex flex-col gap-1">
+          <div className="flex items-baseline justify-between">
+            <span className="text-xs font-bold uppercase tracking-[0.15em] text-neutral-700">
+              Additional views (optional)
+            </span>
+            <span className="text-[11px] text-neutral-500">
+              {extras.length} / {MAX_ADDITIONAL_FILES}
+            </span>
+          </div>
+          {extras.length > 0 ? (
+            <ul className="flex flex-col gap-2">
+              {extras.map((row, idx) => (
+                <li
+                  key={`${row.file.name}-${idx}`}
+                  className="flex items-center gap-2 border-2 border-neutral-300 bg-neutral-50 px-2 py-1.5"
+                >
+                  <span
+                    className="min-w-0 flex-1 truncate text-xs font-semibold text-neutral-800"
+                    title={row.file.name}
+                  >
+                    {row.file.name}
+                  </span>
+                  <input
+                    type="text"
+                    value={row.label}
+                    onChange={(e) => handleLabelExtra(idx, e.target.value)}
+                    placeholder={`View ${idx + 2}`}
+                    maxLength={80}
+                    aria-label={`Label for extra view ${idx + 1}`}
+                    className="w-32 border-2 border-black bg-white px-1.5 py-0.5 text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveExtra(idx)}
+                    aria-label={`Remove ${row.file.name}`}
+                    className="border-2 border-black bg-white px-1.5 py-0.5 text-xs font-bold hover:bg-red-100"
+                  >
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {remainingExtras > 0 ? (
+            <input
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
+              multiple
+              onChange={(e) => {
+                handleAddExtras(e.target.files);
+                // Clear the input so re-selecting the same file re-fires
+                // the change event (browsers dedupe by default).
+                e.target.value = "";
+              }}
+              className="border-2 border-dashed border-neutral-400 bg-white px-2 py-1.5 text-xs"
+            />
+          ) : (
+            <p className="text-[11px] text-neutral-500">
+              Maximum reached — remove a file above to swap another in.
+            </p>
+          )}
+        </div>
+
         <label className="flex flex-col gap-1">
           <span className="text-xs font-bold uppercase tracking-[0.15em] text-neutral-700">
             Notes (optional)

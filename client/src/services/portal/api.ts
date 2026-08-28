@@ -302,6 +302,11 @@ export interface PortalSpecListItem {
   //: server can't resolve back to a formulation.
   readonly formulation_id: string | null;
   readonly formulation_name: string;
+  //: Custom vs Ready-to-Go project the spec is bonded to. Emitted by
+  //: the backend at ``apps.client_portal.api.specs_views._serialise_spec``.
+  //: Drives the sign-affirmation swap — RTG collapses the three-line
+  //: trial/recipe/authorise-production block to a single awareness line.
+  readonly formulation_project_type?: string;
   readonly formulation_version_number: number | null;
   readonly has_signature: boolean;
   readonly customer_signed_at: string | null;

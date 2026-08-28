@@ -307,10 +307,24 @@ def _routing_request_phase_override(phase, routing_req):
     return (None, None)
 
 
-def _build_production_status(*, formulation) -> dict | None:
+def _build_production_status(
+    *, formulation, proposals: list[Proposal] | None = None
+) -> dict | None:
     """Return the customer-safe production snapshot for the portal, or
     ``None`` when PSP hasn't pushed anything yet (i.e. the project
     isn't in production).
+
+    RTG guard: the storefront checkout mirrors an RTG order into PSP
+    (creates a CO in ``production_planning``) the moment the customer
+    submits the cart — before signing the proposal and before finance
+    confirms the payment. Rendering the ProductionCard at that point
+    is misleading ("Preparing manufacturing order …" while the invoice
+    is still unpaid); worse, it leaks our internal PSP state to a
+    customer who legally hasn't authorised us to start anything. The
+    portal's empty-state copy ("Production hasn't started yet — once
+    your invoice is settled …") is what the customer should see until
+    payment lands, so we return ``None`` for RTG projects whose
+    proposal hasn't been paid for.
     """
 
     row = getattr(formulation, "psp_production_status", None)
@@ -321,6 +335,14 @@ def _build_production_status(*, formulation) -> dict | None:
         # data (shouldn't happen in normal flow; guards a partial
         # upsert if PSP is mid-migration).
         return None
+
+    from apps.formulations.models import ProjectType
+
+    if formulation.project_type == ProjectType.READY_TO_GO.value:
+        from apps.client_portal.api.project_stage import _rtg_payment_approved
+
+        if not _rtg_payment_approved(formulation, proposals):
+            return None
 
     copy = _PRODUCTION_PHASE_COPY.get(row.phase, {})
     # When a customer-driven routing request is live, override the
@@ -448,6 +470,109 @@ def _release_documents_for_formulation(formulation):
 # ---------------------------------------------------------------------------
 # Pipeline derivation — eight ordered stages
 # ---------------------------------------------------------------------------
+
+
+def _build_rtg_payment_stage(
+    *,
+    formulation: Formulation,
+    proposals: list[Proposal],
+    signed_proposal: Proposal | None,
+    label_design: LabelDesign | None,
+) -> dict:
+    """RTG-only payment pipeline stage.
+
+    Deliberately distinct from the Custom ``payment_stage`` because:
+
+    * Custom's ``payment_stage`` gates on FINAL-kind payments that
+      land AFTER the customer signs the final spec. RTG has no final
+      spec, so the FINAL-kind check would leave the stage stuck at
+      "future" forever.
+    * The RTG proposal template inherits ``deposit_percent`` from the
+      org default (often 50%), which means finance may record the
+      customer's transfer as ``kind=DEPOSIT`` even when it covers the
+      full order. Filtering on kind at all would drop those rows.
+
+    We scope the payment lookup to Payments explicitly linked to this
+    formulation's proposals (``Payment.proposal_id``). A formulation-
+    wide check would count paid sample kits — those hit the same
+    formulation but have ``proposal=None`` and represent a £30 sample
+    order, not a full production run. The label-design workflow's
+    "moved past ``PAYMENT_PENDING``" state is preserved as a second
+    signal so a legacy cash deal (no Payment row wired to the
+    proposal) still resolves to ``done``.
+    """
+
+    from apps.payments.constants import PaymentStatus
+    from apps.payments.models import Payment
+
+    proposal_ids = [p.id for p in proposals]
+    approved_payment = None
+    pending_payment = None
+    if proposal_ids:
+        approved_payment = (
+            Payment.objects.filter(
+                proposal_id__in=proposal_ids,
+                status=PaymentStatus.APPROVED,
+            )
+            .order_by("-approved_at", "-created_at")
+            .first()
+        )
+        pending_payment = (
+            Payment.objects.filter(
+                proposal_id__in=proposal_ids,
+                status=PaymentStatus.PENDING,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+    if approved_payment is not None:
+        return {
+            "key": "payment",
+            "label": "Payment received",
+            "state": "done",
+            "completed_at": _iso(approved_payment.approved_at),
+            "detail": "Thank you. Label design and production are unlocked.",
+        }
+    # The Custom pipeline treats "label workflow past PAYMENT_PENDING"
+    # as implicit proof of payment (legacy cash deals where finance
+    # didn't record a Payment row). We deliberately DON'T apply that
+    # heuristic here: on RTG a LabelDesign row from a prior code path
+    # would falsely flip the payment stage to "done" while the invoice
+    # hasn't actually been sent. Only a real APPROVED Payment on the
+    # proposal counts — anything else is stale state that shouldn't
+    # steer the customer's roadmap.
+    if signed_proposal is None:
+        return {
+            "key": "payment",
+            "label": "Payment",
+            "state": "future",
+            "completed_at": None,
+            "detail": "After you sign the proposal, we'll send you the invoice.",
+        }
+    if pending_payment is not None:
+        return {
+            "key": "payment",
+            "label": "Awaiting payment",
+            "state": "current",
+            "completed_at": None,
+            "detail": (
+                f"You signed the proposal. Your invoice for "
+                f"{pending_payment.currency} {pending_payment.amount} "
+                "is on our finance team's queue — we'll flip this the "
+                "moment the transfer lands."
+            ),
+        }
+    return {
+        "key": "payment",
+        "label": "Awaiting payment",
+        "state": "current",
+        "completed_at": None,
+        "detail": (
+            "You signed the proposal. Our finance team will send your "
+            "invoice shortly — label design and production start the "
+            "moment payment lands."
+        ),
+    }
 
 
 def _build_pipeline(
@@ -1141,16 +1266,66 @@ def _build_pipeline(
     #      ``draft_blocks_proposal`` gate that keeps proposal in
     #      ``future`` while the draft sits unsigned.
     #
-    # Same reorder for RTG (no trial + no final spec) so both project
-    # types read consistently.
+    # Ready-to-Go orders are a purpose-built subset of the Custom
+    # flow: no R&D request (customer picks off the storefront), no
+    # draft spec sign (the recipe is a director-signed template we
+    # clone per order), no sample selection, no deposit-vs-final
+    # payment split (the customer pays the whole order up front), no
+    # trial batches, no final-spec sign. What's left is:
+    #
+    #     1. Proposal signed
+    #     2. Payment received
+    #     3. Label design  ┐  concurrent — both start the moment
+    #     4. Production    ┘  finance confirms the payment
+    #
+    # We swap in an RTG-specific payment_stage that reads any approved
+    # Payment on the formulation (not just kind=FINAL) so DEPOSIT
+    # entries the finance team records for RTG orders still count as
+    # "paid". Then we clamp the label + production stages to ``future``
+    # while payment is unpaid — otherwise a PSP CO auto-created at
+    # checkout time (long before the customer signs anything) would
+    # push production_stage to ``current`` and the pipeline would read
+    # "we're manufacturing" while the invoice still sits unpaid.
     if formulation.project_type == ProjectType.READY_TO_GO.value:
+        rtg_payment_stage = _build_rtg_payment_stage(
+            formulation=formulation,
+            proposals=proposals,
+            signed_proposal=signed_proposal,
+            label_design=label_design,
+        )
+        payment_done = rtg_payment_stage["state"] == "done"
+        if not payment_done:
+            # Both replacement dicts MUST carry ``parallel_group`` —
+            # the ``label_stage``/``production_stage`` tagging above
+            # (see ``label_stage["parallel_group"] = "manufacturing"``)
+            # runs against the pre-clamped dicts, and a bare rebuild
+            # here drops the pair marker. Without the tag the FE
+            # ``RoadmapCard`` fold-loop treats each row as its own
+            # numbered step ("3. Label design", "4. Production")
+            # instead of bracketing them under one "Running in
+            # parallel" step. Kept alongside the tagging above so
+            # both stages carry the same value.
+            if label_stage["state"] == "current":
+                label_stage = {
+                    "key": "label",
+                    "label": "Label design",
+                    "state": "future",
+                    "completed_at": None,
+                    "detail": "Label design unlocks the moment your payment is confirmed.",
+                    "parallel_group": "manufacturing",
+                }
+            if production_stage["state"] == "current":
+                production_stage = {
+                    "key": "production",
+                    "label": "Production",
+                    "state": "future",
+                    "completed_at": None,
+                    "detail": "Production planning kicks off alongside label design once payment lands.",
+                    "parallel_group": "manufacturing",
+                }
         return [
-            request_stage,
-            draft_stage,
             proposal_stage,
-            sample_stage,
-            deposit_stage,
-            payment_stage,
+            rtg_payment_stage,
             label_stage,
             production_stage,
         ]
@@ -1232,6 +1407,32 @@ def _build_next_action(
     is_ready_to_go = (
         formulation.project_type == ProjectType.READY_TO_GO.value
     )
+
+    # RTG-only: the customer signs the PROPOSAL, not a draft spec
+    # (the spec is a director-signed template we clone at checkout).
+    # Surface the sign-proposal CTA up here so the detail page's top
+    # action card matches the actions queue on the dashboard header.
+    # Custom projects walk their own draft-spec sign step below so
+    # they never hit this branch.
+    if is_ready_to_go:
+        rtg_sent_proposal = next(
+            (
+                p
+                for p in proposals
+                if p.status == "sent" and p.customer_signed_at is None
+            ),
+            None,
+        )
+        if rtg_sent_proposal is not None:
+            return {
+                "label": "Sign your proposal",
+                "subtitle": (
+                    "Read through the order details and sign to authorise "
+                    "your invoice."
+                ),
+                "url": f"/portal/proposals/{rtg_sent_proposal.id}",
+                "urgency": "high",
+            }
 
     # Final spec waiting for signature. Ready-to-go projects never
     # produce a final spec (the draft is the contract), so skip this
@@ -1659,12 +1860,19 @@ class PortalProductDetailView(PortalAPIView):
             .first()
         )
 
+        from apps.client_portal.queries import formulation_display_name
+
         return Response(
             {
                 "product": {
                     "id": str(formulation.id),
                     "code": formulation.code,
-                    "name": formulation.name,
+                    # Customer-friendly title. On RTG this prefers
+                    # ``rtg_display_name`` ("Ultimate Fat Burner Drink")
+                    # over the internal SKU code ("RTG00001"). Falls
+                    # back through name → code → placeholder so the
+                    # header never renders empty.
+                    "name": formulation_display_name(formulation),
                     "project_status": formulation.project_status,
                     "created_at": _iso(formulation.created_at),
                     "updated_at": _iso(formulation.updated_at),
@@ -1723,6 +1931,7 @@ class PortalProductDetailView(PortalAPIView):
                 # concurrent workstreams.
                 "production_status": _build_production_status(
                     formulation=formulation,
+                    proposals=proposals,
                 ),
             }
         )

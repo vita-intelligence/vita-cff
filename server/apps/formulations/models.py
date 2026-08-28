@@ -835,6 +835,18 @@ class Formulation(models.Model):
                 fields=("organization", "lead_scientist"),
                 name="formulations_org_lead_sci_idx",
             ),
+            # Serves the RTG catalog list, RTG counts, and the
+            # ``/formulations/`` custom-only list — every one of those
+            # filters by ``(organization, project_type)`` and sorts by
+            # ``-updated_at``. Without this composite the planner falls
+            # back to the ``(organization, -updated_at)`` index and
+            # filters project_type / is_rtg_published on the heap, which
+            # scans ~100x more rows than necessary once one project_type
+            # dominates the tenant.
+            models.Index(
+                fields=("organization", "project_type", "is_rtg_published", "-updated_at"),
+                name="formulations_rtg_catalog_idx",
+            ),
         ]
 
     def __str__(self) -> str:

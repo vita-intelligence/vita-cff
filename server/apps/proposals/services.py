@@ -3179,11 +3179,50 @@ def finalize_proposal_kiosk(*, proposal: Proposal) -> dict[str, Any]:
     # advance.
     _schedule_proposal_psp_merge(proposal)
 
-    # Deposit gate: signing no longer materialises a placeholder
-    # Payment row. Finance records the payment themselves off the
-    # "Awaiting payment · Deposits" queue on ``/finance/payments``
-    # once the money lands. Payment rows should represent real
+    # Deposit / invoice materialisation on customer sign.
+    #
+    # Historical Custom-flow policy: no placeholder Payment row.
+    # Finance records the row themselves off the "Awaiting payment ·
+    # Deposits" queue once the transfer lands. Rows represent real
     # money-in events, not "we're expecting money" placeholders.
+    #
+    # RTG override: the customer bought off the storefront and
+    # expects an invoice generated immediately. Without an auto-
+    # created row the customer sees "Awaiting payment" on the
+    # portal but finance's ``/finance/payments`` queue is empty —
+    # nobody knows to send the invoice, and the deal stalls.
+    # Materialise a PENDING DEPOSIT Payment (at the proposal's full
+    # 100% total, per the RTG-scoped ``deposit_percent = 100`` set
+    # by the storefront checkout) so finance sees the queue entry
+    # the moment the customer signs.
+    #
+    # Deferred to commit so a rollback anywhere else in this service
+    # doesn't leak a Payment row; the helper is idempotent so a
+    # replay never spawns duplicates.
+    from apps.proposals.models import ProposalTemplateType
+
+    if proposal.template_type == ProposalTemplateType.READY_TO_GO.value:
+        proposal_pk = proposal.pk
+
+        def _create_rtg_deposit_payment() -> None:
+            from apps.payments.services import ensure_pending_deposit_payment
+            from apps.proposals.models import Proposal as _Proposal
+
+            fresh = _Proposal.objects.filter(pk=proposal_pk).first()
+            if fresh is None:
+                return
+            try:
+                ensure_pending_deposit_payment(
+                    proposal=fresh, actor=fresh.updated_by
+                )
+            except Exception:  # noqa: BLE001 — never break sign
+                logger.exception(
+                    "RTG proposal kiosk-finalize: deposit payment "
+                    "auto-create bubbled for proposal %s",
+                    proposal_pk,
+                )
+
+        transaction.on_commit(_create_rtg_deposit_payment)
 
     return {
         "status": proposal.status,

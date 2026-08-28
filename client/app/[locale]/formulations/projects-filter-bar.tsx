@@ -41,9 +41,7 @@ import {
 import { MemberPicker } from "@/components/filters/member-picker";
 import {
   PROJECT_STATUSES,
-  PROJECT_TYPES,
   type ProjectStatus,
-  type ProjectType,
 } from "@/services/formulations";
 
 
@@ -51,7 +49,6 @@ const PARAM_KEYS = {
   search: "q",
   status: "status",
   salesPerson: "sales",
-  projectType: "type",
 } as const;
 
 
@@ -59,7 +56,6 @@ export interface ProjectsFiltersState {
   readonly search: string;
   readonly statuses: readonly ProjectStatus[];
   readonly salesPersonId: string;
-  readonly projectType: ProjectType | "";
 }
 
 
@@ -72,19 +68,13 @@ function readFromParams(
     (value): value is ProjectStatus => allowed.has(value as ProjectStatus),
   );
   const salesPersonId = params?.get(PARAM_KEYS.salesPerson) ?? "";
-  const projectTypeRaw = params?.get(PARAM_KEYS.projectType) ?? "";
-  const projectType: ProjectType | "" =
-    projectTypeRaw && PROJECT_TYPES.includes(projectTypeRaw as ProjectType)
-      ? (projectTypeRaw as ProjectType)
-      : "";
-  return { search, statuses, salesPersonId, projectType };
+  return { search, statuses, salesPersonId };
 }
 
 
 function statesEqual(a: ProjectsFiltersState, b: ProjectsFiltersState): boolean {
   if (a.search !== b.search) return false;
   if (a.salesPersonId !== b.salesPersonId) return false;
-  if (a.projectType !== b.projectType) return false;
   if (a.statuses.length !== b.statuses.length) return false;
   // Order-insensitive — chip toggle order shouldn't fake a dirty
   // state. Statuses arrays are short, so the O(n²) check is fine.
@@ -97,8 +87,7 @@ function activeCountFor(state: ProjectsFiltersState): number {
   return (
     (state.search ? 1 : 0) +
     (state.statuses.length > 0 ? 1 : 0) +
-    (state.salesPersonId ? 1 : 0) +
-    (state.projectType ? 1 : 0)
+    (state.salesPersonId ? 1 : 0)
   );
 }
 
@@ -136,8 +125,6 @@ export function useProjectsFiltersState() {
       for (const s of next.statuses) params.append(PARAM_KEYS.status, s);
       if (next.salesPersonId)
         params.set(PARAM_KEYS.salesPerson, next.salesPersonId);
-      if (next.projectType)
-        params.set(PARAM_KEYS.projectType, next.projectType);
       const query = params.toString();
       router.replace(query ? `${pathname}?${query}` : pathname, {
         scroll: false,
@@ -173,11 +160,6 @@ export function useProjectsFiltersState() {
     (value: string) => setPending((p) => ({ ...p, salesPersonId: value })),
     [],
   );
-  const setProjectType = useCallback(
-    (value: ProjectType | "") =>
-      setPending((p) => ({ ...p, projectType: value })),
-    [],
-  );
 
   const apply = useCallback(() => {
     const normalised: ProjectsFiltersState = {
@@ -195,7 +177,6 @@ export function useProjectsFiltersState() {
       search: "",
       statuses: [],
       salesPersonId: "",
-      projectType: "",
     };
     setPending(empty);
     writeApplied(empty);
@@ -215,7 +196,6 @@ export function useProjectsFiltersState() {
     toggleStatus,
     setStatuses,
     setSalesPersonId,
-    setProjectType,
     apply,
     reset,
     clearAll,
@@ -382,22 +362,6 @@ export function ProjectsFilterBar({
               active: pending.statuses.includes(s),
             }))}
             onToggle={(value) => filters.toggleStatus(value as ProjectStatus)}
-          />
-          <ChipStrip
-            legend={t("filters.project_type_legend")}
-            activeCount={pending.projectType ? 1 : 0}
-            onClear={() => filters.setProjectType("")}
-            clearLabel={t("filters.clear_dimension")}
-            items={PROJECT_TYPES.map((typeKey) => ({
-              value: typeKey,
-              label: t(`project_type.${typeKey}` as "project_type.custom"),
-              active: pending.projectType === typeKey,
-            }))}
-            onToggle={(value) =>
-              filters.setProjectType(
-                pending.projectType === value ? "" : (value as ProjectType),
-              )
-            }
           />
         </div>
       </div>

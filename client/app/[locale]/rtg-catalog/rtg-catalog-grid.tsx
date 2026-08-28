@@ -40,10 +40,10 @@ import {
 import { Link } from "@/i18n/navigation";
 import { useDebouncedValue } from "@/lib/utils/use-debounced-value";
 import {
-  useInfiniteFormulations,
+  useInfiniteRTGCatalog,
   useRtgCatalogCounts,
-  type FormulationDto,
-  type PaginatedFormulationsDto,
+  type PaginatedRTGCatalogDto,
+  type RTGCatalogRowDto,
 } from "@/services/formulations";
 
 
@@ -55,7 +55,7 @@ const PAGE_SIZE = 60;
 
 interface Props {
   readonly orgId: string;
-  readonly initialFirstPage: PaginatedFormulationsDto | null;
+  readonly initialFirstPage: PaginatedRTGCatalogDto | null;
   readonly canWrite: boolean;
 }
 
@@ -76,11 +76,8 @@ export function RTGCatalogGrid({ orgId, initialFirstPage, canWrite }: Props) {
 
   const counts = useRtgCatalogCounts(orgId);
 
-  const list = useInfiniteFormulations(orgId, {
-    ordering: "-updated_at",
+  const list = useInfiniteRTGCatalog(orgId, {
     pageSize: PAGE_SIZE,
-    projectType: "ready_to_go",
-    includePublishedRtg: true,
     isRtgPublished,
     search: debouncedSearch,
     // Only hydrate from the SSR seed when the user hasn't touched
@@ -91,7 +88,7 @@ export function RTGCatalogGrid({ orgId, initialFirstPage, canWrite }: Props) {
         : null,
   });
 
-  const items = useMemo<FormulationDto[]>(
+  const items = useMemo<readonly RTGCatalogRowDto[]>(
     () => list.data?.pages.flatMap((p) => p.results) ?? [],
     [list.data],
   );
@@ -287,7 +284,7 @@ function FilterTabs({
 }
 
 
-function CatalogCard({ formulation }: { formulation: FormulationDto }) {
+function CatalogCard({ formulation }: { formulation: RTGCatalogRowDto }) {
   const {
     id,
     code,

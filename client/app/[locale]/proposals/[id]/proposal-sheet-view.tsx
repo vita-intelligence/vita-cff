@@ -826,9 +826,15 @@ function EditProposalPanel({
       freight_amount: form.freight_amount || null,
       valid_until: form.valid_until || null,
       cover_notes: form.cover_notes,
-      // Send only when the rep actually typed a value. Empty input =
-      // leave existing value alone.
-      deposit_percent: form.deposit_percent.trim() || null,
+      // RTG proposals always invoice at 100% — the field is hidden
+      // above so the form value is stale, and the RTG payment flow
+      // has no remainder invoice to catch a partial deposit. Force
+      // "100" on RTG regardless of what the form carries; otherwise
+      // send what the rep typed (empty = leave the DB value alone).
+      deposit_percent:
+        proposal.template_type === "ready_to_go"
+          ? "100"
+          : form.deposit_percent.trim() || null,
     });
   };
 
@@ -1081,25 +1087,30 @@ function EditProposalPanel({
             className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
           />
         </Field>
-        {/* Deposit clause % — only meaningful on Custom-template
-         *  proposals (Ready-to-Go renders no deposit paragraph) but
-         *  always editable here so a rep who flipped templates after
-         *  creation can still set the value. */}
-        <Field label={tProposals("edit.deposit_percent")}>
-          <input
-            type="number"
-            min={0}
-            max={100}
-            step="0.1"
-            value={form.deposit_percent}
-            onChange={bind("deposit_percent")}
-            placeholder="50"
-            className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-          />
-          <span className="text-[10px] text-ink-500">
-            {tProposals("edit.deposit_percent_hint")}
-          </span>
-        </Field>
+        {/* Deposit clause % — Custom-template only. Ready-to-Go
+         *  proposals always invoice at 100% because the RTG flow has
+         *  no trials / no FINAL sign, so a partial-deposit split
+         *  would leave the remainder invoice unfired and the customer
+         *  effectively short-paying. Field is hidden on RTG so a rep
+         *  can't accidentally set 50% and generate a half-invoice;
+         *  the save path below force-sends 100 on RTG regardless. */}
+        {proposal.template_type !== "ready_to_go" ? (
+          <Field label={tProposals("edit.deposit_percent")}>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step="0.1"
+              value={form.deposit_percent}
+              onChange={bind("deposit_percent")}
+              placeholder="50"
+              className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+            />
+            <span className="text-[10px] text-ink-500">
+              {tProposals("edit.deposit_percent_hint")}
+            </span>
+          </Field>
+        ) : null}
       </div>
 
       <label className="mt-4 flex flex-col gap-1.5">

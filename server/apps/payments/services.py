@@ -49,6 +49,212 @@ class PaymentKindConflict(Exception):
     api_code = "payments.kind_conflict"
 
 
+# ---------------------------------------------------------------------------
+# Note-builder helpers
+#
+# The ``notes`` column on a Payment is what finance reads on their
+# queue to decide (a) what the invoice is FOR and (b) what to do
+# next. The auto-create paths used to emit terse one-liners like
+# "Auto-created on customer kiosk sign of PROP-0013. Expected
+# 25790.00 GBP (100.00% deposit)." which forced finance to click into
+# the proposal / customer / formulation to reconstruct the context
+# every time. The builders below now emit a rich, self-contained
+# summary: what flow triggered the row, who the customer is, what
+# product they bought, the amount + breakdown, and the concrete
+# action finance is expected to take next.
+#
+# Every builder returns a plain string (multi-line, joined by "\n")
+# so a rollback / retry of the create call replays the same text.
+# ---------------------------------------------------------------------------
+
+
+def _format_money(amount: Any, currency: str) -> str:
+    """Human-readable ``£25,790.00 GBP`` style money string."""
+
+    try:
+        value = Decimal(amount)
+    except Exception:  # noqa: BLE001
+        return f"{amount} {currency}"
+    quantised = value.quantize(Decimal("0.01"))
+    whole, _, frac = f"{quantised:.2f}".partition(".")
+    whole_grouped = f"{int(whole):,}"
+    return f"{whole_grouped}.{frac} {currency}"
+
+
+def _customer_label(customer) -> str:
+    if customer is None:
+        return "Unknown customer"
+    parts = []
+    name = (getattr(customer, "name", "") or "").strip()
+    company = (getattr(customer, "company", "") or "").strip()
+    email = (getattr(customer, "email", "") or "").strip()
+    if name and company and name != company:
+        parts.append(f"{name} ({company})")
+    elif name:
+        parts.append(name)
+    elif company:
+        parts.append(company)
+    if email:
+        parts.append(f"<{email}>")
+    return " ".join(parts) if parts else "Unknown customer"
+
+
+def _formulation_label(formulation) -> str:
+    if formulation is None:
+        return "Unknown product"
+    # Prefer the customer-facing marketing name on RTG SKUs so
+    # finance reads "Ultimate Fat Burner Drink" instead of the
+    # internal SKU code. Lazy import — the queries module already
+    # depends on the formulations model, and importing here avoids
+    # a boot-time cycle from this bottom-of-stack service module.
+    from apps.client_portal.queries import formulation_display_name
+
+    display = formulation_display_name(formulation)
+    code = (getattr(formulation, "code", "") or "").strip()
+    if display and code and display != code:
+        return f"{display} · {code}"
+    return display or code or "Unknown product"
+
+
+def _build_deposit_notes(
+    *, proposal, amount: Decimal, currency: str, percent: Decimal, total: Decimal
+) -> str:
+    """Rich notes for :func:`ensure_pending_deposit_payment`.
+
+    Custom deposit — X% up-front slice unlocking the trial-batch
+    stage of the R&D workflow. RTG deposit — the storefront checkout
+    forces ``deposit_percent = 100`` so the row IS the full order
+    invoice; approving it authorises production directly.
+    """
+
+    from apps.proposals.models import ProposalTemplateType
+
+    is_rtg = proposal.template_type == ProposalTemplateType.READY_TO_GO.value
+    formulation = None
+    version = getattr(proposal, "formulation_version", None)
+    if version is not None:
+        formulation = getattr(version, "formulation", None)
+    customer = getattr(proposal, "customer", None)
+    lines = []
+    if is_rtg:
+        lines.append(
+            "=== Ready-to-Go storefront order — full invoice (100% deposit) ==="
+        )
+        lines.append(
+            "This row is the ENTIRE order invoice. There is no remainder "
+            "FINAL invoice on RTG orders — approving this row authorises "
+            "label design + production."
+        )
+    else:
+        lines.append(
+            f"=== Custom-formulation deposit invoice ({percent}% of order total) ==="
+        )
+        lines.append(
+            "Approving this row unlocks the trial-batch cycle for the "
+            "R&D team. The remaining balance is invoiced separately "
+            "after the customer signs the FINAL specification."
+        )
+    lines.append("")
+    lines.append(f"Customer:      {_customer_label(customer)}")
+    lines.append(f"Product:       {_formulation_label(formulation)}")
+    lines.append(f"Proposal:      {proposal.code or proposal.id}")
+    quantity = getattr(proposal, "quantity", None) or 0
+    unit_price = getattr(proposal, "unit_price", None)
+    if quantity and unit_price is not None:
+        try:
+            lines.append(
+                f"Quantity:      {int(quantity):,} × "
+                f"{_format_money(unit_price, currency)}/unit"
+            )
+        except Exception:  # noqa: BLE001
+            lines.append(f"Quantity:      {quantity}")
+    lines.append(
+        f"Order total:   {_format_money(total, currency)} "
+        "(subtotal + freight, excl. VAT)"
+    )
+    lines.append(
+        f"THIS INVOICE:  {_format_money(amount, currency)} "
+        f"({percent}% of order total)"
+    )
+    lines.append("")
+    lines.append("Finance next steps:")
+    lines.append(
+        "  1. Send the invoice to the customer via your usual channel."
+    )
+    lines.append(
+        "  2. Once the bank transfer lands, mark this row Approved."
+    )
+    if is_rtg:
+        lines.append(
+            "  3. On Approve: the label workflow bootstraps + PSP receives "
+            "the production-authorised signal automatically."
+        )
+    else:
+        lines.append(
+            "  3. On Approve: the R&D team is unblocked to schedule the "
+            "first trial batch."
+        )
+    return "\n".join(lines)
+
+
+def _build_final_payment_notes(
+    *,
+    formulation,
+    sheet,
+    total: Decimal,
+    deposit_paid: Decimal,
+    amount_due: Decimal,
+    currency: str,
+) -> str:
+    """Rich notes for :func:`ensure_final_payment_for_formulation`.
+
+    Fires only on Custom projects — the ``and not is_ready_to_go``
+    guard on the caller keeps RTG out of this path (RTG rides the
+    100% deposit row above).
+    """
+
+    from apps.client_portal.queries import formulation_display_name
+
+    lines = [
+        "=== Custom-formulation FINAL invoice (remainder after deposit) ===",
+        "This row is the second half of the customer's payment — auto-",
+        "created when they signed the FINAL specification. Approving it",
+        "unlocks the label-design workflow and pushes the production-",
+        "authorised signal to PSP.",
+        "",
+    ]
+    customer = getattr(formulation, "customer", None)
+    lines.append(f"Customer:      {_customer_label(customer)}")
+    lines.append(f"Product:       {_formulation_label(formulation)}")
+    lines.append(
+        f"FINAL spec:    {sheet.code or sheet.id} "
+        f"(signed {sheet.customer_signed_at.date() if sheet.customer_signed_at else '?'})"
+    )
+    lines.append(
+        f"Final total:   {_format_money(total, currency)} "
+        f"({int(getattr(sheet, 'quantity', 0)):,} units × "
+        f"{_format_money(getattr(sheet, 'final_price', 0), currency)}/unit)"
+    )
+    lines.append(f"Deposit paid:  {_format_money(deposit_paid, currency)}")
+    lines.append(
+        f"THIS INVOICE:  {_format_money(amount_due, currency)} "
+        "(final total − deposit paid)"
+    )
+    lines.append("")
+    lines.append("Finance next steps:")
+    lines.append(
+        "  1. Send the FINAL invoice to the customer via your usual channel."
+    )
+    lines.append(
+        "  2. Once payment lands, mark this row Approved."
+    )
+    lines.append(
+        "  3. On Approve: label workflow advances past PAYMENT_PENDING and "
+        "PSP moves the CO into production planning."
+    )
+    return "\n".join(lines)
+
+
 @transaction.atomic
 def record_payment(
     *,
@@ -271,11 +477,31 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
 
     transaction.on_commit(_fire_scientist_notification)
 
-    # Trial-batch cycle hook. Two branches, both deferred to commit
-    # so a rollback anywhere in the approve path doesn't leak a
-    # cycle create / slot append. Both branches short-circuit
-    # gracefully when the payment isn't cycle-relevant.
-    if payment.kind == PaymentKind.DEPOSIT:
+    # DEPOSIT approval routes on ``proposal.template_type`` because
+    # the same PaymentKind serves two conceptually different flows:
+    #
+    # * Custom deposit — the ~30% up-front slice that unlocks trial
+    #   batches. Seeds the trial-batch cycle + pushes deposit_paid_at
+    #   to PSP so the kanban advances into "Trial batches".
+    # * RTG deposit — the storefront checkout forces
+    #   ``deposit_percent = 100``, so the "deposit" is really the full
+    #   order invoice. RTG has no trial batches, no final-spec sign,
+    #   and no remainder FINAL invoice. Approval must therefore
+    #   trigger the SAME "production authorised" cascade Custom fires
+    #   on FINAL-payment approval: advance project_status → APPROVED,
+    #   bootstrap the LabelDesign row (spec-sign was blocked from
+    #   creating one pre-payment), and push the formulation-mirror to
+    #   PSP so the CO advances into production planning.
+    proposal_template_rtg = False
+    if payment.kind == PaymentKind.DEPOSIT and payment.proposal_id is not None:
+        from apps.proposals.models import ProposalTemplateType
+
+        proposal_template_rtg = (
+            payment.proposal.template_type
+            == ProposalTemplateType.READY_TO_GO.value
+        )
+
+    if payment.kind == PaymentKind.DEPOSIT and not proposal_template_rtg:
         def _seed_trial_batch_cycle() -> None:
             from apps.trial_batches.cycle_services import create_cycle_for_deposit
 
@@ -318,6 +544,72 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
                 )
 
         transaction.on_commit(_push_deposit_to_psp)
+    elif payment.kind == PaymentKind.DEPOSIT and proposal_template_rtg:
+        # RTG deposit approval = production-authorised cascade.
+        # Same three effects as Custom FINAL approval:
+        #   1. Advance project_status → APPROVED so the label
+        #      bootstrap's gate opens.
+        #   2. Bootstrap the LabelDesign row (spec-sign was blocked
+        #      from creating one pre-payment). ``bootstrap_for_spec``
+        #      sees deposit_percent = 100 and jumps straight to
+        #      LABEL_PATH_PENDING, skipping the PAYMENT_PENDING gate
+        #      — the invoice is already paid, so the customer's next
+        #      step is "pick a path".
+        #   3. Push the formulation-mirror to PSP so the mirrored CO
+        #      moves out of ``:awaiting_customer_signature`` into
+        #      ``:production_planning``.
+        formulation_pk = payment.formulation_id or (
+            payment.proposal.formulation_version.formulation_id
+            if payment.proposal_id
+            and payment.proposal.formulation_version_id
+            else None
+        )
+        if formulation_pk is not None:
+            def _rtg_production_authorised() -> None:
+                from apps.formulations.models import (
+                    Formulation as _Formulation,
+                    ProjectStatus,
+                )
+                from apps.formulations.services import (
+                    _maybe_advance_project_status,
+                )
+                from apps.label_design.services import (
+                    bootstrap_for_formulation,
+                )
+
+                fresh = _Formulation.objects.filter(pk=formulation_pk).first()
+                if fresh is None:
+                    return
+                try:
+                    _maybe_advance_project_status(
+                        formulation=fresh,
+                        target_status=ProjectStatus.APPROVED.value,
+                        actor=actor,
+                    )
+                except Exception:  # noqa: BLE001 — never break approve
+                    logger.exception(
+                        "RTG deposit approval: project_status advance "
+                        "bubbled for formulation %s",
+                        formulation_pk,
+                    )
+                try:
+                    bootstrap_for_formulation(fresh)
+                except Exception:  # noqa: BLE001 — never break approve
+                    logger.exception(
+                        "RTG deposit approval: label_design bootstrap "
+                        "bubbled for formulation %s",
+                        formulation_pk,
+                    )
+                try:
+                    _sync_formulation_proposal_to_psp(fresh)
+                except Exception:  # noqa: BLE001 — never break approve
+                    logger.exception(
+                        "RTG deposit approval: PSP sync bubbled for "
+                        "formulation %s",
+                        formulation_pk,
+                    )
+
+            transaction.on_commit(_rtg_production_authorised)
     elif payment.kind == PaymentKind.ADDITIONAL_SAMPLES:
         def _apply_additional_samples() -> None:
             from apps.trial_batches.cycle_services import (
@@ -651,23 +943,51 @@ def ensure_pending_deposit_payment(*, proposal, actor=None) -> Payment | None:
     total = Decimal(total)
     percent = Decimal(proposal.deposit_percent or 0)
     expected_amount = (total * percent / Decimal("100")).quantize(Decimal("0.01"))
+    currency = getattr(proposal, "currency", "GBP")
+    # Set the ``formulation`` FK on the payment so the PSP-sync
+    # payload builder ``_bundled_deposit_paid_at`` can find it. That
+    # helper filters ``Payment.objects.filter(formulation_id__in=...)``
+    # by the proposal's formulations — without the FK set, an approved
+    # RTG deposit is invisible to it and ``npd_deposit_paid_at`` stays
+    # null on PSP, so PSP's kanban never advances the CO past
+    # ``:proposal_accepted``. Custom deposits landed via a different
+    # code path that always set the FK; this hook needs to match.
+    #
+    # We pin the FK to the first line's formulation. RTG proposals are
+    # single-line by construction (one storefront cart line ⇒ one
+    # proposal ⇒ one line — see ``_create_line_proposal`` in
+    # ``client_portal/checkout_services.py``), so this reads the only
+    # formulation there is. Multi-line Custom bundles keep firing this
+    # helper through their own path and won't come through this branch
+    # because the sample-selection service creates the bundled deposit
+    # payment WITH ``formulation`` already set — see
+    # ``ensure_bundled_deposit_payment_for_formulation``.
+    formulation = None
+    first_line = proposal.lines.select_related(
+        "formulation_version__formulation"
+    ).order_by("id").first()
+    if first_line and first_line.formulation_version_id:
+        formulation = first_line.formulation_version.formulation
     payment = Payment.objects.create(
         organization=proposal.organization,
         kind=PaymentKind.DEPOSIT,
         proposal=proposal,
+        formulation=formulation,
         customer=getattr(proposal, "customer", None),
         amount=expected_amount,
-        currency=getattr(proposal, "currency", "GBP"),
+        currency=currency,
         method=PaymentMethod.BANK_TRANSFER,
         paid_at=timezone.now(),
         recorded_by=actor
         or getattr(proposal, "updated_by", None)
         or getattr(proposal, "created_by", None),
         status=PaymentStatus.PENDING,
-        notes=(
-            f"Auto-created on customer kiosk sign of {proposal.code}. "
-            f"Expected {expected_amount} {getattr(proposal, 'currency', 'GBP')} "
-            f"({percent}% deposit)."
+        notes=_build_deposit_notes(
+            proposal=proposal,
+            amount=expected_amount,
+            currency=currency,
+            percent=percent,
+            total=total,
         ),
     )
     # Same live push as :func:`record_payment` — deposit rows created
@@ -1107,23 +1427,37 @@ def ensure_bundled_deposit_payment_for_formulation(
         getattr(proposal, "currency", None) or "GBP"
     ).upper()[:3]
 
+    customer = getattr(proposal, "customer", None)
+    samples_line = (
+        f"Samples ({samples_qty} units, discount already applied) = "
+        f"{_format_money(samples_amount, currency)}"
+        if samples_amount > 0
+        else f"Samples ({samples_qty} units, all within free allowance) = "
+        f"{_format_money(Decimal('0'), currency)}"
+    )
     notes_parts = [
-        f"Auto-created on customer sample-selection confirm for "
-        f"{proposal.code}.",
-        f"Deposit ({percent}% of {total_excl_vat} {currency}) = "
-        f"{deposit_amount} {currency}.",
+        "=== Custom-formulation bundled deposit + samples invoice ===",
+        "The customer confirmed their trial-sample quantity, so we're",
+        "bundling the R&D deposit and any paid-samples top-up into a",
+        "single invoice. Approving this row unlocks the trial-batch",
+        "cycle for the R&D team.",
+        "",
+        f"Customer:      {_customer_label(customer)}",
+        f"Product:       {_formulation_label(formulation)}",
+        f"Proposal:      {proposal.code or proposal.id}",
+        f"Order total:   {_format_money(total_excl_vat, currency)} "
+        "(subtotal + freight, excl. VAT)",
+        f"Deposit line:  {_format_money(deposit_amount, currency)} "
+        f"({percent}% of order total)",
+        f"Samples line:  {samples_line}",
+        f"THIS INVOICE:  {_format_money(total, currency)}",
+        "",
+        "Finance next steps:",
+        "  1. Send the invoice to the customer via your usual channel.",
+        "  2. Mark Approved once payment lands.",
+        "  3. On Approve: R&D is unblocked to schedule the first trial",
+        "     batch and the sample production starts.",
     ]
-    if samples_amount > 0:
-        notes_parts.append(
-            f"Samples ({samples_qty} units, discount already applied) = "
-            f"{samples_amount} {currency}."
-        )
-    else:
-        notes_parts.append(
-            f"Samples ({samples_qty} units, all within free allowance) = "
-            f"0.00 {currency}."
-        )
-    notes_parts.append(f"Total to invoice: {total} {currency}.")
 
     payment = Payment.objects.create(
         organization=proposal.organization,
@@ -1382,14 +1716,6 @@ def ensure_final_payment_for_formulation(
         or getattr(formulation, "created_by", None)
     )
 
-    notes_parts = [
-        f"Auto-created on customer signature of final spec {sheet.code or sheet.id}.",
-        f"Final spec total ({sheet.quantity} × {sheet.final_price} {currency}) "
-        f"= {total} {currency}.",
-        f"Deposit already paid = {deposit_paid} {currency}.",
-        f"Amount due on this invoice: {amount_due} {currency}.",
-    ]
-
     payment = Payment.objects.create(
         organization=formulation.organization,
         kind=PaymentKind.FINAL,
@@ -1401,7 +1727,14 @@ def ensure_final_payment_for_formulation(
         paid_at=timezone.now(),
         recorded_by=recorded_by,
         status=PaymentStatus.PENDING,
-        notes="\n".join(notes_parts),
+        notes=_build_final_payment_notes(
+            formulation=formulation,
+            sheet=sheet,
+            total=total,
+            deposit_paid=deposit_paid,
+            amount_due=amount_due,
+            currency=currency,
+        ),
     )
     schedule_payment_changed_broadcast(payment, "created")
     return payment
@@ -1457,9 +1790,25 @@ def ensure_label_design_payment_for_formulation(
         or getattr(formulation, "created_by", None)
     )
 
-    notes = (
-        "Auto-created when customer chose ‘Vita designs’ on the "
-        "label workflow. Approval unlocks the design brief step."
+    notes = "\n".join(
+        [
+            "=== Label-design fee (customer picked ‘Vita designs’) ===",
+            "The customer chose to have our design team produce the",
+            "artwork rather than uploading their own. This row is the",
+            "design fee — approving it unlocks the design-brief step",
+            "on the label workflow so the customer can send us their",
+            "brand colours, style, and inspirational examples.",
+            "",
+            f"Customer:      {_customer_label(customer)}",
+            f"Product:       {_formulation_label(formulation)}",
+            f"THIS INVOICE:  {_format_money(amount, currency)}",
+            "",
+            "Finance next steps:",
+            "  1. Send the design-fee invoice to the customer.",
+            "  2. Mark Approved once payment lands.",
+            "  3. On Approve: the design team is unblocked and the",
+            "     customer sees ‘Share your design brief’ on the portal.",
+        ]
     )
 
     payment = Payment.objects.create(

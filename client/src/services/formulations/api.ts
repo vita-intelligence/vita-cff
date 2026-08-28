@@ -160,6 +160,88 @@ export async function fetchRtgCatalogCounts(
 
 
 /**
+ * One row on the staff RTG catalog grid. Trimmed to the card fields
+ * the ``CatalogCard`` component actually renders — no recipe lines,
+ * no allergen matrix, no M2M excipient echoes. The backend endpoint
+ * ``rtg-catalog-list/`` ships exactly this shape via
+ * :class:`RTGCatalogListSerializer`, so wire changes stay in lock-step.
+ */
+export interface RTGCatalogRowDto {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+  readonly is_rtg_published: boolean;
+  readonly rtg_display_name: string;
+  readonly rtg_short_description: string;
+  readonly rtg_hero_image: string | null;
+  readonly rtg_base_price: string | null;
+  readonly rtg_moq: number | null;
+  readonly rtg_currency_code: string;
+  readonly rtg_packaging_options: readonly string[];
+  readonly packaging_combos_count: number;
+  readonly catalog_photos: readonly {
+    readonly id: string;
+    readonly url: string | null;
+    readonly caption: string;
+    readonly is_primary: boolean;
+    readonly sort_order: number;
+  }[];
+  readonly updated_at: string;
+}
+
+
+export interface PaginatedRTGCatalogDto {
+  readonly next: string | null;
+  readonly previous: string | null;
+  readonly results: readonly RTGCatalogRowDto[];
+}
+
+
+export interface FetchRTGCatalogPageArgs {
+  readonly pageSize?: number;
+  readonly search?: string;
+  readonly isRtgPublished?: boolean;
+  /** Full ``next``/``previous`` URL from a prior cursor response. */
+  readonly cursorUrl?: string | null;
+}
+
+
+/**
+ * Fetch one page of the staff RTG catalog grid.
+ *
+ * Points at the dedicated ``rtg-catalog-list/`` endpoint whose
+ * queryset skips the 13 M2M prefetches + the 4 per-row derived checks
+ * that the general formulation list serializer emits — so the catalog
+ * scales cleanly into the millions of SKUs without dragging the
+ * general list endpoint down.
+ */
+export async function fetchRTGCatalogPage(
+  orgId: string,
+  args: FetchRTGCatalogPageArgs = {},
+): Promise<PaginatedRTGCatalogDto> {
+  if (args.cursorUrl) {
+    const url = new URL(args.cursorUrl, "http://placeholder.local");
+    const { data } = await apiClient.get<PaginatedRTGCatalogDto>(
+      `${url.pathname}${url.search}`,
+    );
+    return data;
+  }
+
+  const params: Record<string, string> = {};
+  if (args.pageSize) params.page_size = String(args.pageSize);
+  if (args.search && args.search.trim()) params.search = args.search.trim();
+  if (typeof args.isRtgPublished === "boolean") {
+    params.is_rtg_published = args.isRtgPublished ? "true" : "false";
+  }
+  const { data } = await apiClient.get<PaginatedRTGCatalogDto>(
+    `/api/organizations/${orgId}/formulations/rtg-catalog-list/`,
+    { params },
+  );
+  return data;
+}
+
+
+/**
  * @deprecated Use :func:`fetchFormulationsPage` — the list endpoint
  * is paginated and this helper just flattens the first page.
  */

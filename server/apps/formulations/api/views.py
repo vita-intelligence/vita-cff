@@ -20,6 +20,7 @@ from rest_framework.views import APIView
 from apps.formulations.api.pagination import FormulationCursorPagination
 from apps.formulations.api.permissions import HasFormulationsPermission
 from apps.formulations.api.rtg_permissions import HasRTGCatalogPermission
+from apps.formulations.models import ProjectType
 from apps.formulations.api.serializers import (
     FormulationLineWriteSerializer,
     FormulationReadSerializer,
@@ -27,6 +28,7 @@ from apps.formulations.api.serializers import (
     FormulationWriteSerializer,
     ReplaceLinesSerializer,
     RollbackVersionSerializer,
+    RTGCatalogListSerializer,
     SetApprovedVersionSerializer,
     SaveVersionSerializer,
     WizardRoutingSerializer,
@@ -173,6 +175,100 @@ class RtgCatalogCountsView(APIView):
                 "unpublished": total - published,
             }
         )
+
+
+class RTGCatalogListView(APIView):
+    """``GET /api/organizations/<org>/formulations/rtg-catalog-list/``.
+
+    Lean list endpoint for the staff RTG catalog grid. Purpose-built
+    to keep a million-SKU tenant snappy:
+
+    * **Composite index** — every query rides
+      ``formulations_rtg_catalog_idx`` on ``(organization, project_type,
+      is_rtg_published, -updated_at)``. No heap filter, no sort.
+    * **No M2M prefetch** — the full formulation list serializer echoes
+      13 M2M pick lists (gummy base, flavouring, colour, …) that the
+      RTG card never renders. This view skips them entirely.
+    * **Annotated count** — ``packaging_combos_count`` folds into the
+      main SELECT as one JOIN COUNT instead of the read serializer's
+      per-row ``.count()`` (N+1 → 1).
+    * **Scoped photo prefetch** — ``catalog_photos`` is a single
+      ``Prefetch(purpose=CATALOG)`` for the whole page instead of one
+      filter query per row.
+    * **Cursor pagination** — no ``OFFSET`` skew as the catalog grows.
+
+    Filters: ``is_rtg_published=true|false`` for the tab pills;
+    ``search`` for name / code substring. Both are optional; the base
+    always pins ``project_type='ready_to_go'`` because that's the
+    whole point of this endpoint.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str) -> Response:
+        from django.db.models import Count, Prefetch, Q
+
+        from apps.formulations.models import Formulation, FormulationPhoto
+
+        queryset = (
+            Formulation.objects.filter(
+                organization=self.organization,
+                project_type=ProjectType.READY_TO_GO,
+            )
+            .annotate(packaging_combos_count=Count("packaging_combos"))
+            .prefetch_related(
+                Prefetch(
+                    "photos",
+                    queryset=FormulationPhoto.objects.filter(
+                        purpose=FormulationPhoto.Purpose.CATALOG,
+                    ).order_by("-is_primary", "sort_order", "uploaded_at"),
+                    to_attr="_prefetched_catalog_photos",
+                ),
+            )
+            .only(
+                # Column-level trim — the model has ~80 columns and the
+                # card renderer touches ~13. Keeping the SELECT list
+                # narrow saves both bytes over the wire and CPU on the
+                # Postgres side once tenants pass ~100k RTG rows.
+                "id",
+                "code",
+                "name",
+                "is_rtg_published",
+                "rtg_display_name",
+                "rtg_short_description",
+                "rtg_hero_image",
+                "rtg_base_price",
+                "rtg_moq",
+                "rtg_currency_code",
+                "rtg_packaging_options",
+                "updated_at",
+                "organization_id",
+                "project_type",
+            )
+        )
+
+        raw_search = (request.query_params.get("search") or "").strip()
+        if raw_search:
+            queryset = queryset.filter(
+                Q(name__icontains=raw_search) | Q(code__icontains=raw_search)
+            )
+
+        raw_is_pub = request.query_params.get("is_rtg_published")
+        if raw_is_pub is not None:
+            lowered = raw_is_pub.strip().lower()
+            if lowered in {"true", "1", "yes"}:
+                queryset = queryset.filter(is_rtg_published=True)
+            elif lowered in {"false", "0", "no"}:
+                queryset = queryset.filter(is_rtg_published=False)
+            # Anything else falls through as "no filter" — matches the
+            # defensive policy on ``FormulationListCreateView`` so a
+            # typo doesn't 400 the whole page.
+
+        paginator = FormulationCursorPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        serializer = RTGCatalogListSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 
 class FormulationListCreateView(APIView):

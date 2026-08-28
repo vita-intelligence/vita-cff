@@ -99,6 +99,37 @@ def customer_ids_for_account(account) -> list:
     return [canonical_id, *sibling_ids]
 
 
+def formulation_display_name(formulation) -> str:
+    """Customer-friendly title for a formulation.
+
+    Prefers ``rtg_display_name`` on Ready-to-Go SKUs so the portal
+    reads "Ultimate Fat Burner Drink" instead of the internal
+    ``RTG00001`` code. Falls back to the ``name`` column, then to
+    ``code``, then to a hardcoded placeholder — so a partially-
+    populated row can never render as an empty string.
+
+    Shared by the dashboard, activity feed, and per-project detail
+    view so every portal surface labels the same SKU consistently.
+    Extracted from the earlier ``_formulation_display_name`` helper
+    that lived inside ``activity_views``; kept as a top-level export
+    so other views don't have to reach into a sibling's private
+    namespace.
+    """
+
+    if formulation is None:
+        return ""
+    project_type = getattr(formulation, "project_type", "") or ""
+    if project_type == "ready_to_go":
+        display = (getattr(formulation, "rtg_display_name", "") or "").strip()
+        if display:
+            return display
+    name = (getattr(formulation, "name", "") or "").strip()
+    if name:
+        return name
+    code = (getattr(formulation, "code", "") or "").strip()
+    return code or "Untitled product"
+
+
 def formulation_ids_for_customer(customer_ids: Iterable[UUID]) -> set:
     """Return every formulation id the customer rows can see.
 

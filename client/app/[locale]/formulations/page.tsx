@@ -70,7 +70,7 @@ export default async function FormulationsListPage({
 
   const initialFirstPage = await getFormulationsFirstPageServer(
     primaryOrg.id,
-    { ordering: "-updated_at", pageSize: 50 },
+    { ordering: "-updated_at", pageSize: 50, projectType: "custom" },
   );
   const canWrite = level === "write" || level === "admin";
 

@@ -55,7 +55,12 @@ export const specificationsQueryKeys = {
   // queue (e.g. the director's approvals inbox) in one call.
   infiniteAll: (orgId: string) =>
     [...specificationsQueryKeys.all, orgId, "infinite"] as const,
-  infinite: (orgId: string, status?: string, search?: string) =>
+  infinite: (
+    orgId: string,
+    status?: string,
+    search?: string,
+    formulationId?: string,
+  ) =>
     [
       ...specificationsQueryKeys.all,
       orgId,
@@ -65,6 +70,9 @@ export const specificationsQueryKeys = {
       //: substrings each get their own paginated result set. Empty
       //: string is the "no filter" bucket.
       search ?? "",
+      //: ``formulationId`` keys the per-project spec-sheets tab so it
+      //: doesn't collide with the org-wide list cache.
+      formulationId ?? "",
     ] as const,
   detail: (orgId: string, sheetId: string) =>
     [...specificationsQueryKeys.all, orgId, "detail", sheetId] as const,
@@ -87,12 +95,18 @@ export function useInfiniteSpecifications(
     initialFirstPage?: PaginatedSpecificationsDto | null;
     status?: string;
     search?: string;
+    /** Optional per-project scope — drives the workspace Spec Sheets
+     *  tab so it lists only sheets built against this project's
+     *  versions. Wraps the same ``?formulation_id=`` filter the SSR
+     *  seed uses so client-side pagination stays in lock-step. */
+    formulationId?: string;
   } = {},
 ): UseInfiniteQueryResult<
   InfiniteData<PaginatedSpecificationsDto, string | null>,
   ApiError
 > {
-  const { pageSize, initialFirstPage, status, search } = options;
+  const { pageSize, initialFirstPage, status, search, formulationId } =
+    options;
   return useInfiniteQuery<
     PaginatedSpecificationsDto,
     ApiError,
@@ -100,12 +114,18 @@ export function useInfiniteSpecifications(
     readonly unknown[],
     string | null
   >({
-    queryKey: specificationsQueryKeys.infinite(orgId, status, search),
+    queryKey: specificationsQueryKeys.infinite(
+      orgId,
+      status,
+      search,
+      formulationId,
+    ),
     queryFn: ({ pageParam }) =>
       fetchSpecificationsPage(orgId, {
         pageSize,
         status,
         search,
+        formulationId,
         cursorUrl: pageParam ?? undefined,
       }),
     initialPageParam: null as string | null,

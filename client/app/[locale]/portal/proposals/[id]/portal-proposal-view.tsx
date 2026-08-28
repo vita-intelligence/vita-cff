@@ -65,6 +65,12 @@ interface PortalProposalDto {
   readonly id: string;
   readonly code: string;
   readonly status: string;
+  //: Custom vs Ready-to-Go template. Drives the acknowledgement
+  //: copy swap below — RTG customers see order-flow language + no
+  //: R&D confidentiality row because those orders skip bespoke
+  //: development entirely. Emitted by the backend renderer at
+  //: ``apps.proposals.api.views._render_public_proposal_payload``.
+  readonly template_type: string | null;
   //: NPD's own portal navigates around projects — from a proposal
   //: the back link routes here so the customer's mental model is
   //: "always one step back to the project", never to a proposal
@@ -130,8 +136,16 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
     load();
   }, [load]);
 
-  const acksAllTicked =
-    acks.spec && acks.leadTimes && acks.terms && acks.rdTerms;
+  // RTG orders don't route through R&D — the confidentiality
+  // acknowledgement is dropped on those proposals, so ``acksAllTicked``
+  // only requires the three commercial+spec+lead-times boxes when
+  // ``template_type === "ready_to_go"``. Falls back to the four-ack
+  // gate on Custom projects so bespoke development still requires the
+  // R&D opt-in.
+  const isRtg = proposal?.template_type === "ready_to_go";
+  const acksAllTicked = isRtg
+    ? acks.spec && acks.leadTimes && acks.terms
+    : acks.spec && acks.leadTimes && acks.terms && acks.rdTerms;
 
   const allSigned = Boolean(
     proposal?.has_signature
@@ -150,25 +164,34 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         ack_rd_terms: acks.rdTerms,
       });
       setPending(false);
+      // Chain finalize onto the same click. The spec sheets are
+      // signed first (enforced by the FE ``allSpecsSigned`` gate +
+      // the backend ``sign_spec_first`` guard), so by the time the
+      // proposal signature lands every document is signed and the
+      // deal is ready to accept. A single click covers "I signed
+      // the paper" AND "I'm committing" — no separate Accept step
+      // needed. The finalize hook is what materialises the DEPOSIT
+      // Payment on finance's queue and pushes the accepted state to
+      // PSP; without this chain the customer sees the roadmap
+      // freeze at "awaiting acceptance" with nothing else to click.
+      try {
+        await apiClient.post(
+          `/api/portal/proposals/${proposalId}/finalize/`,
+          {},
+        );
+        setFinalized(true);
+      } catch (finalizeErr: unknown) {
+        // Surface finalize failure through the same error banner so
+        // the customer sees the retry path. Signature capture
+        // already succeeded, so ``load()`` below still updates the
+        // roadmap to reflect that.
+        setActionError(portalErrorMessage(finalizeErr));
+      }
       await load();
     } catch (err: unknown) {
       setActionError(portalErrorMessage(err));
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function onAccept() {
-    setActionError(null);
-    setFinalizing(true);
-    try {
-      await apiClient.post(`/api/portal/proposals/${proposalId}/finalize/`, {});
-      setFinalized(true);
-      await load();
-    } catch (err: unknown) {
-      setActionError(portalErrorMessage(err));
-    } finally {
-      setFinalizing(false);
     }
   }
 
@@ -190,13 +213,21 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
   const isAccepted = finalized || proposal.status === "accepted";
   const isRejected = proposal.status === "rejected";
   const isDone = isAccepted || isRejected;
+  const signedSpecs = proposal.attached_specs.filter((s) => s.has_signature).length;
+  const totalSpecs = proposal.attached_specs.length;
+  //: Specs must land before the proposal signature. Custom projects
+  //: attach a DRAFT spec at proposal time; RTG orders attach a FINAL
+  //: spec cloned from the SKU template. The backend enforces the
+  //: same order via ``sign_spec_first`` (409) — the FE gate here
+  //: keeps the button visibly disabled so the customer sees the
+  //: prerequisite before they click.
+  const allSpecsSigned = totalSpecs === 0 || signedSpecs === totalSpecs;
   const canSignProposal =
     !proposal.has_signature
     && proposal.status === "sent"
     && acksAllTicked
-    && proposalRead;
-  const signedSpecs = proposal.attached_specs.filter((s) => s.has_signature).length;
-  const totalSpecs = proposal.attached_specs.length;
+    && proposalRead
+    && allSpecsSigned;
 
   return (
     <div className="flex flex-col gap-8">
@@ -238,16 +269,34 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
               Step-by-step
             </div>
           </div>
+          {/* Ordering matters: specs must be signed BEFORE the
+              proposal (the backend blocks proposal-sign with a 409
+              ``sign_spec_first`` otherwise). Custom flow signs a
+              DRAFT spec here; RTG signs the FINAL clone the
+              storefront attached at checkout. Either way, the
+              customer's commitment to the recipe lands first, the
+              commercial commitment lands second. */}
           <ol className="grid gap-2 sm:grid-cols-2">
             <StepRow n={1} text="Read the proposal." done={proposalRead} />
-            <StepRow n={2} text="Tick the four acknowledgements." done={acksAllTicked} />
-            <StepRow n={3} text="Sign the proposal." done={proposal.has_signature} />
             <StepRow
-              n={4}
+              n={2}
+              text={
+                isRtg
+                  ? "Tick the three acknowledgements."
+                  : "Tick the four acknowledgements."
+              }
+              done={acksAllTicked}
+            />
+            <StepRow
+              n={3}
               text={`Sign each specification (${signedSpecs}/${totalSpecs}).`}
               done={totalSpecs > 0 && signedSpecs === totalSpecs}
             />
-            <StepRow n={5} text="Accept or decline." done={isDone} />
+            <StepRow
+              n={4}
+              text="Sign & finalise the proposal."
+              done={isDone}
+            />
           </ol>
         </Card>
       ) : null}
@@ -272,44 +321,161 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         />
       </Card>
 
+      {/* Specifications — moved ABOVE the acks card so the customer
+          walks the flow in one linear direction: read → sign each
+          spec → then and only then see the acks + Continue button.
+          The old order (acks card above, specs below) made customers
+          tick every ack, hit Continue, and get a silently-disabled
+          button — no explanation of why. Now: when specs are still
+          pending, this is the single visible next step; the acks
+          card below stays hidden until every spec is signed. */}
+      {totalSpecs > 0 && !proposal.has_signature ? (
+        <Card
+          className={
+            !allSpecsSigned
+              ? "border-4 border-orange-500 shadow-[6px_6px_0_#000]"
+              : undefined
+          }
+        >
+          <div className="mb-4 flex items-end justify-between">
+            <div>
+              <Eyebrow>
+                {allSpecsSigned
+                  ? "02 / Specifications signed"
+                  : "02 / Start here — sign your specification"}
+              </Eyebrow>
+              <h2 className="mt-1 text-xl font-black uppercase tracking-tight">
+                {allSpecsSigned
+                  ? "Every specification is signed"
+                  : totalSpecs === 1
+                    ? "Sign your specification"
+                    : "Sign each specification"}
+              </h2>
+            </div>
+            <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-600">
+              {signedSpecs} / {totalSpecs} signed
+            </span>
+          </div>
+          <p className="mb-5 max-w-prose text-sm leading-relaxed text-neutral-700">
+            {allSpecsSigned
+              ? "Great — the recipe is locked. Continue to the acknowledgements below to sign the proposal."
+              : "This is your first step. Each specification opens on its own page — read it, then sign. Once every specification is signed the proposal signing step will unlock below."}
+          </p>
+          <ul className="grid gap-3">
+            {proposal.attached_specs.map((spec, i) => (
+              <li key={spec.id}>
+                <Link
+                  href={`/portal/specs/${spec.id}`}
+                  className={`flex items-center justify-between gap-4 border-2 border-black p-4 transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[5px_5px_0_#000] ${
+                    spec.has_signature ? "bg-black text-white" : "bg-white text-black"
+                  }`}
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center border-2 text-sm font-black ${
+                        spec.has_signature
+                          ? "border-white bg-white text-black"
+                          : "border-black bg-paper text-black"
+                      }`}
+                    >
+                      {spec.has_signature ? <CheckCircle2 className="h-4 w-4" /> : i + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
+                        {spec.code || `Spec ${i + 1}`}
+                      </div>
+                      <div className="truncate text-sm font-black uppercase tracking-tight">
+                        {spec.formulation_name || spec.code || "Specification"}
+                      </div>
+                    </div>
+                  </div>
+                  {/* Sign / view CTA — highlighted while unsigned so
+                      the customer sees exactly one clickable target. */}
+                  {spec.has_signature ? (
+                    <span className="inline-flex shrink-0 items-center gap-2 text-[11px] font-bold uppercase tracking-widest">
+                      Signed <ArrowRight className="h-4 w-4" />
+                    </span>
+                  ) : (
+                    <span className="inline-flex shrink-0 items-center gap-2 border-2 border-black bg-orange-500 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-black">
+                      Sign now <ArrowRight className="h-4 w-4" />
+                    </span>
+                  )}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
+
       {/* Acks + continue-to-signing. The button on this card does
           NOT sign the proposal — it opens the signature dialog,
           where the customer actually draws + confirms. Wording
           matters: an earlier version that said "Sign proposal"
           here made customers feel like ticking the boxes was the
           sign, so the heading + CTA both explicitly call out
-          "before you sign" / "continue to signing". */}
-      {!proposal.has_signature ? (
+          "before you sign" / "continue to signing".
+
+          Gated on ``allSpecsSigned`` — the whole card is hidden
+          until every attached spec has a customer signature. This is
+          the linear-flow rule the customer wants to be walked
+          through: sign spec → THEN see the acks + Continue button.
+          A locked button with a "sign spec first" hint below still
+          leaves the customer wondering why the system feels broken;
+          collapsing the card entirely removes that failure mode. */}
+      {!proposal.has_signature && allSpecsSigned ? (
         <Card>
-          <Eyebrow>02 / Before you sign</Eyebrow>
+          <Eyebrow>03 / Sign & finalise</Eyebrow>
           <h2 className="mt-1 mb-4 text-xl font-black uppercase tracking-tight">
-            Acknowledge, then continue to signing
+            Acknowledge, then sign to commit
           </h2>
           <p className="mb-5 max-w-prose text-sm leading-relaxed text-neutral-700">
             Tick every statement to unlock the signing step — you&rsquo;ll
-            draw your signature on the next screen.
+            draw your signature on the next screen. The proposal is
+            the last document you sign, so this click also commits to
+            the order: we&rsquo;ll generate the invoice on our finance
+            queue and start the production workflow.
           </p>
+          {/* RTG orders swap the four Custom ack rows for three
+              order-flow-specific ones — no R&D confidentiality box
+              because RTG SKUs skip bespoke development. Copy matches
+              the web-site portal's ``PROPOSAL_ACKS`` array word-for-
+              word so both surfaces speak the same commercial
+              language. */}
           <div className="flex flex-col gap-3">
             <AckRow
               checked={acks.spec}
               onChange={(v) => setAcks((s) => ({ ...s, spec: v }))}
-              text="I will sign each attached specification sheet."
+              text={
+                isRtg
+                  ? "I understand that before label printing, Production Specification Sheets must be signed, and label designs must be reviewed and approved. Placing an order initiates the development phase, during which Product Specification Sheets are finalized, and label guidelines are provided to facilitate label design, review, and approval."
+                  : "I will sign each attached specification sheet."
+              }
             />
             <AckRow
               checked={acks.leadTimes}
               onChange={(v) => setAcks((s) => ({ ...s, leadTimes: v }))}
-              text="I have read and accept the lead times and delivery schedule."
+              text={
+                isRtg
+                  ? "I understand that manufacturing lead times commence once the Product Specification Sheet(s) are signed and not before."
+                  : "I have read and accept the lead times and delivery schedule."
+              }
             />
             <AckRow
               checked={acks.terms}
               onChange={(v) => setAcks((s) => ({ ...s, terms: v }))}
-              text="I accept the commercial terms and pricing."
+              text={
+                isRtg
+                  ? "I have read the terms and conditions which can be found below."
+                  : "I accept the commercial terms and pricing."
+              }
             />
-            <AckRow
-              checked={acks.rdTerms}
-              onChange={(v) => setAcks((s) => ({ ...s, rdTerms: v }))}
-              text="I accept the R&D and confidentiality terms."
-            />
+            {!isRtg ? (
+              <AckRow
+                checked={acks.rdTerms}
+                onChange={(v) => setAcks((s) => ({ ...s, rdTerms: v }))}
+                text="I accept the R&D and confidentiality terms."
+              />
+            ) : null}
           </div>
           {/* Static reference to the live website T&Cs + Privacy.
               These aren't tickboxes because they're not proposal-
@@ -345,92 +511,66 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
               onClick={() => setPending(true)}
             >
               <PenLine className="h-4 w-4" />
-              Continue to signing
+              Sign & finalise
             </PortalButton>
+            {/* At this point specs are already signed (the whole card
+                is gated on ``allSpecsSigned``), so blockers are just
+                proposal-read + acks. Ordered by resolution priority
+                so the customer sees the actionable one first. */}
             {!proposalRead ? (
               <p className="mt-2 text-[11px] uppercase tracking-widest text-neutral-600">
                 Scroll to the bottom of the proposal to enable signing.
+              </p>
+            ) : !acksAllTicked ? (
+              <p className="mt-2 text-[11px] uppercase tracking-widest text-neutral-600">
+                Tick every acknowledgement above to enable signing.
               </p>
             ) : null}
           </div>
         </Card>
       ) : null}
 
-      {/* Attached specs — link list */}
-      {totalSpecs > 0 ? (
-        <Card>
-          <div className="mb-4 flex items-end justify-between">
-            <div>
-              <Eyebrow>03 / Specifications</Eyebrow>
-              <h2 className="mt-1 text-xl font-black uppercase tracking-tight">
-                Sign each specification
-              </h2>
-            </div>
-            <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-600">
-              {signedSpecs} / {totalSpecs} signed
-            </span>
-          </div>
-          <p className="mb-5 max-w-prose text-sm leading-relaxed text-neutral-700">
-            Each specification opens on its own page so you can read and
-            sign one at a time.
-          </p>
-          <ul className="grid gap-3">
-            {proposal.attached_specs.map((spec, i) => (
-              <li key={spec.id}>
-                <Link
-                  href={`/portal/specs/${spec.id}`}
-                  className={`flex items-center justify-between gap-4 border-2 border-black p-4 transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[5px_5px_0_#000] ${
-                    spec.has_signature ? "bg-black text-white" : "bg-white text-black"
-                  }`}
-                >
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span
-                      className={`flex h-9 w-9 shrink-0 items-center justify-center border-2 text-sm font-black ${
-                        spec.has_signature
-                          ? "border-white bg-white text-black"
-                          : "border-black bg-paper text-black"
-                      }`}
-                    >
-                      {spec.has_signature ? <CheckCircle2 className="h-4 w-4" /> : i + 1}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
-                        {spec.code || `Spec ${i + 1}`}
-                      </div>
-                      <div className="truncate text-sm font-black uppercase tracking-tight">
-                        {spec.formulation_name || spec.code || "Specification"}
-                      </div>
-                    </div>
-                  </div>
-                  <ArrowRight className="h-5 w-5 shrink-0" />
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      ) : null}
-
-      {/* Accept / Decline */}
+      {/* Terminal-state banner + retry surface. In the happy path the
+          proposal signature click auto-finalises (see ``onSign``), so
+          this card renders one of two terminal badges once the deal
+          closes. It only surfaces the "Accept & finalise" button as a
+          RETRY when the sign call succeeded but the follow-up
+          finalize failed — that's the only window where the
+          customer has a captured signature and a non-terminal
+          status. Decline stays as a standalone link so the customer
+          can back out of the deal before signing anything. */}
       <Card>
         <Eyebrow>04 / Your decision</Eyebrow>
-        <h2 className="mt-1 mb-3 text-xl font-black uppercase tracking-tight">
-          Accept or decline
-        </h2>
         {isAccepted ? (
-          <div className="border-2 border-black bg-black px-4 py-3 text-sm font-bold uppercase tracking-widest text-white">
-            <CheckCircle2 className="mr-2 inline h-4 w-4" />
-            Accepted — Vita has been notified.
-          </div>
-        ) : isRejected ? (
-          <div className="border-2 border-black bg-red-700 px-4 py-3 text-sm font-bold uppercase tracking-widest text-white">
-            <XCircle className="mr-2 inline h-4 w-4" />
-            Declined — Vita has been notified.
-          </div>
-        ) : (
           <>
+            <h2 className="mt-1 mb-3 text-xl font-black uppercase tracking-tight">
+              Accepted
+            </h2>
+            <div className="border-2 border-black bg-black px-4 py-3 text-sm font-bold uppercase tracking-widest text-white">
+              <CheckCircle2 className="mr-2 inline h-4 w-4" />
+              Vita has been notified.
+            </div>
+          </>
+        ) : isRejected ? (
+          <>
+            <h2 className="mt-1 mb-3 text-xl font-black uppercase tracking-tight">
+              Declined
+            </h2>
+            <div className="border-2 border-black bg-red-700 px-4 py-3 text-sm font-bold uppercase tracking-widest text-white">
+              <XCircle className="mr-2 inline h-4 w-4" />
+              Vita has been notified.
+            </div>
+          </>
+        ) : proposal.has_signature ? (
+          <>
+            <h2 className="mt-1 mb-3 text-xl font-black uppercase tracking-tight">
+              Retry finalising
+            </h2>
             <p className="mb-5 max-w-prose text-sm leading-relaxed text-neutral-700">
-              When every document above is signed, accept the proposal to
-              confirm the deal. Or decline if something isn't right.
+              We captured your signature but couldn&rsquo;t close the
+              deal automatically. Click below to try again — this
+              generates the invoice on our finance queue and starts
+              the production workflow.
             </p>
             <div className="flex flex-col gap-3 sm:flex-row">
               <PortalButton
@@ -440,23 +580,29 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
                 className="flex-1"
               >
                 <Sparkles className="h-4 w-4" />
-                {finalizing ? "Accepting…" : "Accept proposal"}
+                {finalizing ? "Finalising…" : "Retry finalising"}
               </PortalButton>
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 className="mt-1 mb-3 text-xl font-black uppercase tracking-tight">
+              Decline
+            </h2>
+            <p className="mb-5 max-w-prose text-sm leading-relaxed text-neutral-700">
+              Not ready to move forward? You can decline the proposal
+              — we&rsquo;ll be in touch about next steps.
+            </p>
+            <div className="flex flex-col gap-3 sm:flex-row">
               <PortalLinkButton
                 variant="secondary"
                 href={`/portal/proposals/${proposalId}/reject`}
                 className="flex-1"
               >
                 <XCircle className="h-4 w-4" />
-                Decline
+                Decline proposal
               </PortalLinkButton>
             </div>
-            {!allSigned ? (
-              <p className="mt-2 text-[11px] uppercase tracking-widest text-neutral-600">
-                Accept stays disabled until the proposal and every
-                specification above are signed.
-              </p>
-            ) : null}
           </>
         )}
       </Card>

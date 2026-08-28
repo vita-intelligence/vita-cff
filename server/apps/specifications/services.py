@@ -2876,15 +2876,24 @@ def accept_as_customer(
         formulation.updated_by = sheet.updated_by
         formulation.save(update_fields=["project_type", "updated_by", "updated_at"])
 
+    # RTG spec sign is NOT a project-approval event. For Custom the
+    # customer signs a FINAL spec AFTER trials + deposit, so flipping
+    # ``project_status → APPROVED`` correctly signals "recipe locked,
+    # ready to produce". For RTG the FINAL spec is the storefront SKU
+    # template we clone at checkout — the customer signs it FIRST,
+    # before signing the proposal and before finance sees any payment.
+    # Advancing project_status here made the portal render a big green
+    # "APPROVED" chip at the top of the project the moment the spec
+    # was signed, misleading the customer into thinking the deal was
+    # closed while the proposal + invoice were still outstanding. On
+    # RTG we leave project_status untouched until the real commitment
+    # (proposal sign + payment) lands via its own hook.
     target_status: str | None = None
-    if sheet.document_kind == SpecificationDocumentKind.DRAFT:
-        target_status = (
-            ProjectStatus.APPROVED.value
-            if is_ready_to_go
-            else ProjectStatus.PILOT.value
-        )
-    elif sheet.document_kind == SpecificationDocumentKind.FINAL:
-        target_status = ProjectStatus.APPROVED.value
+    if not is_ready_to_go:
+        if sheet.document_kind == SpecificationDocumentKind.DRAFT:
+            target_status = ProjectStatus.PILOT.value
+        elif sheet.document_kind == SpecificationDocumentKind.FINAL:
+            target_status = ProjectStatus.APPROVED.value
     if target_status is not None:
         _maybe_advance_project_status(
             formulation=formulation,
@@ -2897,7 +2906,19 @@ def accept_as_customer(
     # so a rollback anywhere in this service doesn't leak a Payment
     # row. Silent-degrade: never break the sign path if the helper
     # fails (finance can create the invoice manually as a fallback).
-    if sheet.document_kind == SpecificationDocumentKind.FINAL:
+    #
+    # Skipped for RTG: the RTG payment workflow lives on the deposit
+    # queue (single 100% invoice tied to the proposal). Auto-creating
+    # a FINAL Payment here would spawn a duplicate invoice on the
+    # finance queue AND — worse — the portal's payment pipeline stage
+    # picks up ANY Payment row on the proposal, so an unpaid PENDING
+    # FINAL would visibly light up "Awaiting payment" while the real
+    # 100% invoice hasn't been sent yet. The customer would see the
+    # wrong amount and finance would see a phantom row.
+    if (
+        sheet.document_kind == SpecificationDocumentKind.FINAL
+        and not is_ready_to_go
+    ):
         sheet_pk = sheet.pk
         formulation_pk = formulation.pk
 

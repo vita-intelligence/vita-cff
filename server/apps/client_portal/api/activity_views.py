@@ -575,12 +575,73 @@ def _collect_rtg(
         .filter(_cursor_filter(cursor))
         .order_by("-updated_at", "-id")[:cap]
     )
+    # Compute a per-SKU "Order #N" index across ALL of the customer's
+    # RTG proposals on the same formulation (not just this page's
+    # rows). Ordered by ``created_at`` ascending so #1 is the first
+    # order the customer ever placed for that SKU; #2 is the first
+    # reorder; etc. Without this, a customer with three orders of
+    # "Ultimate Fat Burner Drink" sees three identically-titled rows
+    # in the activity feed and can't tell which one to click. When
+    # only ONE order exists on a SKU we skip the suffix — no need to
+    # say "Order #1 of 1".
+    order_index_by_proposal: dict[Any, int] = {}
+    orders_per_formulation: dict[Any, int] = {}
+    formulation_ids = {
+        row.formulation_version.formulation_id
+        for row in rows
+        if row.formulation_version_id is not None
+    }
+    if formulation_ids:
+        chronological = (
+            _rtg_queryset(customer_ids, "")
+            .filter(
+                formulation_version__formulation_id__in=formulation_ids,
+            )
+            .order_by("created_at", "id")
+            .values("id", "formulation_version__formulation_id")
+        )
+        counters: dict[Any, int] = {}
+        for entry in chronological:
+            fid = entry["formulation_version__formulation_id"]
+            counters[fid] = counters.get(fid, 0) + 1
+            order_index_by_proposal[entry["id"]] = counters[fid]
+        orders_per_formulation = counters
     items: list[dict] = []
     for row in rows:
         formulation = getattr(row.formulation_version, "formulation", None)
-        title = _formulation_display_name(formulation) or row.code or "Order"
+        base_title = _formulation_display_name(formulation) or row.code or "Order"
+        # Only surface the "· Order #N" suffix when the customer has
+        # multiple orders on this SKU. Single-order rows read cleaner
+        # without a redundant "#1".
+        fid = (
+            formulation.id
+            if formulation is not None and formulation.id in orders_per_formulation
+            else None
+        )
+        idx = order_index_by_proposal.get(row.id)
+        if fid is not None and idx is not None and orders_per_formulation.get(fid, 0) > 1:
+            title = f"{base_title} · Order #{idx}"
+        else:
+            title = base_title
         status_label, tone, needs = _RTG_STATUS_MAP.get(
             row.status, ("In flight", "in_progress", False),
+        )
+        # Route RTG orders to the shared per-project detail page —
+        # ``/portal/projects/<formulation_id>`` renders the same rich
+        # pipeline / documents / timeline surface Custom projects use,
+        # and ``PortalProductDetailView`` handles both project types
+        # (``_build_pipeline`` branches on ``project_type`` to swap the
+        # trial/final stages for the payment/label chain on RTG). The
+        # standalone ``/portal/orders/<proposal_id>`` route was never
+        # built out, so linking there just 404'd for the customer.
+        # ``formulation`` should never be None here because the RTG
+        # queryset joins through ``formulation_version__formulation``,
+        # but the fallback keeps the payload safe if a legacy row is
+        # missing the version FK.
+        href = (
+            f"/portal/projects/{formulation.id}"
+            if formulation is not None
+            else f"/portal/orders/{row.id}"
         )
         items.append(
             {
@@ -592,7 +653,7 @@ def _collect_rtg(
                 "status_key": row.status,
                 "status_label": status_label,
                 "status_tone": tone,
-                "href": f"/portal/orders/{row.id}",
+                "href": href,
                 "amount": _decimal_str(_rtg_total(row)),
                 "currency": row.currency or "GBP",
                 "quantity": row.quantity,
@@ -808,14 +869,13 @@ def _collect_samples(
 
 
 def _formulation_display_name(formulation: Any) -> str:
-    if formulation is None:
-        return ""
-    if (
-        getattr(formulation, "project_type", "") == "ready_to_go"
-        and (getattr(formulation, "rtg_display_name", "") or "").strip()
-    ):
-        return formulation.rtg_display_name.strip()
-    return getattr(formulation, "name", "") or ""
+    # Delegates to the shared helper so every portal surface reads
+    # the same title (RTG display name > formulation name > code).
+    # Kept as an underscore-prefixed shim in this module so the
+    # existing call sites don't need touching.
+    from apps.client_portal.queries import formulation_display_name
+
+    return formulation_display_name(formulation)
 
 
 def _decimal_str(value: Any) -> str | None:

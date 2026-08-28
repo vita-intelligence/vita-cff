@@ -535,12 +535,36 @@ export async function portalUploadArtwork(
     readonly artwork: File;
     readonly signature_image: string;
     readonly notes?: string;
+    //: Optional supplementary views bundled with the primary
+    //: artwork — "back view", "side view", "mockup on shelf", etc.
+    //: Shipped as parallel arrays: each file at index N is labelled
+    //: by ``additional_labels[N]``. Empty / short label array is
+    //: fine; the FE falls back to "View N" server-side.
+    //: The backend caps this at 10 files per revision (see
+    //: ``MAX_ADDITIONAL_ASSETS`` in ``label_design/api/views.py``).
+    readonly additional_files?: ReadonlyArray<File>;
+    readonly additional_labels?: ReadonlyArray<string>;
   },
 ): Promise<LabelDesignDto> {
   const form = new FormData();
   form.append("artwork", payload.artwork);
   form.append("signature_image", payload.signature_image);
   if (payload.notes) form.append("notes", payload.notes);
+  const extras = payload.additional_files ?? [];
+  for (const file of extras) form.append("additional_files", file);
+  // ``additional_file_labels`` rides as a JSON-encoded string so the
+  // labels stay positionally aligned with the files even when a
+  // customer entered a comma or bracket in their label text — a
+  // plain repeated form field would ambiguate on those.
+  const labels = payload.additional_labels ?? [];
+  // Always send the labels array (even when empty) so the backend's
+  // positional-lookup contract is stable — an empty array is a
+  // legitimate "no labels for any extras" signal that the server
+  // handles the same as a missing key.
+  form.append(
+    "additional_file_labels",
+    JSON.stringify(labels.slice(0, extras.length).map((l) => l ?? "")),
+  );
   const { data } = await apiClient.post<LabelDesignDto>(
     ep.portalUploadArtwork(ldId),
     form,

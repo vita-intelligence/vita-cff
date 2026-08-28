@@ -22,11 +22,25 @@ import { fetchSpec, type PortalSpecListItem } from "@/services/portal/api";
 import { SpecSheetContent } from "../../../specifications/[id]/specification-sheet-view";
 
 
-// Three affirmations a customer must check before the FINAL signature
-// pad opens — turns the click into a deliberate "I'm done, ship it"
-// rather than a follow-the-arrow auto-sign. Phrasing mirrors the
-// industry-standard production-authorisation language.
-const FINAL_AFFIRMATIONS: ReadonlyArray<{
+// Affirmations a customer must check before the FINAL signature pad
+// opens — turns the click into a deliberate "I'm done, ship it"
+// rather than a follow-the-arrow auto-sign. Two variants ship:
+//
+// * ``FINAL_AFFIRMATIONS_CUSTOM`` — the three-line Custom flow.
+//   Trial-batch review + recipe-matches + authorise-production,
+//   because a Custom project has been through R&D and the recipe
+//   was actively negotiated with the customer.
+// * ``FINAL_AFFIRMATIONS_RTG`` — a single awareness line. RTG orders
+//   have no trials to review and no negotiated recipe (customer
+//   picked an off-the-shelf storefront SKU), so asking three
+//   things they weren't part of would feel like busywork. The
+//   single line covers what actually matters: they know THIS is
+//   the final product spec they're signing for the order.
+//
+// Web-site portal ``FINAL_AFFIRMATIONS_CUSTOM`` / ``_RTG`` mirror
+// these arrays word-for-word so both surfaces speak the same
+// production-authorisation language.
+const FINAL_AFFIRMATIONS_CUSTOM: ReadonlyArray<{
   readonly key: string;
   readonly label: string;
 }> = [
@@ -46,6 +60,17 @@ const FINAL_AFFIRMATIONS: ReadonlyArray<{
   },
 ];
 
+const FINAL_AFFIRMATIONS_RTG: ReadonlyArray<{
+  readonly key: string;
+  readonly label: string;
+}> = [
+  {
+    key: "final_spec_awareness",
+    label:
+      "I understand this is the final product specification for my order and I'm signing it to authorise production.",
+  },
+];
+
 
 const READ_THRESHOLD = 0.98;
 
@@ -60,10 +85,19 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(false);
   const [allRead, setAllRead] = useState(false);
-  // Affirmation checkboxes — only used on FINAL specs. All three
-  // must be ticked before the Sign button enables.
+  // Affirmation checkboxes — only used on FINAL specs. RTG needs one
+  // box ticked, Custom needs three. Seed BOTH keysets so switching
+  // between arrays mid-load (shouldn't happen but defensive) doesn't
+  // leave a dangling key untracked; the render-side filter picks the
+  // right subset per project_type.
   const [affirmations, setAffirmations] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(FINAL_AFFIRMATIONS.map((a) => [a.key, false])),
+    () =>
+      Object.fromEntries(
+        [...FINAL_AFFIRMATIONS_CUSTOM, ...FINAL_AFFIRMATIONS_RTG].map((a) => [
+          a.key,
+          false,
+        ]),
+      ),
   );
 
   const load = useCallback(async () => {
@@ -148,8 +182,15 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
 
   const isFinal = spec.document_kind === "final";
   const isRejected = spec.status === "rejected";
+  const isRtg = spec.formulation_project_type === "ready_to_go";
+  //: Custom projects require the full three-line affirmation set;
+  //: RTG collapses to the single awareness line. DRAFT specs skip
+  //: the affirmation card entirely (``!isFinal`` short-circuit).
+  const activeAffirmations = isRtg
+    ? FINAL_AFFIRMATIONS_RTG
+    : FINAL_AFFIRMATIONS_CUSTOM;
   const allAffirmed =
-    !isFinal || FINAL_AFFIRMATIONS.every((a) => affirmations[a.key]);
+    !isFinal || activeAffirmations.every((a) => affirmations[a.key]);
   // Delta-info drives an additional acknowledgement gate on FINALs
   // whose auto-computed invoice deviates from the original proposal
   // remainder by more than the ``threshold_percent``. Belt-and-
@@ -248,7 +289,7 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
               Before signing, please confirm:
             </p>
             <ul className="mt-3 space-y-2">
-              {FINAL_AFFIRMATIONS.map((a) => (
+              {activeAffirmations.map((a) => (
                 <li key={a.key} className="flex items-start gap-3">
                   <input
                     id={`aff-${a.key}`}

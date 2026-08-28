@@ -47,6 +47,7 @@ from apps.formulations.api.views import (
     PageBuilderTemplateDetailView,
     PageBuilderTemplateListView,
     RtgCatalogCountsView,
+    RTGCatalogListView,
     StageTemplateDetailView,
     StageTemplateListView,
 )
@@ -63,6 +64,15 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/rtg-catalog-counts/",
         RtgCatalogCountsView.as_view(),
         name="rtg-catalog-counts",
+    ),
+    # Lean list projection for the staff RTG catalog grid — drops the
+    # full formulation serializer's 13 M2M echoes + 4 per-row derived
+    # checks so a million-SKU catalog still opens in one round-trip.
+    # See RTGCatalogListView for the full perf-contract writeup.
+    path(
+        "organizations/<uuid:org_id>/formulations/rtg-catalog-list/",
+        RTGCatalogListView.as_view(),
+        name="rtg-catalog-list",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/",

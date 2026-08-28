@@ -227,6 +227,13 @@ def _create_line_proposal(
         unit_price=line.unit_price,
         material_cost_per_pack=material_cost_positive,
         margin_percent=margin_percent,
+        # RTG orders always invoice at 100% — the storefront flow has
+        # no trials to unlock and no FINAL-spec sign to trigger a
+        # remainder invoice, so the model's default 50% would leave
+        # the second half stranded. Pin to 100 explicitly so finance
+        # generates a single full-value invoice from the deposit
+        # queue.
+        deposit_percent=Decimal("100"),
         cover_notes=(
             "Auto-drafted from the storefront cart. Review the line "
             "and packaging combo below before hitting Send."
@@ -311,6 +318,54 @@ def _create_sample_payment(*, customer, line: CheckoutLineInput):
 
     formulation = _resolve_formulation(line.formulation_id)
     actor = _resolve_actor(customer)
+    currency = (line.currency_code or "GBP").upper()[:3]
+    # Rich notes so finance reads the whole context off the queue row
+    # without clicking into the customer / formulation / RTG SKU. Same
+    # multi-line shape the deposit + FINAL builders use — kept inline
+    # here (rather than a shared helper) because the sample-kit flow
+    # has no proposal / spec references to weave in.
+    from apps.client_portal.queries import formulation_display_name
+
+    customer_bits = []
+    if customer is not None:
+        name = (getattr(customer, "name", "") or "").strip()
+        company = (getattr(customer, "company", "") or "").strip()
+        email = (getattr(customer, "email", "") or "").strip()
+        if name and company and name != company:
+            customer_bits.append(f"{name} ({company})")
+        elif name:
+            customer_bits.append(name)
+        elif company:
+            customer_bits.append(company)
+        if email:
+            customer_bits.append(f"<{email}>")
+    customer_label = " ".join(customer_bits) or "Unknown customer"
+    display = formulation_display_name(formulation)
+    product_bits: list[str] = []
+    if display:
+        product_bits.append(display)
+    if formulation.code and formulation.code != display:
+        product_bits.append(formulation.code)
+    product_label = " · ".join(product_bits) or "Unknown product"
+    notes_body = "\n".join(
+        [
+            "=== Sample-kit order (storefront checkout) ===",
+            "This is a paid sample kit the customer requested from the",
+            "storefront. Approving it releases the sample for R&D to",
+            "produce + ship. No manufacturing / label workflow is",
+            "unlocked by this row — it's a one-shot sample transaction.",
+            "",
+            f"Customer:      {customer_label}",
+            f"Product:       {product_label}",
+            f"Quantity:      {line.quantity} kit(s) × {line.unit_price} {currency}/kit",
+            f"THIS INVOICE:  {line.unit_price} {currency}",
+            "",
+            "Finance next steps:",
+            "  1. Send the sample-kit invoice to the customer.",
+            "  2. Mark Approved once payment lands — this notifies the",
+            "     R&D team to spin up the sample production.",
+        ]
+    )
     return record_payment(
         actor=actor,
         amount=line.unit_price,
@@ -330,11 +385,8 @@ def _create_sample_payment(*, customer, line: CheckoutLineInput):
         # process the transfer. Bank transfer is the shop's default
         # per company settings.
         method=PaymentMethod.BANK_TRANSFER,
-        currency=(line.currency_code or "GBP").upper()[:3],
-        notes=(
-            f"Sample kit requested by {customer.email or 'portal customer'} "
-            f"via storefront checkout. Awaiting finance confirmation."
-        ),
+        currency=currency,
+        notes=notes_body,
     )
 
 
