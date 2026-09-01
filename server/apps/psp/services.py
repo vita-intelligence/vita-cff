@@ -3539,6 +3539,7 @@ def _trial_batch_cycle_payload_fragment(
 def sync_sample_customer_order_to_psp(
     *,
     trial_batch: Any,
+    mo_quantity: Any | None = None,
 ) -> dict | None:
     """Push a sample-fulfilment CO sync to PSP for a sample trial batch.
 
@@ -3669,10 +3670,29 @@ def sync_sample_customer_order_to_psp(
         # already sends this per-MO — we're just closing the same
         # gap on the sample-CO-first path.
         "npd_formulation_uuid": str(formulation.id),
-        # Match the sample quantity to the batch size — PSP's CO line
-        # is a display / audit surface (not the production spec), so
-        # over/under vs actual production is acceptable.
-        "quantity": str(getattr(trial_batch, "batch_size_units", 1) or 1),
+        # Sample CO line qty. When the caller already knows the
+        # actual PSP MO qty (i.e. this sync is being fired from
+        # ``create_psp_manufacturing_order_for_trial_batch`` after
+        # the size_mode + servings-per-pack normalisation has
+        # landed a real number), we use THAT — so the CO line
+        # matches the physical run. Falls back to
+        # ``trial_batch.batch_size_units`` for callers without a
+        # resolved MO qty (which land as a "planned scale" figure
+        # on the CO line; the wizard's fulfilment-tolerance gate
+        # already excludes ``sample_kind`` COs from its shortfall
+        # check on the PSP side so a mismatch here doesn't fire a
+        # false ``:awaiting_shortfall_resolution`` block anymore).
+        # Historical bug: before this parameter existed, the sync
+        # always sent ``batch_size_units``. If the scientist typed
+        # "3 gummies" on the Create-MO modal (``size_mode=units``,
+        # PSP MO landed at 0.05 packs), the CO line still showed
+        # 20 packs (the cycle-slot's default batch size) and the
+        # wizard read it as a massive shortfall.
+        "quantity": (
+            str(mo_quantity)
+            if mo_quantity is not None
+            else str(getattr(trial_batch, "batch_size_units", 1) or 1)
+        ),
         "sample_label": label,
         "formulation_name": (getattr(formulation, "name", "") or "").strip(),
         "formulation_code": (getattr(formulation, "code", "") or "").strip(),
@@ -5816,7 +5836,46 @@ def _ensure_finished_product(
         if stage is not None and getattr(stage, "name", "")
         else None
     )
-    external_sku = stage_sku or f"NPD-FINISHED-{formulation.id}"
+    # SKU resolution — priority order:
+    #   1. Scientist-supplied override on the stage (rare).
+    #   2. Existing PSP item's SKU, when the formulation already carries
+    #      a linked ``psp_finished_product_uuid``. Fetches the row from
+    #      PSP to read its real ``external_sku``. This bridges the two
+    #      historical SKU conventions:
+    #        * ``NPD-FP-<random-hex>`` — minted by
+    #          ``create_psp_finished_product`` at CFF-attach / new-
+    #          formulation modal time.
+    #        * ``NPD-FINISHED-<formulation.id>`` — auto-derived by this
+    #          function on first BOM push when no link exists yet.
+    #      Without step 2 the two paths never converged: the modal
+    #      created an item with the random-hex SKU, then this function
+    #      later tried to create ANOTHER item with the
+    #      ``NPD-FINISHED-<uuid>`` SKU, hit PSP's ``(company_id, name)``
+    #      unique-name constraint (both items would be named after the
+    #      formulation), and silently fell back to the name-lookup path
+    #      which returned the existing item WITHOUT the UOM /
+    #      product_family / finished_product_spec update the caller
+    #      wanted to apply. Net effect: the CFF-attach-created item
+    #      stayed forever without a ``stock_uom_id``, and downstream
+    #      trial-batch MO creation on PSP failed with a
+    #      ``unit_of_measurement_id can't be blank`` validation error
+    #      when the reservation changeset tried to stamp the item's UOM
+    #      onto the output lot.
+    #   3. Auto-derived ``NPD-FINISHED-<formulation.id>`` fallback.
+    linked_uuid = str(getattr(formulation, "psp_finished_product_uuid", "") or "")
+    existing_sku = ""
+    if not stage_sku and linked_uuid:
+        try:
+            existing_item = client.get_item(linked_uuid)
+        except PspError:
+            # Soft failure — fall through to the derived SKU so the
+            # sync still tries. Worst case: same silent-collision as
+            # before; best case: PSP is momentarily unreachable and
+            # the next push resolves it.
+            existing_item = None
+        if existing_item is not None:
+            existing_sku = getattr(existing_item, "external_sku", "") or ""
+    external_sku = stage_sku or existing_sku or f"NPD-FINISHED-{formulation.id}"
     # Priority: scientist-typed PSP name override > formulation's
     # own project name > auto-derived "{code} — {stage_name}" as a
     # last-resort for legacy formulations that were never named.
@@ -6574,7 +6633,18 @@ def create_psp_manufacturing_order_for_trial_batch(
         # pulls the customer from the parent formulation for cycle
         # slots — see ``sync_sample_customer_order_to_psp`` for the
         # branch logic.
-        sync_sample_customer_order_to_psp(trial_batch=trial_batch)
+        #
+        # Pass the resolved PSP MO qty (``qty_dec`` — already
+        # size_mode + servings-per-pack normalised at the
+        # ``if size_mode == "units"`` branch above) so the sample
+        # CO line's ``qty_ordered`` matches the physical run. Fixes
+        # the "cycle-slot batch defaulted to 20 packs but the
+        # scientist ran 3 gummies loose = 0.05 packs" mismatch
+        # where the CO line kept 20 and the wizard read the gap as
+        # a shortfall.
+        sync_sample_customer_order_to_psp(
+            trial_batch=trial_batch, mo_quantity=qty_dec
+        )
         # We stamp the uuid on the payload regardless of the sync's
         # return value — the sync is idempotent + silent-degrade, so
         # if it succeeded PSP has the CO ready; if it soft-failed the

@@ -24,6 +24,7 @@ import {
   type ProductionMoRoadmap,
 } from "./production-section";
 import { DispatchSection } from "./dispatch-section";
+import { RefreshOnFocus } from "./refresh-on-focus";
 import { ReleaseDocumentsSection } from "./release-documents-section";
 
 
@@ -207,6 +208,7 @@ export default async function PortalProductDetailPage({
 
   return (
     <PortalShell active="products">
+      <RefreshOnFocus />
       <PageHeader
         eyebrow={data.product.code || "Project"}
         title={data.product.name || "Your project"}

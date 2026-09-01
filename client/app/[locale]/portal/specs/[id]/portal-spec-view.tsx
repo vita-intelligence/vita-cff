@@ -114,6 +114,26 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
     load();
   }, [load]);
 
+  useEffect(() => {
+    // Cross-portal sync: a peer signing on the web-site portal (or a
+    // different tab of NPD) is invisible to React state until we
+    // refetch. Firing on both ``visibilitychange`` and window
+    // ``focus`` covers tab-switch AND side-by-side window focus.
+    // The apiClient is axios (no HTTP cache) so this always hits
+    // fresh server state.
+    const refetchIfVisible = () => {
+      if (document.visibilityState === "visible") {
+        void load();
+      }
+    };
+    document.addEventListener("visibilitychange", refetchIfVisible);
+    window.addEventListener("focus", refetchIfVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", refetchIfVisible);
+      window.removeEventListener("focus", refetchIfVisible);
+    };
+  }, [load]);
+
   const [acknowledgedUpdatedTotal, setAcknowledgedUpdatedTotal] =
     useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);

@@ -26,6 +26,8 @@ import { env } from "@/config/env";
 type Stage =
   | "proposal_pending"
   | "draft_spec_pending"
+  | "draft_spec_in_progress"
+  | "proposal_in_progress"
   | "in_development"
   | "pilot"
   | "final_spec_pending"
@@ -117,6 +119,10 @@ interface ProductItem {
 const STAGE_TONE: Record<Stage, string> = {
   proposal_pending: "bg-orange-500 text-black",
   draft_spec_pending: "bg-orange-500 text-black",
+  // Neutral in-flight tone — scientists are working, customer waits.
+  draft_spec_in_progress: "bg-blue-200 text-black",
+  // Same blue in-flight tone — commercial team drafting the quote.
+  proposal_in_progress: "bg-blue-200 text-black",
   in_development: "bg-neutral-200 text-black",
   pilot: "bg-blue-200 text-black",
   final_spec_pending: "bg-orange-500 text-black",

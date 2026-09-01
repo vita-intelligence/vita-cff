@@ -588,9 +588,15 @@ class TrialBatchCycleCreateAndLinkBatchView(APIView):
     scientist can then jump into the TrialBatch detail page to
     press "Create MO on PSP" the usual way.
 
-    Body (optional):
+    Body (required):
 
-    * ``batch_size_units`` — defaults to 20 if omitted.
+    * ``batch_size_units`` — pack count for this slot's batch.
+      Required. Previously defaulted to 20 silently when omitted,
+      which surprised scientists later on the sample-CO wizard
+      (the sync uses this number as the CO line ``qty_ordered``,
+      so a 20-pack default vs a 3-loose-gummies actual run
+      surfaced as a shortfall). Now rejects missing / invalid
+      values so the FE has to ask the scientist explicitly.
     * ``label`` — defaults to ``Cycle <cycle-id-prefix> slot <n>``.
     """
 
@@ -611,12 +617,38 @@ class TrialBatchCycleCreateAndLinkBatchView(APIView):
             )
 
         raw = request.data if isinstance(request.data, dict) else {}
+        raw_size = raw.get("batch_size_units")
+        if raw_size in (None, "", 0, "0"):
+            return Response(
+                {
+                    "code": "batch_size_units_required",
+                    "detail": (
+                        "batch_size_units is required. Enter the "
+                        "number of packs to produce for this slot "
+                        "(scientist decides the trial scale — no "
+                        "silent default)."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
-            batch_size = int(raw.get("batch_size_units") or DEFAULT_SLOT_BATCH_SIZE)
+            batch_size = int(raw_size)
         except (TypeError, ValueError):
-            batch_size = DEFAULT_SLOT_BATCH_SIZE
+            return Response(
+                {
+                    "code": "batch_size_units_invalid",
+                    "detail": "batch_size_units must be a positive integer.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if batch_size <= 0:
-            batch_size = DEFAULT_SLOT_BATCH_SIZE
+            return Response(
+                {
+                    "code": "batch_size_units_invalid",
+                    "detail": "batch_size_units must be a positive integer.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         label = str(raw.get("label") or "").strip()
         if not label:

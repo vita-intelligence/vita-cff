@@ -93,6 +93,8 @@ def _rtg_payment_approved(
 STAGE_LABELS: dict[str, str] = {
     "proposal_pending": "Awaiting your proposal signature",
     "draft_spec_pending": "Awaiting draft specification signature",
+    "draft_spec_in_progress": "Drafting your specification",
+    "proposal_in_progress": "Drafting your proposal",
     "in_development": "In development",
     "pilot": "Trial batch phase",
     "final_spec_pending": "Final specification ready to sign",
@@ -144,6 +146,8 @@ STAGE_LABELS: dict[str, str] = {
 STAGE_TONES: dict[str, tuple[str, bool]] = {
     "proposal_pending": ("attention", True),
     "draft_spec_pending": ("attention", True),
+    "draft_spec_in_progress": ("in_progress", False),
+    "proposal_in_progress": ("in_progress", False),
     "in_development": ("in_progress", False),
     "pilot": ("in_progress", False),
     "final_spec_pending": ("attention", True),
@@ -344,6 +348,30 @@ def resolve_stage(
         if sent_final is not None:
             return ("final_spec_pending", f"/portal/specs/{sent_final.id}")
 
+    # Custom project: director has signed off on the draft spec but
+    # the commercial team hasn't sent a proposal yet. Wins over the
+    # generic ``in_development`` / ``pilot`` project_status labels
+    # below because it's a more specific "what's happening RIGHT now"
+    # signal — the customer sees "Drafting your proposal" instead of
+    # the vague "In development" bucket. Only fires when there's no
+    # sent proposal already (that would return ``proposal_pending``
+    # further down anyway).
+    if not is_rtg:
+        approved_draft = next(
+            (
+                s
+                for s in sheets
+                if s.document_kind == SpecificationDocumentKind.DRAFT
+                and s.status == SpecificationStatus.APPROVED
+            ),
+            None,
+        )
+        no_proposal_sent = not any(
+            p.status in ("sent", "accepted") for p in proposals
+        )
+        if approved_draft is not None and no_proposal_sent:
+            return ("proposal_in_progress", None)
+
     # ``pilot`` / ``in_development`` are Custom-flow lifecycle chips
     # anchored to trial-batch + R&D progress. RTG orders don't do
     # either — they'd otherwise get stuck on the internal "In
@@ -399,6 +427,19 @@ def resolve_stage(
                 "approved_awaiting_payment",
                 f"/portal/proposals/{accepted_proposal.id}",
             )
+
+    # Custom project, freshly triaged from a CFF — no proposal, no
+    # sent spec, no label work yet. Scientists are actively drafting
+    # the recipe. Without this the badge fell back to ``unknown``
+    # ("In progress") which read as "nothing is happening" to the
+    # customer. Guarded on ProjectStatus.CONCEPT so an already-
+    # approved / discontinued formulation that somehow lost its
+    # proposals doesn't re-surface as "drafting".
+    if (
+        not is_rtg
+        and formulation.project_status == ProjectStatus.CONCEPT
+    ):
+        return ("draft_spec_in_progress", None)
 
     return ("unknown", None)
 

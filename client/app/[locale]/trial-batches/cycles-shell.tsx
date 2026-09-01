@@ -543,14 +543,21 @@ function CycleDetailsModal({
   );
 
   const createAndLink = useMutation({
-    mutationFn: async (slotId: string) => {
+    mutationFn: async ({
+      slotId,
+      batchSize,
+    }: {
+      slotId: string;
+      batchSize: number;
+    }) => {
       const { data } = await apiClient.post(
         `/api/organizations/${orgId}/trial-batch-cycles/${cycle.id}/slots/${slotId}/create-and-link-batch/`,
-        {},
+        { batch_size_units: batchSize },
       );
       return data;
     },
-    onMutate: (slotId: string) => setBusySlotId(slotId),
+    onMutate: ({ slotId }: { slotId: string; batchSize: number }) =>
+      setBusySlotId(slotId),
     onSuccess: () => onChanged(),
     onError: (err: unknown) => {
       setError(
@@ -560,6 +567,35 @@ function CycleDetailsModal({
     },
     onSettled: () => setBusySlotId(null),
   });
+
+  // Ask the scientist for the batch size before firing the create.
+  // Previously the FE sent an empty body and the API silently
+  // defaulted to 20 packs — that number then rode all the way to
+  // the sample CO line on PSP as ``qty_ordered``, and if the
+  // scientist later picked "loose gummies" mode on the Create-MO
+  // modal (producing say 0.05 packs) the wizard falsely surfaced
+  // a shortfall. Prompt makes the decision explicit at the source.
+  // Native ``window.prompt`` for now — internal R&D surface,
+  // low-frequency action; upgrade to a proper dialog later if needed.
+  function promptAndCreate(slotId: string) {
+    const raw = window.prompt(
+      "How many packs to produce for this trial slot?\n\n" +
+        "This is the planned batch size in whole packs. The " +
+        "Create-MO modal can still narrow this down at MO time " +
+        "(e.g. loose-gummies mode for a 3-gummy taster).",
+      "20",
+    );
+    if (raw === null) return; // scientist cancelled
+    const trimmed = raw.trim();
+    const size = Number(trimmed);
+    if (!Number.isInteger(size) || size <= 0) {
+      setError(
+        "Batch size must be a positive whole number (packs). Try again.",
+      );
+      return;
+    }
+    createAndLink.mutate({ slotId, batchSize: size });
+  }
 
   // Esc closes.
   useEffect(() => {
@@ -636,7 +672,7 @@ function CycleDetailsModal({
                 key={slot.id}
                 slot={slot}
                 busy={busySlotId === slot.id}
-                onCreateBatch={() => createAndLink.mutate(slot.id)}
+                onCreateBatch={() => promptAndCreate(slot.id)}
                 expanded={expandedSlotId === slot.id}
                 onToggle={() =>
                   setExpandedSlotId((cur) => (cur === slot.id ? null : slot.id))

@@ -715,45 +715,157 @@ def _build_pipeline(
     # sign-gate on proposal_stage below: proposal cannot show as
     # "current" while a draft sits unsigned, so the customer never
     # sees two "current" chips at once.
-    draft_signed = _first_signed(_draft_specs(sheets))
-    draft_sent = _first_sent_unsigned(_draft_specs(sheets))
+    draft_specs_all = _draft_specs(sheets)
+    draft_signed = _first_signed(draft_specs_all)
+    draft_sent = _first_sent_unsigned(draft_specs_all)
+    # Any draft whose internal drafting is complete — director has
+    # signed off, and it may or may not have been bundled into a
+    # sent proposal already. From the customer's perspective the
+    # science work on this document is done; the actual customer-
+    # signing action is folded into the Proposal stage (backend
+    # enforces spec-first sign order via the ``sign_spec_first`` gate).
+    # Without this we regressed to "draft_stage: current" the moment
+    # the proposal was sent — the pipeline jumped BACKWARDS from
+    # "proposal drafted" to "sign the draft", which is confusing to
+    # the customer since both actions live on the proposal page now.
+    draft_internally_prepared = next(
+        (
+            s for s in draft_specs_all
+            if s.status in (
+                SpecificationStatus.APPROVED,
+                SpecificationStatus.SENT,
+                SpecificationStatus.ACCEPTED,
+            )
+        ),
+        None,
+    )
     if draft_signed is not None:
         draft_stage = {
             "key": "draft_spec",
             "label": "Draft specification signed",
             "state": "done",
             "completed_at": _iso(draft_signed.customer_signed_at),
-            "detail": "You approved the draft recipe — the proposal is next.",
+            "detail": "You signed the specification — proposal signature is next.",
         }
-    elif draft_sent is not None:
+    elif draft_internally_prepared is not None:
         draft_stage = {
             "key": "draft_spec",
-            "label": "Draft specification awaiting signature",
+            "label": "Draft specification prepared",
+            "state": "done",
+            "completed_at": _iso(
+                getattr(draft_internally_prepared, "director_signed_at", None)
+                or getattr(draft_internally_prepared, "updated_at", None)
+            ),
+            "detail": (
+                "Our scientists and director signed off on the recipe. "
+                "You'll sign this together with the proposal on the next step."
+            ),
+        }
+    elif (
+        getattr(formulation, "project_type", "")
+        != ProjectType.READY_TO_GO.value
+    ):
+        # Custom projects: once the CFF has been triaged into a
+        # formulation, the scientists are actively drafting the recipe
+        # even before the first ``sent`` spec sheet exists. Without
+        # this branch stage 2 sat at ``future`` (greyed) — no stage
+        # was ``current`` — and the portal headline chip fell back to
+        # the last done stage ("Request submitted"), reading as
+        # "nothing is happening" when the science work is in flight.
+        # RTG orders skip this state entirely (there is no draft spec
+        # on RTG — the FINAL clone is pre-signed at checkout).
+        draft_stage = {
+            "key": "draft_spec",
+            "label": "Draft specification in progress",
             "state": "current",
             "completed_at": None,
             "detail": (
-                f"Draft spec {draft_sent.code} is ready for you to review and sign."
+                "Our scientists are drafting your recipe. "
+                "You'll be notified as soon as it's ready to review and sign."
             ),
         }
     else:
         draft_stage = {
             "key": "draft_spec",
             "label": "Draft specification",
-            "state": "future",
+            "state": "skipped",
             "completed_at": None,
-            "detail": "Our scientists will draft the recipe and share it here.",
+            "detail": (
+                "Ready-to-Go orders use a pre-approved specification — no "
+                "customer draft-sign step."
+            ),
         }
 
-    # ---- Stage 3: Proposal signed ---------------------------------------
-    # Sequential gate: while a draft spec is ``sent`` (customer-visible)
-    # but not signed, the proposal is treated as blocked — even if it
-    # itself is ``sent``. Without this, both draft_stage AND
-    # proposal_stage light up as "current" simultaneously, which is the
-    # source of the "two chips highlighted at once" bug. Business
-    # rule: sign the recipe first, then commit commercially.
+    # ---- Stage 3: Proposal drafting (internal) --------------------------
+    # Sits between "Draft specification prepared" and "Proposal awaiting
+    # signature" so the customer sees the commercial team working on
+    # their quote during the window between director sign-off on the
+    # spec and the moment the proposal actually lands on the portal.
+    # Without this the pipeline jumped straight from a ``done`` draft to
+    # a ``future`` proposal with nothing marked ``current`` — same "no
+    # stage highlighted" trap as the pre-draft state.
+    proposal_drafted = next(
+        (
+            p for p in proposals
+            if p.status in ("sent", "accepted", "rejected")
+        ),
+        None,
+    )
+    draft_stage_done_or_customer_visible = (
+        draft_signed is not None
+        or draft_sent is not None
+        or draft_approved is not None
+    )
+    if proposal_drafted is not None:
+        proposal_drafting_stage = {
+            "key": "proposal_drafting",
+            "label": "Proposal drafted",
+            "state": "done",
+            "completed_at": _iso(
+                getattr(proposal_drafted, "sent_at", None)
+                or getattr(proposal_drafted, "updated_at", None)
+            ),
+            "detail": (
+                f"Proposal {proposal_drafted.code} is ready — see the next "
+                "step."
+            ),
+        }
+    elif draft_stage_done_or_customer_visible:
+        proposal_drafting_stage = {
+            "key": "proposal_drafting",
+            "label": "Drafting your proposal",
+            "state": "current",
+            "completed_at": None,
+            "detail": (
+                "Our commercial team is preparing your quote. You'll be "
+                "notified as soon as it's ready to review and sign."
+            ),
+        }
+    else:
+        proposal_drafting_stage = {
+            "key": "proposal_drafting",
+            "label": "Proposal drafting",
+            "state": "future",
+            "completed_at": None,
+            "detail": (
+                "Once your specification is prepared, we'll draft the "
+                "proposal."
+            ),
+        }
+
+    # ---- Stage 4: Proposal signed ---------------------------------------
+    # Proposal + attached draft spec are two documents but one
+    # commercial action for the customer — the portal's proposal page
+    # handles the spec-first sign order internally (backend enforces
+    # ``sign_spec_first`` too). So the pipeline treats the whole
+    # signing ceremony as one ``current`` stage: "Sign the proposal
+    # and attached spec sheet to proceed". The draft_stage above
+    # stays ``done`` (internal drafting complete) rather than
+    # re-opening as ``current`` when the spec transitions to ``sent`` —
+    # otherwise the pipeline reads as jumping BACKWARDS from
+    # "proposal drafted" to "sign the draft".
     signed_proposal = _first_signed_proposal(proposals)
     sent_proposal = _first_sent_proposal(proposals)
-    draft_blocks_proposal = draft_sent is not None
     if signed_proposal is not None:
         proposal_stage = {
             "key": "proposal",
@@ -762,24 +874,27 @@ def _build_pipeline(
             "completed_at": _iso(signed_proposal.customer_signed_at),
             "detail": f"You signed proposal {signed_proposal.code}.",
         }
-    elif sent_proposal is not None and not draft_blocks_proposal:
+    elif sent_proposal is not None:
+        # Detail wording depends on whether the attached spec is
+        # still unsigned — if it is, tell the customer to expect a
+        # two-step sign; if they already signed the spec, the
+        # remaining action is just the proposal itself.
+        if draft_sent is not None:
+            detail = (
+                f"Proposal {sent_proposal.code} is ready. "
+                "Sign the attached specification sheet first, then the "
+                "proposal itself, to proceed."
+            )
+        else:
+            detail = (
+                f"Proposal {sent_proposal.code} is ready for your signature."
+            )
         proposal_stage = {
             "key": "proposal",
             "label": "Proposal awaiting signature",
             "state": "current",
             "completed_at": None,
-            "detail": f"Proposal {sent_proposal.code} is ready for you to sign.",
-        }
-    elif sent_proposal is not None and draft_blocks_proposal:
-        proposal_stage = {
-            "key": "proposal",
-            "label": "Proposal",
-            "state": "future",
-            "completed_at": None,
-            "detail": (
-                f"Sign draft spec {draft_sent.code} first — the proposal "
-                "unlocks right after."
-            ),
+            "detail": detail,
         }
     else:
         proposal_stage = {
@@ -1284,7 +1399,18 @@ def _build_pipeline(
     # shared step number with a "running in parallel" note.
     production_status = _get_ps_row(formulation, proposal_uuid=proposal_uuid)
     production_phase = getattr(production_status, "phase", "") or ""
-    production_started = production_phase not in ("", "delivered", "cancelled")
+    # PSP mirrors PRE-production lifecycle events on this row too —
+    # proposal sent, awaiting_customer_signature, proposal_accepted,
+    # awaiting_payment, etc. Those are commercial states, not
+    # manufacturing activity. Gating ``production_started`` on the
+    # phase mapping to a real production stage_key (via
+    # ``_PSP_PHASE_TO_STAGE``) stops the production stage from
+    # lighting up as ``current`` — with the PSP-side ``phase_label``
+    # ("Sent to client") bleeding through — while the customer still
+    # has to sign the proposal. Only phases starting at
+    # ``production_planning`` and beyond count as "started".
+    from apps.client_portal.api.project_stage import _PSP_PHASE_TO_STAGE
+    production_started = _PSP_PHASE_TO_STAGE.get(production_phase) is not None
     production_done_terminal = production_phase == "delivered"
     if production_done_terminal:
         production_stage = {
@@ -1425,6 +1551,7 @@ def _build_pipeline(
     return [
         request_stage,
         draft_stage,
+        proposal_drafting_stage,
         proposal_stage,
         sample_stage,
         deposit_stage,

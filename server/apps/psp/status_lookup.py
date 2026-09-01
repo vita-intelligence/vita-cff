@@ -74,8 +74,23 @@ def get_production_status_for(
     if proposal_uuid:
         return qs.filter(npd_proposal_uuid=proposal_uuid).first()
 
-    # No disambiguator — take the single row if that's all there is
-    # (Custom + RTG-first-order case), otherwise fall back to newest.
+    # No disambiguator — prefer the MAIN customer-order row for the
+    # formulation. Custom's 1:1 rule makes the main CO's uuid equal
+    # ``formulation.id`` on PSP; filtering to that row excludes the
+    # per-trial-slot SAMPLE CO rows PSP creates when the scientist
+    # spawns trial batches (each sample CO has its own uuid and
+    # progresses independently through ``production_planning →
+    # in_production → …``). Without this filter the "newest" fallback
+    # below hijacked the pipeline's Production stage the moment a
+    # trial-batch MO fired, reading to the customer as "we're
+    # manufacturing your product" while the actual product order
+    # is still at ``proposal_accepted / awaiting_final_signature``.
+    main = qs.filter(psp_customer_order_uuid=str(formulation.id)).first()
+    if main is not None:
+        return main
+
+    # Fallback for legacy rows / RTG-without-proposal_uuid callers:
+    # take the single row if that's all there is, otherwise newest.
     rows = list(qs.order_by("-updated_at")[:2])
     if not rows:
         return None

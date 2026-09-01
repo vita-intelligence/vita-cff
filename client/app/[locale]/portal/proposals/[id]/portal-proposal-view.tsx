@@ -136,6 +136,24 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
     load();
   }, [load]);
 
+  useEffect(() => {
+    // Cross-portal sync: a peer signing on the web-site portal (or a
+    // different tab of NPD) is invisible to React state until we
+    // refetch. Firing on both ``visibilitychange`` and window
+    // ``focus`` covers tab-switch AND side-by-side window focus.
+    const refetchIfVisible = () => {
+      if (document.visibilityState === "visible") {
+        void load();
+      }
+    };
+    document.addEventListener("visibilitychange", refetchIfVisible);
+    window.addEventListener("focus", refetchIfVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", refetchIfVisible);
+      window.removeEventListener("focus", refetchIfVisible);
+    };
+  }, [load]);
+
   // RTG orders don't route through R&D — the confidentiality
   // acknowledgement is dropped on those proposals, so ``acksAllTicked``
   // only requires the three commercial+spec+lead-times boxes when
