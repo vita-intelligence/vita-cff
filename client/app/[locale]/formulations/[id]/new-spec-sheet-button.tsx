@@ -56,6 +56,7 @@ function formatVersionOptionLabel(v: FormulationVersionDto): string {
 export function NewSpecSheetButton({
   orgId,
   projectCode,
+  projectType,
   versions,
   existingSheets = [],
   documentKind = "draft",
@@ -67,6 +68,14 @@ export function NewSpecSheetButton({
   //: reference. They can still override before submitting; only the
   //: initial value is borrowed.
   projectCode: string;
+  //: ``custom`` (customer-quoted run) vs ``ready_to_go`` (published
+  //: RTG SKU). Drives the run-quantity input's visibility on FINAL:
+  //: custom projects capture the contracted run size that flows into
+  //: the customer's invoice; RTG projects have no run at spec time
+  //: (different customers will later order different quantities), so
+  //: asking for a number here is meaningless. Optional so legacy
+  //: callers behave as before (assumed custom).
+  projectType?: "custom" | "ready_to_go";
   versions: readonly FormulationVersionDto[];
   //: Current sheets on the project. The BE enforces "one live draft
   //: per formulation" — when a regeneratable draft already exists,
@@ -95,6 +104,14 @@ export function NewSpecSheetButton({
   const tErrors = useTranslations("errors");
   const router = useRouter();
   const isFinal = documentKind === "final";
+  // RTG products publish a single FINAL that N customers order
+  // against — the run quantity is per-customer at order time, not a
+  // property of the recipe. Custom formulations lock the run size
+  // on the FINAL (invoice math = unit_price × quantity). Hides the
+  // quantity input entirely on RTG so the modal stops asking a
+  // question that has no meaningful answer at spec time.
+  const isRtg = projectType === "ready_to_go";
+  const askQuantity = isFinal && !isRtg;
 
   const liveDraft = useMemo(
     () =>
@@ -220,7 +237,7 @@ export function NewSpecSheetButton({
         code: code.trim(),
         cover_notes: coverNotes.trim(),
         document_kind: documentKind,
-        ...(isFinal && Number.isFinite(parsedQty) && parsedQty > 0
+        ...(askQuantity && Number.isFinite(parsedQty) && parsedQty > 0
           ? { quantity: parsedQty }
           : {}),
       });
@@ -396,7 +413,7 @@ export function NewSpecSheetButton({
                   />
                 </label>
 
-                {isFinal ? (
+                {askQuantity ? (
                   <label className="flex flex-col gap-1.5">
                     <span className={LABEL_CLASS}>Run quantity</span>
                     <input

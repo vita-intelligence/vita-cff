@@ -121,6 +121,7 @@ export function FinalSpecAvailableBanner({
         orgId={orgId}
         formulationId={overview.id}
         projectCode={overview.code ?? ""}
+        projectType={overview.project_type}
         defaults={state}
       />
     </>
@@ -135,6 +136,7 @@ function CreateFinalSpecModal({
   orgId,
   formulationId,
   projectCode,
+  projectType,
   defaults,
 }: {
   open: boolean;
@@ -146,6 +148,11 @@ function CreateFinalSpecModal({
   //: FINAL sheet's code lands as ``<projectCode>-FINAL`` by default.
   //: Scientist can still override before submitting.
   projectCode: string;
+  //: ``custom`` vs ``ready_to_go``. On RTG the run-quantity input
+  //: is hidden — an RTG's FINAL is a published SKU that N customers
+  //: order against, so the run size is per-customer at order time,
+  //: not a spec-time decision.
+  projectType?: "custom" | "ready_to_go";
   defaults: FinalSpecAvailableDto;
 }) {
   const tErrors = useTranslations("errors");
@@ -154,11 +161,21 @@ function CreateFinalSpecModal({
   const versionsQuery = useFormulationVersions(orgId, formulationId);
   const createMutation = useCreateFinalSpecFromTrial(orgId, formulationId);
 
+  // RTG projects publish a single FINAL that N customers order
+  // against — run size is per-customer at order time, not a spec-
+  // time decision. Custom projects lock the run size on the FINAL
+  // (invoice math = unit_price × quantity). Hide the input + skip
+  // the cycle lookup on RTG so the modal stops asking a question
+  // that has no meaningful answer.
+  const isRtg = projectType === "ready_to_go";
+  const askQuantity = !isRtg;
+
   // Trial-batch cycle lookup — used to seed the run-quantity input
   // from the proposal's contracted quantity. Same endpoint the spec-
   // sheets tab already hits (`useCycleForSpecTab`); 404 is expected
   // when no cycle exists yet, treat any error as "no default" rather
-  // than blocking the modal.
+  // than blocking the modal. Skipped entirely on RTG — no quantity
+  // input to seed.
   const cycleQuery = useQuery<{ proposal_line_quantity: number | null } | null>({
     queryKey: ["trial-batch-cycle-by-formulation", orgId, formulationId],
     queryFn: async () => {
@@ -174,7 +191,7 @@ function CreateFinalSpecModal({
       }
     },
     staleTime: 30_000,
-    enabled: open,
+    enabled: open && askQuantity,
   });
   const defaultQuantity = cycleQuery.data?.proposal_line_quantity ?? null;
 
@@ -270,7 +287,7 @@ function CreateFinalSpecModal({
         // or negative) so we don't send a garbage number the modal
         // silently accepts.
         ...(code.trim() ? { code: code.trim() } : {}),
-        ...(Number.isFinite(parsedQty) && parsedQty > 0
+        ...(askQuantity && Number.isFinite(parsedQty) && parsedQty > 0
           ? { quantity: parsedQty }
           : {}),
         ...(coverNotes.trim() ? { coverNotes: coverNotes.trim() } : {}),
@@ -383,21 +400,23 @@ function CreateFinalSpecModal({
                   />
                 </label>
 
-                <label className="flex flex-col gap-1.5">
-                  <span className={LABEL_CLASS}>Run quantity</span>
-                  <input
-                    type="number"
-                    min={1}
-                    value={quantity}
-                    onChange={(e) => setQuantity(e.target.value)}
-                    className={INPUT_CLASS}
-                  />
-                  <span className="text-xs text-ink-500">
-                    {defaultQuantity != null
-                      ? `Seeded from the proposal (${defaultQuantity} units). This is the last time you can change the run size — once the customer signs, it's locked.`
-                      : "This is the last time you can change the run size — once the customer signs, it's locked."}
-                  </span>
-                </label>
+                {askQuantity ? (
+                  <label className="flex flex-col gap-1.5">
+                    <span className={LABEL_CLASS}>Run quantity</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={quantity}
+                      onChange={(e) => setQuantity(e.target.value)}
+                      className={INPUT_CLASS}
+                    />
+                    <span className="text-xs text-ink-500">
+                      {defaultQuantity != null
+                        ? `Seeded from the proposal (${defaultQuantity} units). This is the last time you can change the run size — once the customer signs, it's locked.`
+                        : "This is the last time you can change the run size — once the customer signs, it's locked."}
+                    </span>
+                  </label>
+                ) : null}
 
                 <label className="flex flex-col gap-1.5">
                   <span className={LABEL_CLASS}>Cover notes</span>

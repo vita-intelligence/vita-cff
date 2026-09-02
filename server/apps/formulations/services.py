@@ -5481,6 +5481,17 @@ def _snapshot_packaging_combos(
                         "item_id": str(row.item_id) if row.item_id else None,
                         "quantity": row.quantity,
                         "sort_order": row.sort_order,
+                        # Per-item stage override (Option A). Frozen as
+                        # ``stage_index`` because the concrete stage id
+                        # gets torn down + rebuilt on rollback (same
+                        # trick the combo-level ``stage_index`` uses).
+                        # ``None`` when the item inherits the combo's
+                        # default stage.
+                        "stage_index": (
+                            stage_index_by_id.get(str(row.stage_id))
+                            if row.stage_id is not None
+                            else None
+                        ),
                     }
                     for row in combo.items.all()
                 ],
@@ -6003,8 +6014,25 @@ def save_version(
             stages_with_lines = {
                 sid for sid in line_stage_ids if sid is not None
             }
+            # RTG relaxation: a stage covered by any packaging combo
+            # (via combo.stage or per-item stage) still counts as
+            # populated, since the combo overlay lands there at
+            # customer-order time. Keep the reason list consistent
+            # with the gate in ``_compute_stage_gates``.
+            combo_stage_ids: set = set()
+            if formulation.project_type == "ready_to_go":
+                for combo in formulation.packaging_combos.all().prefetch_related(
+                    "items",
+                ):
+                    combo_default = combo.stage_id
+                    for item in combo.items.all():
+                        target = item.stage_id or combo_default
+                        if target is not None:
+                            combo_stage_ids.add(target)
             if stage_ids and any(
-                sid not in stages_with_lines for sid in stage_ids
+                sid not in stages_with_lines
+                and sid not in combo_stage_ids
+                for sid in stage_ids
             ):
                 missing.append("empty_stages")
             raise FormulationBuilderIncomplete(tuple(missing))
@@ -6523,6 +6551,19 @@ def rollback_to_version(
                         item=combo_items_by_id[str(item_data["item_id"])],
                         quantity=int(item_data.get("quantity") or 1),
                         sort_order=int(item_data.get("sort_order") or 0),
+                        # Per-item stage override (Option A). Remapped
+                        # from ``stage_index`` back to the freshly-
+                        # created stage row's id, same trick the
+                        # combo-level ``stage_id`` uses above. Missing
+                        # on legacy snapshots (pre-migration 0076) —
+                        # items inherit the combo default in that case.
+                        stage_id=(
+                            stage_id_by_index.get(
+                                int(item_data["stage_index"])
+                            )
+                            if item_data.get("stage_index") is not None
+                            else None
+                        ),
                     )
                     for item_data in (combo_data.get("items") or [])
                     if item_data.get("item_id")

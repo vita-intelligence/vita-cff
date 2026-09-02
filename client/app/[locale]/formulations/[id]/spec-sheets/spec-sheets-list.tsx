@@ -129,6 +129,7 @@ export function SpecSheetsList({
   orgId,
   formulationId,
   projectCode,
+  projectType,
   initialPage,
   canWrite,
 }: {
@@ -139,6 +140,10 @@ export function SpecSheetsList({
   //: the scientist already typed at project-creation time — they can
   //: still override before saving.
   projectCode: string;
+  //: ``custom`` vs ``ready_to_go`` — RTG hides the run-quantity
+  //: input on FINAL creates (run size is per-customer at order time,
+  //: not a spec-time decision).
+  projectType?: "custom" | "ready_to_go";
   initialPage: PaginatedSpecificationsDto;
   canWrite: boolean;
 }) {
@@ -269,6 +274,7 @@ export function SpecSheetsList({
             <NewSpecSheetButton
               orgId={orgId}
               projectCode={projectCode}
+              projectType={projectType}
               versions={versions}
               existingSheets={sheets}
             />

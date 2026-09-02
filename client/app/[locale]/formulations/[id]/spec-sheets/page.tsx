@@ -42,6 +42,7 @@ export default async function ProjectSpecSheetsPage({
               orgId={organization.id}
               formulationId={formulation.id}
               projectCode={formulation.code ?? ""}
+              projectType={overview.project_type}
               initialPage={sheetsPage}
               canWrite={canWrite}
             />

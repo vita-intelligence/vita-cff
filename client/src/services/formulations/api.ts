@@ -81,6 +81,11 @@ export interface PackagingComboItemDto {
   readonly item_code: string;
   readonly quantity: number;
   readonly sort_order: number;
+  /** Per-item stage override. When ``null`` the item inherits the
+   *  parent combo's ``stage_id`` at cascade time. Lets a scientist
+   *  split a combo across stages (bottle at bottling, label at
+   *  labelling) without exploding the combo on the picker. */
+  readonly stage_id: string | null;
 }
 
 
@@ -115,6 +120,10 @@ export interface PackagingComboInput {
   readonly items: ReadonlyArray<{
     readonly item_id: string;
     readonly quantity: number;
+    /** Per-item stage override. Sends ``null`` to inherit the
+     *  combo's ``stage_id``. Server validates the stage belongs to
+     *  this formulation when set. */
+    readonly stage_id?: string | null;
   }>;
 }
 

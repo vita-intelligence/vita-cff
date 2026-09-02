@@ -918,8 +918,30 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
     stage_ids_with_lines = {
         stage_id for stage_id in line_stage_ids if stage_id is not None
     }
+    # RTG relaxation: a stage counts as populated if it has an
+    # ingredient line OR any packaging combo routes at least one
+    # item to it. Combos are legitimate stage occupants at customer-
+    # order time (the overlay drops the picked combo's items into
+    # the matching stage's MO), so gating on "regular ingredient
+    # only" refuses legitimate setups where e.g. a bottling stage
+    # is nothing but "bottle + label + lid" from the combo. Custom
+    # projects stay strict — they wire packaging as normal
+    # ingredient lines, so the same "no line = empty stage" rule
+    # already covers them.
+    combo_stage_ids: set = set()
+    if formulation.project_type == "ready_to_go":
+        for combo in formulation.packaging_combos.all().prefetch_related(
+            "items",
+        ):
+            combo_default = combo.stage_id
+            for item in combo.items.all():
+                target = item.stage_id or combo_default
+                if target is not None:
+                    combo_stage_ids.add(target)
     all_stages_have_lines = has_stages and all(
-        stage_id in stage_ids_with_lines for stage_id in stage_ids
+        stage_id in stage_ids_with_lines
+        or stage_id in combo_stage_ids
+        for stage_id in stage_ids
     )
     # Packaging check — different for RTG vs Custom projects.
     #
@@ -963,44 +985,25 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
             stage_types_ok = False
             break
 
-    # Semi-consumption check — for every non-terminal stage that has
-    # a mirrored PSP semi item, verify some line on a downstream
-    # stage points at that PSP uuid. Otherwise the stage produces a
-    # semi (Alex Gummies Liquid Mix, etc.) that nothing downstream
-    # uses — cooking output has to be routed into pouch filling or
-    # it's stranded. Skip stages with ``psp_semi_finished_uuid`` NULL
-    # (never pushed) — check refires after the first save version.
-    stage_by_id: dict[str, Any] = {str(s.id): s for s in ordered_stages}
+    # Semi-consumption check — retired.
+    #
+    # The check used to demand every non-terminal stage's semi be
+    # explicitly referenced by an ingredient line on some downstream
+    # stage, otherwise the semi was considered "stranded" (cooking
+    # output nothing downstream picked up). That assumption predates
+    # the auto-inject in :func:`apps.psp.services._push_staged_cascade`
+    # (see the ``previous_semi_uuid`` handling — it prepends the prior
+    # semi as a synthetic BOM input on EVERY stage, including empty
+    # combo-only stages). With auto-inject in place the semi is always
+    # consumed by the immediate next stage, so the check misfires on
+    # legitimate linear chains where a downstream stage carries only
+    # packaging combo items (typical RTG setup — bottling +
+    # labelling stages each hold nothing but the picked combo's
+    # items). Keep the flag ``True`` unconditionally so the gate
+    # stays consistent with what the cascade actually does; advanced
+    # multi-branch bypasses that would genuinely orphan a semi
+    # remain caught at push time by the cascade's own guards.
     stage_semis_ok = True
-    if len(ordered_stages) > 1:
-        # Preload each line's item.psp_source_uuid + stage_id so we
-        # only make one round-trip. select_related covers the FK.
-        lines_by_stage: dict[str, list[str]] = {}
-        for line in formulation.lines.select_related("item"):
-            stage_id = str(line.stage_id) if line.stage_id else ""
-            if not stage_id:
-                continue
-            psp_uuid = str(
-                getattr(line.item, "psp_source_uuid", None) or ""
-            )
-            if not psp_uuid:
-                continue
-            lines_by_stage.setdefault(stage_id, []).append(psp_uuid)
-        for idx, stage in enumerate(ordered_stages):
-            is_last = idx == len(ordered_stages) - 1
-            if is_last:
-                continue
-            semi_uuid = str(stage.psp_semi_finished_uuid or "")
-            if not semi_uuid:
-                continue
-            consumed = False
-            for downstream in ordered_stages[idx + 1 :]:
-                if semi_uuid in lines_by_stage.get(str(downstream.id), []):
-                    consumed = True
-                    break
-            if not consumed:
-                stage_semis_ok = False
-                break
 
     # Setup spec-sheet minimums — human-answer fields that PSP treats
     # as optional but that a real spec sheet legally / procedurally

@@ -83,6 +83,13 @@ export function TrialBatchDetail({
     }
   }, [bom.dosage_form, tBatches]);
 
+  // Plural form of the dosage-form word for use in the scale
+  // equation ("60 capsules", "1000 tablets"). English adds "s" for
+  // every unit_name value we ship (capsule → capsules, scoop → scoops,
+  // dose → doses, unit → units) so the naive +s is safe here. Keeps
+  // the equation copy grammatically clean without a per-form lookup.
+  const unitPlural = useMemo(() => `${unitName}s`, [unitName]);
+
   // Localised "DD Mon YYYY" used in the print header. Deterministic
   // across server / client because we call ``Intl.DateTimeFormat``
   // with an explicit locale rather than the platform default — the
@@ -287,11 +294,13 @@ export function TrialBatchDetail({
             {bom.kind === "trial"
               ? tBatches("detail.scale_equation_unit", {
                   units: formatInteger(bom.total_units_in_batch),
+                  unitPlural,
                 })
               : tBatches("detail.scale_equation", {
-                  packs: formatInteger(bom.batch_size_units),
+                  packs: bom.batch_size_units,
                   perPack: formatInteger(bom.units_per_pack),
                   total: formatInteger(bom.total_units_in_batch),
+                  unitPlural,
                 })}
           </p>
         </div>
@@ -444,11 +453,13 @@ export function TrialBatchDetail({
             {bom.kind === "trial"
               ? tBatches("detail.scale_equation_unit", {
                   units: formatInteger(bom.total_units_in_batch),
+                  unitPlural,
                 })
               : tBatches("detail.scale_equation", {
-                  packs: formatInteger(bom.batch_size_units),
+                  packs: bom.batch_size_units,
                   perPack: formatInteger(bom.units_per_pack),
                   total: formatInteger(bom.total_units_in_batch),
+                  unitPlural,
                 })}
           </div>
         </div>

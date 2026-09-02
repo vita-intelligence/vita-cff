@@ -50,6 +50,11 @@ def _combo_payload(combo: PackagingCombo) -> dict:
                 "item_code": row.item.internal_code if row.item_id else "",
                 "quantity": row.quantity,
                 "sort_order": row.sort_order,
+                # Per-item stage override. When ``null`` the item
+                # inherits ``combo.stage_id`` at cascade time — mirror
+                # that fallback on the FE so the picker can default
+                # to "same as combo" without a special sentinel.
+                "stage_id": str(row.stage_id) if row.stage_id else None,
             }
             for row in combo.items.select_related("item").all()
         ],
@@ -235,11 +240,37 @@ class PackagingCombosView(APIView):
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
+                # Per-item stage override. Nullable — when blank the
+                # item inherits its parent combo's stage at cascade
+                # time. Must reference a stage on this formulation
+                # when set (reuse the combo-level validation set).
+                item_stage_raw = ir.get("stage_id")
+                if item_stage_raw is None or (
+                    isinstance(item_stage_raw, str)
+                    and not item_stage_raw.strip()
+                ):
+                    item_stage_id: str | None = None
+                else:
+                    item_candidate = str(item_stage_raw).strip()
+                    if item_candidate not in valid_stage_ids:
+                        return Response(
+                            {
+                                "error": "invalid_stage",
+                                "detail": (
+                                    f'Combo "{name}" item #{j} is assigned '
+                                    "to a stage that doesn't belong to this "
+                                    "formulation."
+                                ),
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    item_stage_id = item_candidate
                 cleaned_items.append(
                     {
                         "item": item_cache[item_id],
                         "quantity": qty,
                         "sort_order": j,
+                        "stage_id": item_stage_id,
                     }
                 )
             cleaned.append(
@@ -273,6 +304,7 @@ class PackagingCombosView(APIView):
                             item=ci["item"],
                             quantity=ci["quantity"],
                             sort_order=ci["sort_order"],
+                            stage_id=ci["stage_id"],
                         )
                         for ci in row["items"]
                     ]

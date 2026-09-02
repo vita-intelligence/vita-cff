@@ -2276,6 +2276,22 @@ class PackagingComboItem(models.Model):
         default=1,
         help_text=_("Number of this item consumed per unit sold."),
     )
+    #: Per-item stage override. When set, this specific packaging line
+    #: routes to the named stage; when null it inherits the parent
+    #: combo's ``stage``. Lets scientists split a combo across stages
+    #: (bottle+lid at bottling, label at labelling) without exploding
+    #: the combo into one-per-stage sub-combos on the picker.
+    stage = models.ForeignKey(
+        "formulations.FormulationStage",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="packaging_combo_items",
+        help_text=_(
+            "Override the combo's default stage for this specific item. "
+            "Leave blank to inherit the combo's stage."
+        ),
+    )
     sort_order = models.PositiveIntegerField(default=0)
 
     class Meta:

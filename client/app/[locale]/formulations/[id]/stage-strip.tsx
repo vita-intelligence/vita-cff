@@ -203,12 +203,41 @@ function PspCodeChip({
  * ``_ensure_finished_product`` so scientists see the same value on
  * screen as what PSP would receive on an "auto" push.
  */
+/**
+ * Human-readable product name for a formulation. RTG projects auto-
+ * generate ``name`` as ``RTG00001`` — a code, not a product name — so
+ * ``rtg_display_name`` ("Vitamin C Capsules 60s") is what the customer
+ * actually sees. Custom projects have no display-name field, so
+ * ``name`` is already the product label. Mirrors the server-side
+ * ``_human_readable_formulation_name`` in ``psp/services.py``.
+ */
+function resolveFormulationDisplayName(formulation: {
+  name: string;
+  rtg_display_name?: string;
+  project_type?: string;
+}): string {
+  const isRtg = formulation.project_type === "ready_to_go";
+  if (isRtg) {
+    const display = formulation.rtg_display_name?.trim();
+    if (display) return display;
+  }
+  return formulation.name;
+}
+
+
 function derivedPspIdentity(
-  formulation: { id: string; code: string; name: string },
+  formulation: {
+    id: string;
+    code: string;
+    name: string;
+    rtg_display_name?: string;
+    project_type?: string;
+  },
   draft: Pick<StageDraft, "name" | "sort_order" | "psp_item_type">,
 ): { name: string; sku: string; description: string } {
   const stageLabel = draft.name?.trim() || `Stage ${draft.sort_order + 1}`;
   const isFinished = draft.psp_item_type === "finished_product";
+  const displayName = resolveFormulationDisplayName(formulation).trim();
   return {
     // Finished-stage PSP name mirrors the Setup product name — the
     // finished stage IS the finished product, so its PSP identity
@@ -216,7 +245,7 @@ function derivedPspIdentity(
     // stage strip's name input is disabled for the finished stage
     // so the two surfaces can't drift.
     name: isFinished
-      ? (formulation.name?.trim() ||
+      ? (displayName ||
         `${formulation.code} — ${stageLabel}`)
       : `${formulation.code} — ${stageLabel}`,
     sku: isFinished
@@ -828,7 +857,7 @@ export function StageStrip({
   const saveHandleRef = useRef<(() => Promise<FormulationDto>) | null>(null);
   saveHandleRef.current = async () => {
     const result = await upsert.mutateAsync({
-      stages: drafts.map((d, i) => draftToInput(d, i, formulation.name)),
+      stages: drafts.map((d, i) => draftToInput(d, i, resolveFormulationDisplayName(formulation))),
     });
     onSaved?.(result);
     return result;
@@ -868,7 +897,7 @@ export function StageStrip({
     // placeholder stays anchored at the bottom of the strip. Terminal
     // is always the last entry (the seeder guarantees it; the whole
     // production graph flows *into* it). Sort_order gets rewritten
-    // at save time by ``draftToInput(d, i, formulation.name)`` from the array index,
+    // at save time by ``draftToInput(d, i, resolveFormulationDisplayName(formulation))`` from the array index,
     // so the ``sort_order: 0`` here is just a placeholder that never
     // reaches the server.
     setDrafts((prev) => {
@@ -931,7 +960,7 @@ export function StageStrip({
 
   function save() {
     upsert.mutate({
-      stages: drafts.map((d, i) => draftToInput(d, i, formulation.name)),
+      stages: drafts.map((d, i) => draftToInput(d, i, resolveFormulationDisplayName(formulation))),
     });
   }
 
@@ -1377,7 +1406,7 @@ export function StageStrip({
                       // save so a legacy diverged value gets rewritten.
                       <>
                         <input
-                          value={formulation.name}
+                          value={resolveFormulationDisplayName(formulation)}
                           disabled
                           className={`${inputClass} mt-1 cursor-not-allowed bg-ink-50`}
                           title="Managed on Setup — edit the product name there"
@@ -1644,7 +1673,7 @@ export function StageStrip({
                     // ``draftToInput`` force-syncs on save.
                     <>
                       <input
-                        value={formulation.name}
+                        value={resolveFormulationDisplayName(formulation)}
                         disabled
                         className={`${inputClass} mt-1 cursor-not-allowed bg-ink-50`}
                         title="Managed on Setup — edit the product name there"

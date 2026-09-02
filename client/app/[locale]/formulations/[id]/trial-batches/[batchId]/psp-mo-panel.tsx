@@ -39,6 +39,7 @@ import {
   type TrialBatchDto,
 } from "@/services/trial_batches";
 import { usePspRndWarehouses } from "@/services/psp";
+import { usePackagingCombos } from "@/services/formulations";
 
 
 export function PspMoPanel({
@@ -149,24 +150,22 @@ function CreateMoModal({
 }) {
   const tErrors = useTranslations("errors");
 
-  // Project_type and finished-product uuid derive from the batch +
-  // formulation and are never asked:
-  //   * project_type → always "trial" for trial batches
-  //   * item_uuid → ``Formulation.psp_finished_product_uuid``
-  //
-  // Quantity is EDITABLE — defaults to ``TrialBatch.batch_size_units``
-  // but the scientist commonly wants PSP to run a smaller / larger
-  // size than the planned scale on this specific MO (e.g. cycle
-  // slot 1 was planned at 20 units for the initial pass, but this
-  // MO run should produce 10). The backend already accepts an
-  // optional ``quantity`` override; we just have to surface the
-  // input.
-  //
-  // Warehouse is per-MO too — multi-site R&D setups route different
-  // trial batches to different R&D warehouses — via a dropdown
-  // filtered to warehouses PSP has flagged as R&D-tagged.
+  // Trial batch's stored ``kind`` + ``packaging_combo`` are planning
+  // placeholders — the run identity gets committed here, on the MO
+  // modal, so scientists don't answer the same question twice. Seed
+  // from the batch's stored values so an already-picked identity
+  // stays sticky on re-open; new/never-committed batches default to
+  // "sample" + no combo.
+  const [kind, setKind] = useState<"trial" | "sample">(
+    batch.kind === "trial" ? "trial" : "sample",
+  );
+  const [packagingComboId, setPackagingComboId] = useState<string>(
+    batch.packaging_combo_id ?? "",
+  );
   const [quantity, setQuantity] = useState<string>(
-    String(batch.batch_size_units ?? 0),
+    batch.batch_size_units && batch.batch_size_units > 1
+      ? String(batch.batch_size_units)
+      : "",
   );
   // "packs" (default) = pack count, matches TrialBatch.batch_size_units
   //                     semantics for sample batches — 10 → 10 bottles.
@@ -184,6 +183,15 @@ function CreateMoModal({
     | null
   >(null);
 
+  // Packaging combos — fetched only when kind=sample. Trial batches
+  // don't carry combos so we skip the request entirely.
+  const combosQuery = usePackagingCombos(
+    orgId,
+    batch.formulation_id,
+    { enabled: kind === "sample" },
+  );
+  const combos = combosQuery.data?.items ?? [];
+
   const warehousesQuery = usePspRndWarehouses(orgId);
   const warehouses = warehousesQuery.data?.items ?? [];
   const warehousesLoading = warehousesQuery.isLoading;
@@ -200,8 +208,11 @@ function CreateMoModal({
   }, [warehouseUuid, warehouses]);
 
   const servingsPerPack = Math.max(1, batch.servings_per_pack ?? 1);
-  const showUnitsToggle =
-    batch.kind === "sample" && servingsPerPack > 1;
+  // Reads the LIVE ``kind`` state (not the batch's stored value)
+  // because the scientist now picks kind here. Switching to Trial
+  // hides the packs/units toggle since trial batches always count
+  // in individual units and don't have a pack notion.
+  const showUnitsToggle = kind === "sample" && servingsPerPack > 1;
   // Dosage-form-aware nouns (server-owned mapping, exposed on the
   // TrialBatchDto). Falls back to generic "unit" / "units" for
   // legacy versions where the snapshot doesn't record a dosage
@@ -251,6 +262,17 @@ function CreateMoModal({
         // batches + one-per-pack formulations pass the default
         // ("packs" ≡ passthrough) and the server ignores the field.
         size_mode: showUnitsToggle ? sizeMode : undefined,
+        // Run-identity fields — kind + combo now get committed here,
+        // not on Plan-Batch. Server updates the trial batch's stored
+        // values before firing the MO so downstream reads (BOM view,
+        // audit trail, etc.) stay consistent with what actually ran.
+        kind,
+        packaging_combo_id:
+          kind === "sample"
+            ? packagingComboId
+              ? packagingComboId
+              : null
+            : null,
         warehouse_uuid: warehouseUuid,
         due_date: dueDate.trim() || undefined,
         notes: notes.trim() || undefined,
@@ -303,6 +325,138 @@ function CreateMoModal({
         ) : null}
 
         <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-4">
+          {/* Kind — trial (bench-scale, no packaging) vs sample
+              (customer-path packed run). Was on Plan-Batch; moved
+              here so scientists pick it once at commit-to-produce
+              time instead of twice. Batch's stored kind still seeds
+              the initial state so an already-committed batch's
+              second MO defaults to the same identity. */}
+          <fieldset className="flex flex-col gap-1.5">
+            <legend className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-700">
+              <FlaskConical className="h-3 w-3 text-ink-500" />
+              Kind
+            </legend>
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  ["trial", "Trial"],
+                  ["sample", "Sample"],
+                ] as const
+              ).map(([value, label]) => (
+                <label
+                  key={value}
+                  className={`flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition-colors ${
+                    kind === value
+                      ? "bg-orange-500 text-ink-0 ring-orange-500"
+                      : "bg-ink-0 text-ink-700 ring-ink-200 hover:bg-ink-50"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="psp-mo-kind"
+                    value={value}
+                    checked={kind === value}
+                    onChange={() => setKind(value)}
+                    className="sr-only"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <p className="text-[10px] text-ink-500">
+              {kind === "trial"
+                ? "Bench-scale test — bypasses PSP's Final Release, no packaging combo."
+                : "Customer-sample production with a picked packaging combo. Follows the full commercial release path."}
+            </p>
+          </fieldset>
+
+          {/* Packaging combo — only when kind=sample. Fetched from
+              the formulation's ``packaging_combos`` endpoint the
+              first time the sample tab is shown. Empty state points
+              at the Builder → Routing tab where combos get defined. */}
+          {kind === "sample" ? (
+            <fieldset className="flex flex-col gap-1.5">
+              <legend className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-700">
+                <Layers className="h-3 w-3 text-ink-500" />
+                Packaging combo
+              </legend>
+              {combosQuery.isLoading ? (
+                <p className="text-[11px] text-ink-500">
+                  Loading combos…
+                </p>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  <label
+                    className={`flex cursor-pointer items-start gap-2 rounded-lg px-3 py-2 text-xs ring-1 ring-inset transition-colors ${
+                      packagingComboId === ""
+                        ? "bg-orange-50 ring-orange-400"
+                        : "bg-ink-0 ring-ink-200 hover:bg-ink-50"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="psp-mo-combo"
+                      value=""
+                      checked={packagingComboId === ""}
+                      onChange={() => setPackagingComboId("")}
+                      className="mt-0.5 h-3.5 w-3.5"
+                    />
+                    <div className="flex flex-col gap-0.5">
+                      <span className="font-medium text-ink-1000">
+                        No packaging
+                      </span>
+                      <span className="text-[11px] text-ink-500">
+                        MO runs the recipe stages but skips packaging —
+                        loose bulk output (capsules in a bag, powder in a jar).
+                      </span>
+                    </div>
+                  </label>
+                  {combos.map((combo) => (
+                    <label
+                      key={combo.id}
+                      className={`flex cursor-pointer items-start gap-2 rounded-lg px-3 py-2 text-xs ring-1 ring-inset transition-colors ${
+                        packagingComboId === combo.id
+                          ? "bg-orange-50 ring-orange-400"
+                          : "bg-ink-0 ring-ink-200 hover:bg-ink-50"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="psp-mo-combo"
+                        value={combo.id}
+                        checked={packagingComboId === combo.id}
+                        onChange={() => setPackagingComboId(combo.id)}
+                        className="mt-0.5 h-3.5 w-3.5"
+                      />
+                      <div className="flex flex-col gap-0.5">
+                        <span className="font-medium text-ink-1000">
+                          {combo.name}
+                        </span>
+                        {combo.items.length > 0 ? (
+                          <span className="text-[11px] text-ink-500">
+                            {combo.items
+                              .map(
+                                (item) =>
+                                  `${item.quantity}× ${item.item_name || item.item_code || "—"}`,
+                              )
+                              .join(" · ")}
+                          </span>
+                        ) : null}
+                      </div>
+                    </label>
+                  ))}
+                  {combos.length === 0 && !combosQuery.isLoading ? (
+                    <p className="text-[11px] text-ink-500">
+                      No packaging combos defined on this formulation.
+                      Add them on Builder → Routing before running a
+                      packed sample.
+                    </p>
+                  ) : null}
+                </div>
+              )}
+            </fieldset>
+          ) : null}
+
           <div className="flex flex-col gap-2">
             <label
               htmlFor="psp-mo-quantity"
@@ -356,14 +510,9 @@ function CreateMoModal({
             />
 
             <p className="text-[10px] text-ink-500">
-              Defaults to the trial batch&apos;s planned scale
-              ({batch.batch_size_units} units).
               {showUnitsToggle
-                ? ` Switch to Individual ${unitPlural} to ship a handful of loose`
-                  + ` ${unitPlural} instead of a full pack — common on cycle`
-                  + " sample slots."
-                : " Change to run a smaller or larger MO than the planned"
-                  + " size without editing the trial batch."}
+                ? `Complete packs (default) = full bottles / pouches. Switch to Individual ${unitPlural} to ship a handful of loose ${unitPlural} instead of a full pack — common on cycle sample slots.`
+                : "Number of finished units this MO will produce."}
             </p>
 
             {showUnitsToggle && previewCapsules !== null && previewPacks !== null ? (

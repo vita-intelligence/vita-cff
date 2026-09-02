@@ -3994,8 +3994,27 @@ export function FormulationBuilder({
     // definitions + per-combo stage assignments (computed above the
     // memo); custom projects still use the ingredient-line signal.
     const hasPackaging = isRtg ? rtgPackagingReady : hasPackagingLine;
+    // RTG relaxation (mirrors the server-side gate in
+    // ``_compute_stage_gates``): a stage counts as populated if it
+    // has an ingredient line OR at least one packaging-combo item
+    // routes to it. Combos are legitimate occupants at customer-order
+    // time (the overlay lands the picked combo's items on the
+    // matching stage's MO), so "no line but a combo covers me" is a
+    // valid setup — most commonly a bottling-only stage on an RTG
+    // project. Custom projects stay strict; their packaging IS a
+    // regular line, so the plain line check already fits.
+    const combosStageIds = new Set<string>();
+    if (isRtg) {
+      for (const combo of rtgCombos) {
+        const comboDefault = combo.stage_id;
+        for (const it of combo.items) {
+          const target = it.stage_id ?? comboDefault ?? null;
+          if (target) combosStageIds.add(target);
+        }
+      }
+    }
     const emptyStages = formulation.stages.filter(
-      (s) => !stagesWithLines.has(s.id),
+      (s) => !stagesWithLines.has(s.id) && !combosStageIds.has(s.id),
     );
     const hasStages = formulation.stages.length > 0;
     const hasLines = lines.length > 0;
@@ -4133,7 +4152,7 @@ export function FormulationBuilder({
       missingSetup,
       isComplete,
     };
-  }, [lines, formulation.stages, effectiveRouting, metadata, isRtg, rtgPackagingReady]);
+  }, [lines, formulation.stages, effectiveRouting, metadata, isRtg, rtgPackagingReady, rtgCombos]);
 
 
   // Pick-in-flight tracking so the picker overlay + row-disable

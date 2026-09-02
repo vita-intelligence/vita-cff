@@ -239,9 +239,11 @@ function dtoToInput(combo: PackagingComboDto): PackagingComboInput {
     name: combo.name,
     price_delta: combo.price_delta,
     is_default: combo.is_default,
+    stage_id: combo.stage_id,
     items: combo.items.map((row) => ({
       item_id: row.item_id,
       quantity: row.quantity,
+      stage_id: row.stage_id,
     })),
   };
 }
@@ -276,13 +278,20 @@ function ComboEditor({
   const [priceDelta, setPriceDelta] = useState(initial?.price_delta ?? "0");
   const [isDefault, setIsDefault] = useState(initial?.is_default ?? false);
   const [items, setItems] = useState<
-    { item_id: string; item_name: string; item_code: string; quantity: number }[]
+    {
+      item_id: string;
+      item_name: string;
+      item_code: string;
+      quantity: number;
+      stage_id: string | null;
+    }[]
   >(
     initial?.items.map((row) => ({
       item_id: row.item_id,
       item_name: row.item_name,
       item_code: row.item_code,
       quantity: row.quantity,
+      stage_id: row.stage_id,
     })) ?? [],
   );
   const [search, setSearch] = useState("");
@@ -470,6 +479,7 @@ function ComboEditor({
             item_name: opt.name,
             item_code: opt.code,
             quantity: 1,
+            stage_id: null,
           },
         ]);
         return;
@@ -485,6 +495,7 @@ function ComboEditor({
               item_name: dto.name,
               item_code: dto.internal_code || opt.code,
               quantity: 1,
+              stage_id: null,
             },
           ]);
         },
@@ -525,7 +536,17 @@ function ComboEditor({
       name: trimmed,
       price_delta: numDelta.toFixed(2),
       is_default: isDefault,
-      items: items.map((i) => ({ item_id: i.item_id, quantity: i.quantity })),
+      // Stage assignment lives on the Routing tab, not this modal —
+      // preserve whatever the DTO carried in so an inline item edit
+      // doesn't wipe the routing assignment. New combos default to
+      // ``null`` (unassigned) and the scientist wires them on the
+      // Routing tab afterwards.
+      stage_id: initial?.stage_id ?? null,
+      items: items.map((i) => ({
+        item_id: i.item_id,
+        quantity: i.quantity,
+        stage_id: i.stage_id,
+      })),
     });
   };
 

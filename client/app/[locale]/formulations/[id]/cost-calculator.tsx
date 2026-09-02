@@ -633,10 +633,22 @@ export function CostCalculator({
   const totalLabel = useMemo(() => {
     if (data?.psp_configured === false) return tCost("pill.psp_not_ready");
     if (error) return tCost("pill.error");
-    if (isLoading && grandTotal === 0) return tCost("pill.loading");
+    // Hold the money display behind "Loading…" while EITHER the
+    // ingredients or routing query is still on its first fetch —
+    // whichever resolves first would otherwise flash a partial
+    // total that looks final ("£0.76") and then jump when the
+    // second lands ("£3.02"), which reads as a price change
+    // rather than as fresh data arriving. Once both queries have
+    // data (even if some individual rows are unpriced — those
+    // stay counted in ``derived.missing`` and surface via the
+    // amber badge), show the real number.
+    if (isLoading || routingQuery.isLoading) {
+      return tCost("pill.loading");
+    }
     return formatMoney(grandTotal, grandCurrency);
   }, [
     isLoading,
+    routingQuery.isLoading,
     data?.psp_configured,
     error,
     grandTotal,

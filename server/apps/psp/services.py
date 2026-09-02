@@ -3821,9 +3821,29 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         if combo is not None:
             combo_uuid = str(combo.id)
             combo_name = combo.name or ""
-            for row in combo.items.select_related("item").all():
+            # PSP stage uuid the whole combo defaults to (the routing
+            # tab picks). Resolved once outside the item loop — every
+            # item without an explicit override rides this stage.
+            combo_stage_psp_uuid = _resolve_stage_psp_uuid(
+                combo.stage, formulation
+            )
+            for row in combo.items.select_related("item", "stage").all():
                 if row.item_id is None:
                     continue
+                # Per-item stage override wins over the combo default
+                # so scientists can split bottle → bottling stage and
+                # label → labelling stage on the same combo. Falls back
+                # to the combo default (which itself can be null on
+                # in-progress combos) so pre-Option-A combos ship
+                # exactly as they did before.
+                item_stage_psp_uuid: str | None = None
+                if row.stage_id is not None:
+                    item_stage_psp_uuid = _resolve_stage_psp_uuid(
+                        row.stage, formulation
+                    )
+                effective_stage_uuid = (
+                    item_stage_psp_uuid or combo_stage_psp_uuid
+                )
                 combo_items.append(
                     {
                         "npd_item_uuid": str(row.item_id),
@@ -3834,6 +3854,16 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
                         ),
                         "name": row.item.name or "",
                         "quantity": int(row.quantity or 1),
+                        # PSP-side stage identity. ``psp_stage_uuid`` is
+                        # the semi-finished item uuid on intermediate
+                        # stages and ``None`` on the finished stage
+                        # (PSP resolves finished-stage overlays against
+                        # the root MO). Overlay booking on PSP walks
+                        # the MO tree to find the child whose
+                        # ``item.uuid`` matches; when it doesn't, the
+                        # item falls back to the root MO — preserving
+                        # legacy behaviour for pre-Option-A payloads.
+                        "psp_stage_uuid": effective_stage_uuid,
                     }
                 )
 
@@ -4446,6 +4476,32 @@ def push_bom_to_psp(
             organization.pk,
         )
         return None
+
+
+def _resolve_stage_psp_uuid(stage: Any, formulation: Any) -> str | None:
+    """PSP-side identity for a formulation stage — the semi-finished
+    item uuid on intermediate stages, ``None`` on the finished stage
+    (PSP resolves finished-stage overlays against the root MO by
+    default). Returns ``None`` when the stage hasn't been pushed yet
+    or when the input is falsy so callers can safely chain into a
+    combo-level fallback.
+
+    Used by the packaging-combo push payload so PSP can route each
+    overlay item to the specific stage MO in the tree it belongs to
+    (bottle → bottling stage, label → labelling stage). Missing
+    uuid ⇒ overlay falls back to the root MO, preserving legacy
+    behaviour on formulations that haven't cascaded yet.
+    """
+
+    if stage is None:
+        return None
+    # Finished-product stage rides the root MO — no per-child
+    # routing needed. Return None so the CO controller books the
+    # item on the parent MO exactly as it always has.
+    if str(getattr(stage, "psp_item_type", "") or "") == "finished_product":
+        return None
+    semi_uuid = getattr(stage, "psp_semi_finished_uuid", None)
+    return str(semi_uuid) if semi_uuid else None
 
 
 def _lines_for_stage(formulation: Any, stage_id: Any) -> list[Any]:
@@ -5919,6 +5975,32 @@ def _push_staged_cascade(
     return last_response
 
 
+def _human_readable_formulation_name(formulation: Any) -> str:
+    """Pick the operator-facing name for a formulation when pushing
+    its identity to PSP.
+
+    Custom projects: ``formulation.name`` is the product name the
+    scientist typed at CFF-attach time ("ImpHowr Gummies") — use it.
+
+    RTG projects: ``formulation.name`` is a system-generated code
+    ("RTG00001") that reads as noise on the shop-floor. The customer-
+    facing display name lives on ``rtg_display_name`` ("Vitamin C
+    Capsules 60s") and IS what operators need to see next to a MO
+    parts table. Prefer that when set; fall back to ``name`` when
+    the display name hasn't been filled in yet (fresh RTG draft).
+
+    Empty string return means the caller should walk its own fallback
+    ladder (stage name, formulation.code, etc.).
+    """
+
+    project_type = str(getattr(formulation, "project_type", "") or "").strip()
+    if project_type == "ready_to_go":
+        display = (getattr(formulation, "rtg_display_name", "") or "").strip()
+        if display:
+            return display
+    return (getattr(formulation, "name", "") or "").strip()
+
+
 def _ensure_semi_finished(
     *, client: PspClient, formulation: Any, stage: Any
 ) -> str | None:
@@ -5946,8 +6028,15 @@ def _ensure_semi_finished(
         or f"NPD-STAGE-{formulation.id}-{stage.sort_order}"
     )
     # Scientist-typed override wins over the auto-derived label.
+    # Auto-derived form uses the human-readable product name (RTG
+    # display name for RTG, project name for Custom) as the parent
+    # anchor so operators see "Vitamin C Capsules 60s — Blend"
+    # instead of the system-code "RTG00001 — Blend".
+    parent_label = (
+        _human_readable_formulation_name(formulation) or formulation.code
+    )
     name = stage.psp_item_name or (
-        f"{formulation.code} — {stage.name or f'Stage {stage.sort_order + 1}'}"
+        f"{parent_label} — {stage.name or f'Stage {stage.sort_order + 1}'}"
     )
     description = stage.psp_item_description or (
         f"Auto-created by NPD for formulation {formulation.code}"
@@ -6067,21 +6156,47 @@ def _ensure_finished_product(
         if existing_item is not None:
             existing_sku = getattr(existing_item, "external_sku", "") or ""
     external_sku = stage_sku or existing_sku or f"NPD-FINISHED-{formulation.id}"
-    # Priority: scientist-typed PSP name override > formulation's
-    # own project name > auto-derived "{code} — {stage_name}" as a
-    # last-resort for legacy formulations that were never named.
-    #
-    # Previously the auto-derive ran second, producing PSP items
-    # named "MA01440 — Labelling" (the stage name is a process step,
-    # not the product identity — customers see the label as the
-    # PRODUCT, not the stage). Formulations always carry a name now
-    # (required at create time), so it wins for every real
-    # formulation; the stage-name branch survives as a defensive
-    # fallback for the tiny historical set of nameless rows.
-    if stage_name_override:
+    # Priority ladder:
+    #   1. ``rtg_display_name`` when the project is RTG and it's set —
+    #      this is the customer-facing product name ("Vitamin C
+    #      Capsules 60s") which is what shop-floor operators need to
+    #      see on the MO parts table. Wins over any stage-level
+    #      ``psp_item_name`` because that field is auto-seeded from
+    #      ``formulation.name`` at stage-create time, and for RTG
+    #      ``formulation.name`` is the system-generated code
+    #      ("RTG00001") — piping that through means every RTG MO
+    #      reads as noise on the shop floor. If a scientist has
+    #      typed an explicit non-placeholder override on the stage
+    #      (i.e. it's genuinely DIFFERENT from the auto-copied
+    #      formulation.name / .code / rtg_display_name), that survives.
+    #   2. Scientist-typed ``psp_item_name`` on the stage (used mostly
+    #      for Custom projects where formulation.name IS the product
+    #      name and the stage-level override is a deliberate rename).
+    #   3. Formulation's human-readable name (formulation.name for
+    #      Custom, rtg_display_name for RTG — same helper).
+    #   4. Auto-derived "{code} — {stage_name}" — defensive fallback
+    #      for the tiny historical set of nameless legacy rows.
+    human_name = _human_readable_formulation_name(formulation)
+    is_rtg = str(getattr(formulation, "project_type", "") or "") == "ready_to_go"
+    placeholder_overrides = {
+        (formulation.name or "").strip(),
+        (formulation.code or "").strip(),
+    }
+    stage_override_is_placeholder = (
+        stage_name_override or ""
+    ).strip() in placeholder_overrides
+
+    if is_rtg and human_name and (
+        not stage_name_override or stage_override_is_placeholder
+    ):
+        # RTG with a display name — always beats the auto-seeded
+        # stage placeholder. A genuine scientist override (non-
+        # placeholder) still wins.
+        name = human_name
+    elif stage_name_override:
         name = stage_name_override
-    elif formulation.name:
-        name = formulation.name
+    elif human_name:
+        name = human_name
     elif stage_name:
         name = f"{formulation.code} — {stage_name}"
     else:
@@ -6517,7 +6632,16 @@ def _build_packaging_overlay(
 
     payload: list[dict[str, Any]] = []
     unresolved: list[str] = []
-    for row in combo.items.select_related("item").all():
+    # Combo-level default stage on the PSP side. Items inherit this
+    # when they haven't set their own override. ``None`` on combos
+    # bound to the finished-product stage or on combos still without
+    # a stage assignment (preserves legacy behaviour — the item lands
+    # on the root MO).
+    combo_formulation = trial_batch.formulation_version.formulation
+    combo_stage_psp_uuid = _resolve_stage_psp_uuid(
+        combo.stage, combo_formulation
+    )
+    for row in combo.items.select_related("item", "stage").all():
         item = row.item
         psp_uuid = getattr(item, "psp_source_uuid", None) if item else None
         if not psp_uuid and item is not None:
@@ -6557,10 +6681,25 @@ def _build_packaging_overlay(
         else:
             row_total = raw_total
 
+        # Per-item stage override, else combo default. PSP resolves
+        # the stage uuid to a specific MO in the tree; ``None`` (or a
+        # uuid PSP doesn't recognise) falls back to booking against
+        # the root MO — matches legacy behaviour for pre-Option-A
+        # combos.
+        item_stage_psp_uuid: str | None = None
+        if row.stage_id is not None:
+            item_stage_psp_uuid = _resolve_stage_psp_uuid(
+                row.stage, combo_formulation
+            )
+        effective_stage_uuid = (
+            item_stage_psp_uuid or combo_stage_psp_uuid
+        )
+
         payload.append(
             {
                 "item_uuid": str(psp_uuid),
                 "quantity": str(row_total),
+                "psp_stage_uuid": effective_stage_uuid,
             }
         )
 

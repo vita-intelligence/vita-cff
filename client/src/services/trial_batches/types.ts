@@ -107,6 +107,13 @@ export interface CreateTrialBatchPspMoRequestDto {
   readonly item_uuid?: string;
   readonly due_date?: string;
   readonly notes?: string;
+  /** Run identity — scientist picks these here now (used to live on
+   *  Plan-Batch). When present the server updates the trial batch's
+   *  ``kind`` + ``packaging_combo`` before firing the MO, so the
+   *  stored batch reflects what actually ran. Omitted → server keeps
+   *  the batch's existing values (used by legacy callers). */
+  readonly kind?: BatchKind;
+  readonly packaging_combo_id?: string | null;
 }
 
 /** MO summary PSP returns on create — shape mirrors PSP's

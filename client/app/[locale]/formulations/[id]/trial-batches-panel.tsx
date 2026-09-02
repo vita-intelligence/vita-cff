@@ -8,12 +8,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link, useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
-import type {
-  FormulationVersionDto,
-  PackagingComboDto,
-} from "@/services/formulations";
-import { usePackagingCombos } from "@/services/formulations";
-import type { BatchKind } from "@/services/trial_batches";
+import type { FormulationVersionDto } from "@/services/formulations";
 import {
   useCreateTrialBatch,
   useDeleteTrialBatch,
@@ -127,23 +122,29 @@ export function TrialBatchesPanel({
                   {batch.label || tBatches("list.untitled")}
                 </Link>
                 <span className="text-xs text-ink-500">
-                  <span
-                    className={`mr-1.5 inline-flex h-[18px] items-center rounded px-1.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset ${
-                      batch.kind === "trial"
-                        ? "bg-amber-50 text-amber-800 ring-amber-200"
-                        : "bg-sky-50 text-sky-800 ring-sky-200"
-                    }`}
-                  >
-                    {batch.kind === "trial"
-                      ? tBatches("list.kind_trial")
-                      : tBatches("list.kind_sample")}
-                  </span>
-                  v{batch.formulation_version_number} ·{" "}
-                  {formatInteger(batch.batch_size_units)}{" "}
-                  {batch.kind === "trial"
-                    ? tBatches("list.units")
-                    : tBatches("list.packs")}
-                  {batch.kind === "sample" ? (
+                  {/* Kind + combo now get chosen at Create-MO time,
+                      not on the plan modal. Only render them here
+                      once an MO has actually been created against
+                      the batch — before then the stored defaults
+                      (sample / no combo) are placeholders and would
+                      mislead the reader into thinking the scientist
+                      already committed to a run identity. */}
+                  {batch.psp_manufacturing_order_uuid ? (
+                    <span
+                      className={`mr-1.5 inline-flex h-[18px] items-center rounded px-1.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset ${
+                        batch.kind === "trial"
+                          ? "bg-amber-50 text-amber-800 ring-amber-200"
+                          : "bg-sky-50 text-sky-800 ring-sky-200"
+                      }`}
+                    >
+                      {batch.kind === "trial"
+                        ? tBatches("list.kind_trial")
+                        : tBatches("list.kind_sample")}
+                    </span>
+                  ) : null}
+                  v{batch.formulation_version_number}
+                  {batch.psp_manufacturing_order_uuid &&
+                  batch.kind === "sample" ? (
                     <>
                       {" · "}
                       <span className="italic">
@@ -220,20 +221,6 @@ function NewTrialBatchButton({
   const [isOpen, setIsOpen] = useState(false);
   const [versionId, setVersionId] = useState<string>("");
   const [label, setLabel] = useState("");
-  const [batchSize, setBatchSize] = useState<string>("");
-  const [kind, setKind] = useState<BatchKind>("sample");
-  // Empty string = "no packaging" (kind=sample), or forced-empty
-  // (kind=trial — server refuses any combo attach). A real combo
-  // UUID = pick that combo. Tri-state collapses to nullable UUID
-  // on submit.
-  const [packagingComboId, setPackagingComboId] = useState<string>("");
-
-  // Only fetched when the modal opens + kind=sample — trial batches
-  // never carry packaging so we skip the request entirely.
-  const combosQuery = usePackagingCombos(orgId, formulationId, {
-    enabled: isOpen && kind === "sample",
-  });
-  const combos: readonly PackagingComboDto[] = combosQuery.data?.items ?? [];
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -264,9 +251,6 @@ function NewTrialBatchButton({
 
   const reset = () => {
     setLabel("");
-    setBatchSize("");
-    setKind("sample");
-    setPackagingComboId("");
     setNotes("");
     setError(null);
   };
@@ -279,22 +263,21 @@ function NewTrialBatchButton({
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
-    const sizeNum = Number.parseInt(batchSize, 10);
-    if (!versionId || !Number.isFinite(sizeNum) || sizeNum <= 0) {
+    if (!versionId) {
       setError(tBatches("create.invalid_input"));
       return;
     }
     try {
       const created = await createMutation.mutateAsync({
         formulation_version_id: versionId,
-        batch_size_units: sizeNum,
-        kind,
-        // Only send combo on sample kind. Trial batches with an
-        // accidentally-populated ID (should never happen — the
-        // picker is hidden — but be defensive) send null so the BE
-        // doesn't reject the whole request.
-        packaging_combo_id:
-          kind === "sample" && packagingComboId ? packagingComboId : null,
+        // Planning-only defaults — the actual run identity (kind,
+        // combo, quantity) is captured at MO create time on the
+        // Create-MO modal so scientists don't answer the same
+        // question twice. The batch stores placeholders here and
+        // the MO create request overrides them per-run.
+        batch_size_units: 1,
+        kind: "sample",
+        packaging_combo_id: null,
         label: label.trim(),
         notes: notes.trim(),
       });
@@ -380,154 +363,9 @@ function NewTrialBatchButton({
                   ) : null}
                 </label>
 
-                <fieldset className="flex flex-col gap-1.5">
-                  <legend className="text-xs font-medium text-ink-700">
-                    {tBatches("create.kind_label")}
-                  </legend>
-                  <div className="flex flex-wrap gap-2">
-                    {(
-                      [
-                        ["trial", "create.kind_trial"],
-                        ["sample", "create.kind_sample"],
-                      ] as const
-                    ).map(([value, label]) => (
-                      <label
-                        key={value}
-                        className={`flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition-colors ${
-                          kind === value
-                            ? "bg-orange-500 text-ink-0 ring-orange-500"
-                            : "bg-ink-0 text-ink-700 ring-ink-200 hover:bg-ink-50"
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="kind"
-                          value={value}
-                          checked={kind === value}
-                          onChange={() => setKind(value)}
-                          className="sr-only"
-                        />
-                        {tBatches(label)}
-                      </label>
-                    ))}
-                  </div>
-                  <span className="text-xs text-ink-500">
-                    {tBatches(
-                      kind === "trial"
-                        ? "create.kind_trial_hint"
-                        : "create.kind_sample_hint",
-                    )}
-                  </span>
-                </fieldset>
-
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-medium text-ink-700">
-                    {tBatches(
-                      kind === "trial"
-                        ? "create.batch_size_unit_label"
-                        : "create.batch_size",
-                    )}
-                  </span>
-                  <input
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={batchSize}
-                    onChange={(e) => setBatchSize(e.target.value)}
-                    placeholder={kind === "trial" ? "10" : "10000"}
-                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                  />
-                  <span className="text-xs text-ink-500">
-                    {tBatches(
-                      kind === "trial"
-                        ? "create.batch_size_unit_hint"
-                        : "create.batch_size_hint",
-                    )}
-                  </span>
-                </label>
-
-                {kind === "sample" ? (
-                  <fieldset className="flex flex-col gap-1.5">
-                    <legend className="text-xs font-medium text-ink-700">
-                      {tBatches("create.packaging_label")}
-                    </legend>
-                    {combosQuery.isLoading ? (
-                      <p className="text-xs text-ink-500">
-                        {tBatches("create.packaging_loading")}
-                      </p>
-                    ) : (
-                      <div className="flex flex-col gap-1.5">
-                        {/* Explicit no-packaging option is always
-                            listed first so it's the obvious default
-                            when the scientist doesn't want a full
-                            packed sample (loose bulk output). */}
-                        <label
-                          className={`flex cursor-pointer items-start gap-2 rounded-lg px-3 py-2 text-xs ring-1 ring-inset transition-colors ${
-                            packagingComboId === ""
-                              ? "bg-orange-50 ring-orange-400"
-                              : "bg-ink-0 ring-ink-200 hover:bg-ink-50"
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="packaging_combo_id"
-                            value=""
-                            checked={packagingComboId === ""}
-                            onChange={() => setPackagingComboId("")}
-                            className="mt-0.5 h-3.5 w-3.5"
-                          />
-                          <div className="flex flex-col gap-0.5">
-                            <span className="font-medium text-ink-1000">
-                              {tBatches("create.packaging_none")}
-                            </span>
-                            <span className="text-[11px] text-ink-500">
-                              {tBatches("create.packaging_none_hint")}
-                            </span>
-                          </div>
-                        </label>
-                        {combos.map((combo) => (
-                          <label
-                            key={combo.id}
-                            className={`flex cursor-pointer items-start gap-2 rounded-lg px-3 py-2 text-xs ring-1 ring-inset transition-colors ${
-                              packagingComboId === combo.id
-                                ? "bg-orange-50 ring-orange-400"
-                                : "bg-ink-0 ring-ink-200 hover:bg-ink-50"
-                            }`}
-                          >
-                            <input
-                              type="radio"
-                              name="packaging_combo_id"
-                              value={combo.id}
-                              checked={packagingComboId === combo.id}
-                              onChange={() => setPackagingComboId(combo.id)}
-                              className="mt-0.5 h-3.5 w-3.5"
-                            />
-                            <div className="flex flex-col gap-0.5">
-                              <span className="font-medium text-ink-1000">
-                                {combo.name}
-                              </span>
-                              {combo.items.length > 0 ? (
-                                <span className="text-[11px] text-ink-500">
-                                  {combo.items
-                                    .map(
-                                      (item) =>
-                                        `${item.quantity}× ${item.item_name || item.item_code || "—"}`,
-                                    )
-                                    .join(" · ")}
-                                </span>
-                              ) : null}
-                            </div>
-                          </label>
-                        ))}
-                        {combos.length === 0 && !combosQuery.isLoading ? (
-                          <p className="text-[11px] text-ink-500">
-                            {tBatches("create.packaging_empty_hint")}
-                          </p>
-                        ) : null}
-                      </div>
-                    )}
-                  </fieldset>
-                ) : null}
+                <p className="rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-600 ring-1 ring-inset ring-ink-200">
+                  {tBatches("create.run_config_moved_hint")}
+                </p>
 
                 <label className="flex flex-col gap-1.5">
                   <span className="text-xs font-medium text-ink-700">
@@ -592,7 +430,3 @@ function NewTrialBatchButton({
 }
 
 
-function formatInteger(value: number): string {
-  if (!Number.isFinite(value)) return String(value);
-  return String(value | 0).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}

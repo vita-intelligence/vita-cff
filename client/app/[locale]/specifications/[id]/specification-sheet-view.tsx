@@ -615,6 +615,19 @@ export function SpecificationSheetView({
                   if (next === "draft" && sheet.status === "approved") {
                     return canApprove;
                   }
+                  // RTG products have no specific customer to send
+                  // to — the FINAL is a published SKU that N future
+                  // customers order against, not a document dispatched
+                  // to a signed proposal. Hide the ``sent`` transition
+                  // ("Send to customer" + backend customer-email
+                  // dispatch) — makes no sense without a specific
+                  // customer. Custom projects keep the full lifecycle.
+                  if (
+                    next === "sent" &&
+                    sheet.formulation_project_type === "ready_to_go"
+                  ) {
+                    return false;
+                  }
                   // DRAFT specs never reach the customer on their own
                   // — they only travel via a proposal bundle (the
                   // proposal's ``approved → sent`` transition pulls

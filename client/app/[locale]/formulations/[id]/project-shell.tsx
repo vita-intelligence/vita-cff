@@ -91,7 +91,7 @@ export function ProjectShell({
         ? undefined
         : gates.builder_complete
           ? "Save an explicit version of the Builder first (auto-snapshots don't count)."
-          : "Finish the Builder first — every stage needs at least one ingredient and every ingredient needs a stage assignment.",
+          : "Finish the Builder first — every ingredient needs a stage assignment and every stage needs at least one ingredient line or packaging combo item.",
     },
     // Proposals live at the customer/order level for RTG catalog
     // SKUs — a single RTG spec can be on N different proposals across
@@ -106,7 +106,7 @@ export function ProjectShell({
         ? undefined
         : gates.builder_complete
           ? "Get a spec sheet approved (scientist + director sign-off) before drafting a proposal."
-          : "Finish the Builder first — every stage needs at least one ingredient and every ingredient needs a stage assignment.",
+          : "Finish the Builder first — every ingredient needs a stage assignment and every stage needs at least one ingredient line or packaging combo item.",
     },
     {
       key: "trial-batches",
@@ -126,7 +126,7 @@ export function ProjectShell({
           ? overview.project_type === "ready_to_go"
             ? "Get the draft spec sheet approved before running trial batches."
             : "Send a proposal to the customer and get it signed before running trial batches."
-          : "Finish the Builder first — every stage needs at least one ingredient and every ingredient needs a stage assignment.",
+          : "Finish the Builder first — every ingredient needs a stage assignment and every stage needs at least one ingredient line or packaging combo item.",
     },
     {
       key: "qc",

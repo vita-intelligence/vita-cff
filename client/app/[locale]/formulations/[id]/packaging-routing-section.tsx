@@ -68,12 +68,17 @@ function PackagingRoutingSectionInner({
   const combosQuery = usePackagingCombos(orgId, formulation.id);
   const replace = useReplacePackagingCombos(orgId, formulation.id);
 
-  //  Local override for the per-combo stage picker so dropdown edits
-  //  are visible immediately without a round-trip. The map is empty
-  //  until the operator changes something.
+  //  Local overrides for both the combo-level and per-item stage
+  //  pickers so dropdown edits are visible immediately without a
+  //  round-trip. Keyed by combo id for the combo default, and by
+  //  ``<comboId>:<itemId>`` for per-item overrides. The maps are
+  //  empty until the operator changes something.
   const [pending, setPending] = useState<Map<string, string | null>>(
     () => new Map(),
   );
+  const [pendingItems, setPendingItems] = useState<
+    Map<string, string | null>
+  >(() => new Map());
   const [error, setError] = useState<string | null>(null);
 
   //  Clear any pending overrides once the server round-trip lands
@@ -81,6 +86,7 @@ function PackagingRoutingSectionInner({
   useEffect(() => {
     if (!replace.isPending && replace.isSuccess) {
       setPending(new Map());
+      setPendingItems(new Map());
     }
   }, [replace.isPending, replace.isSuccess]);
 
@@ -90,6 +96,13 @@ function PackagingRoutingSectionInner({
   );
 
   const stages = formulation.stages;
+
+  //  Key for the pendingItems map. Combo id + item id makes each
+  //  row's optimistic override uniquely addressable.
+  const itemKey = useCallback(
+    (comboId: string, itemId: string) => `${comboId}:${itemId}`,
+    [],
+  );
 
   const setStageForCombo = useCallback(
     async (combo: PackagingComboDto, nextStageId: string | null) => {
@@ -114,6 +127,9 @@ function PackagingRoutingSectionInner({
             items: c.items.map((it) => ({
               item_id: it.item_id,
               quantity: it.quantity,
+              stage_id:
+                (pendingItems.get(itemKey(c.id, it.id)) ?? it.stage_id) ??
+                null,
             })),
           })),
         );
@@ -133,7 +149,61 @@ function PackagingRoutingSectionInner({
         });
       }
     },
-    [combos, pending, replace],
+    [combos, pending, pendingItems, itemKey, replace],
+  );
+
+  const setStageForItem = useCallback(
+    async (
+      combo: PackagingComboDto,
+      item: PackagingComboDto["items"][number],
+      nextStageId: string | null,
+    ) => {
+      setError(null);
+      const key = itemKey(combo.id, item.id);
+      //  Optimistic overlay for the per-item picker so the row
+      //  reflects the choice immediately.
+      setPendingItems((prev) => {
+        const next = new Map(prev);
+        next.set(key, nextStageId);
+        return next;
+      });
+      try {
+        await replace.mutateAsync(
+          combos.map((c) => ({
+            name: c.name,
+            price_delta: c.price_delta,
+            is_default: c.is_default,
+            stage_id: (pending.get(c.id) ?? c.stage_id) ?? null,
+            items: c.items.map((it) => {
+              const nextItemStage =
+                c.id === combo.id && it.id === item.id
+                  ? nextStageId
+                  : (pendingItems.get(itemKey(c.id, it.id)) ??
+                      it.stage_id) ??
+                    null;
+              return {
+                item_id: it.item_id,
+                quantity: it.quantity,
+                stage_id: nextItemStage,
+              };
+            }),
+          })),
+        );
+      } catch (e) {
+        const api = normalizeApiError(e);
+        setError(
+          (api.payload?.detail as string | undefined) ||
+            api.message ||
+            "Failed to save the item's stage assignment.",
+        );
+        setPendingItems((prev) => {
+          const next = new Map(prev);
+          next.delete(key);
+          return next;
+        });
+      }
+    },
+    [combos, pending, pendingItems, itemKey, replace],
   );
 
   //  Effective stage for a combo — apply any pending overlay on top
@@ -144,6 +214,21 @@ function PackagingRoutingSectionInner({
       return combo.stage_id;
     },
     [pending],
+  );
+
+  //  Effective stage for a specific item within a combo. Explicit
+  //  override wins; otherwise ``null`` means "inherit combo default"
+  //  and the picker renders that as the default option.
+  const effectiveItemStageId = useCallback(
+    (
+      combo: PackagingComboDto,
+      item: PackagingComboDto["items"][number],
+    ): string | null => {
+      const key = itemKey(combo.id, item.id);
+      if (pendingItems.has(key)) return pendingItems.get(key) ?? null;
+      return item.stage_id;
+    },
+    [pendingItems, itemKey],
   );
 
   const unassignedCount = combos.filter(
@@ -189,54 +274,133 @@ function PackagingRoutingSectionInner({
           {combos.map((combo) => {
             const currentStage = effectiveStageId(combo);
             const isUnassigned = currentStage === null;
+            const comboStageLabel = currentStage
+              ? stages.find((s) => s.id === currentStage)?.name ||
+                `Stage ${(stages.findIndex((s) => s.id === currentStage) + 1) || "?"}`
+              : "combo default";
             return (
               <li
                 key={combo.id}
-                className={`flex flex-wrap items-center gap-3 rounded-lg border px-3 py-2 ${
+                className={`flex flex-col gap-3 rounded-lg border px-3 py-2 ${
                   isUnassigned
                     ? "border-amber-300 bg-amber-50/40"
                     : "border-ink-200 bg-white"
                 }`}
               >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold text-ink-1000">
-                    {combo.name}
-                  </p>
-                  <p className="mt-0.5 text-xs text-ink-500">
-                    {combo.items.length}{" "}
-                    {combo.items.length === 1 ? "item" : "items"}
-                    {combo.is_default ? " · default pick" : ""}
-                  </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-ink-1000">
+                      {combo.name}
+                    </p>
+                    <p className="mt-0.5 text-xs text-ink-500">
+                      {combo.items.length}{" "}
+                      {combo.items.length === 1 ? "item" : "items"}
+                      {combo.is_default ? " · default pick" : ""}
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="whitespace-nowrap text-ink-600">
+                      Assembles at
+                    </span>
+                    <select
+                      value={currentStage ?? ""}
+                      onChange={(e) =>
+                        setStageForCombo(
+                          combo,
+                          e.currentTarget.value || null,
+                        )
+                      }
+                      disabled={
+                        !canWrite ||
+                        replace.isPending ||
+                        stages.length === 0
+                      }
+                      className={`rounded-lg border bg-white px-3 py-1.5 text-sm ${
+                        isUnassigned
+                          ? "border-amber-400 text-amber-900"
+                          : "border-ink-300 text-ink-1000"
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
+                    >
+                      <option value="">— pick a stage —</option>
+                      {stages.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name || `Stage ${s.sort_order + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
-                <label className="flex items-center gap-2 text-xs">
-                  <span className="whitespace-nowrap text-ink-600">
-                    Assembles at
-                  </span>
-                  <select
-                    value={currentStage ?? ""}
-                    onChange={(e) =>
-                      setStageForCombo(
-                        combo,
-                        e.currentTarget.value || null,
-                      )
-                    }
-                    disabled={
-                      !canWrite || replace.isPending || stages.length === 0
-                    }
-                    className={`rounded-lg border bg-white px-3 py-1.5 text-sm ${
-                      isUnassigned
-                        ? "border-amber-400 text-amber-900"
-                        : "border-ink-300 text-ink-1000"
-                    } disabled:cursor-not-allowed disabled:opacity-50`}
-                  >
-                    <option value="">— pick a stage —</option>
-                    {stages.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name || `Stage ${s.sort_order + 1}`}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+
+                {combo.items.length > 0 ? (
+                  <div className="ml-1 rounded-md bg-ink-50/60 px-3 py-2 ring-1 ring-inset ring-ink-200">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+                      Per-item stage
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-ink-500">
+                      Leave any row on{" "}
+                      <span className="italic">
+                        same as combo ({comboStageLabel})
+                      </span>{" "}
+                      unless it needs a different stage — e.g. bottle at
+                      bottling, label at labelling.
+                    </p>
+                    <ul className="mt-2 flex flex-col gap-1.5">
+                      {combo.items.map((item) => {
+                        const currentItemStage = effectiveItemStageId(
+                          combo,
+                          item,
+                        );
+                        return (
+                          <li
+                            key={item.id}
+                            className="flex flex-wrap items-center gap-2"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-xs font-medium text-ink-1000">
+                                {item.item_name}
+                                {item.quantity !== 1 ? (
+                                  <span className="ml-1 text-ink-500">
+                                    × {item.quantity}
+                                  </span>
+                                ) : null}
+                              </p>
+                              {item.item_code ? (
+                                <p className="text-[10px] text-ink-500">
+                                  {item.item_code}
+                                </p>
+                              ) : null}
+                            </div>
+                            <select
+                              value={currentItemStage ?? ""}
+                              onChange={(e) =>
+                                setStageForItem(
+                                  combo,
+                                  item,
+                                  e.currentTarget.value || null,
+                                )
+                              }
+                              disabled={
+                                !canWrite ||
+                                replace.isPending ||
+                                stages.length === 0
+                              }
+                              className="rounded-md border border-ink-300 bg-white px-2 py-1 text-xs text-ink-1000 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <option value="">
+                                same as combo ({comboStageLabel})
+                              </option>
+                              {stages.map((s) => (
+                                <option key={s.id} value={s.id}>
+                                  {s.name || `Stage ${s.sort_order + 1}`}
+                                </option>
+                              ))}
+                            </select>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ) : null}
               </li>
             );
           })}

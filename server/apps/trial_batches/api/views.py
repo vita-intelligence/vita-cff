@@ -325,6 +325,53 @@ class TrialBatchCreatePspMoView(APIView):
         batch = self._load(batch_id)
         body = request.data if isinstance(request.data, dict) else {}
 
+        # Run-identity fields — kind + packaging_combo — used to be
+        # captured on Plan-Batch. They're now picked here at Create-MO
+        # time so scientists don't answer the same question twice. When
+        # present in the request we update the trial batch's stored
+        # values BEFORE firing the MO so downstream reads (BOM math,
+        # audit trail, spec-sheet visibility) stay consistent with what
+        # actually ran. Absent → keep the batch's current values
+        # (backwards compat for legacy callers).
+        identity_changes: dict = {}
+        if "kind" in body:
+            identity_changes["kind"] = body.get("kind")
+        if "packaging_combo_id" in body:
+            identity_changes["packaging_combo_id"] = body.get(
+                "packaging_combo_id"
+            )
+        if identity_changes:
+            from apps.trial_batches.services import (
+                InvalidBatchKind,
+                PackagingComboNotAllowedForTrial,
+                PackagingComboNotFound,
+                update_batch,
+            )
+
+            try:
+                batch = update_batch(
+                    batch=batch, actor=request.user, **identity_changes
+                )
+            except InvalidBatchKind:
+                return Response(
+                    {"kind": ["invalid_kind"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            except PackagingComboNotAllowedForTrial:
+                return Response(
+                    {
+                        "packaging_combo_id": [
+                            "packaging_combo_not_allowed_for_trial"
+                        ]
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            except PackagingComboNotFound:
+                return Response(
+                    {"packaging_combo_id": ["packaging_combo_not_found"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         try:
             raw_size_mode = str(body.get("size_mode") or "packs").strip().lower()
             size_mode = raw_size_mode if raw_size_mode in ("packs", "units") else "packs"
