@@ -69,10 +69,11 @@ export function ValidationLink({
    *  gating rule in the docstring above. */
   kind: BatchKind;
   /** ``custom`` vs ``ready_to_go``. On RTG projects the Start
-   *  CTA is hidden entirely — the RTG SKU's FINAL-spec approval is
-   *  the validation gate; sample fulfillment against it is just
-   *  production, not R&D validation. Custom projects keep the CTA
-   *  (validation happens per trial-batch record).
+   *  CTA is hidden on EVERY batch regardless of kind — the RTG
+   *  SKU's FINAL-spec approval flow is the recipe-validation gate;
+   *  per-batch product validation is a Custom-flow concept that
+   *  doesn't apply to RTG. Custom projects keep the CTA (validation
+   *  happens per trial-batch record).
    *
    *  Empty string on legacy trial batches without the field set —
    *  falls through to the existing custom-flow gating so nothing
@@ -156,15 +157,18 @@ export function ValidationLink({
     );
   }
 
-  // RTG sample batches are just production runs of a pre-validated
-  // SKU — the RTG's FINAL-spec approval flow is what validates the
-  // recipe. There's no per-batch validation to run here, so hide
-  // the CTA entirely (no chip either — the "Start validation" tile
-  // has no place on the fulfillment-run page, empty or with a
-  // "product validated" message). Trial-kind batches on an RTG
-  // project (in-house R&D validation runs BEFORE the SKU publishes)
-  // keep the CTA.
-  if (kind === "sample" && projectType === "ready_to_go") {
+  // RTG projects hide the CTA on EVERY batch regardless of kind.
+  // The RTG SKU's FINAL-spec approval flow is what validates the
+  // recipe; every trial batch on an RTG project is either an
+  // internal test run of an already-validated recipe or a customer
+  // sample fulfilment. In neither case does per-batch product
+  // validation belong — it's a category error we imported from
+  // the Custom-flow vocabulary.
+  //
+  // Custom projects keep the full gating below (kind=sample +
+  // formulation_validated shows "already validated"; kind=trial or
+  // unvalidated sample shows the Start button).
+  if (projectType === "ready_to_go") {
     return null;
   }
 
