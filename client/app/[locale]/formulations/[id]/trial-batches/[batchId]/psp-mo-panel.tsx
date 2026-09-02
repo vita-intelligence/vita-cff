@@ -213,6 +213,21 @@ function CreateMoModal({
   // hides the packs/units toggle since trial batches always count
   // in individual units and don't have a pack notion.
   const showUnitsToggle = kind === "sample" && servingsPerPack > 1;
+  // Effective size_mode for the BE:
+  //   * ``kind === "trial"`` → force ``"units"``. Trial batches are
+  //     bench-scale runs whose quantity IS individual capsules /
+  //     tablets / gummies by definition (see the historical hint
+  //     "the number IS the raw count of finished capsules"). BE
+  //     divides quantity by servings_per_pack to get PSP's stock-
+  //     unit (pack) quantity. Without this the BE defaults to
+  //     ``"packs"`` and PSP produces 3 × 60 = 180 capsules when
+  //     the scientist meant "3 capsules for QC pen-and-paper".
+  //   * ``kind === "sample"`` → whatever the packs/units toggle says
+  //     (defaults to "packs" — full commercial-path production).
+  //   * one-per-pack formulations → toggle hidden, "packs" passthrough
+  //     (quantity IS finished units because 1 unit == 1 pack).
+  const effectiveSizeMode: "packs" | "units" =
+    kind === "trial" ? "units" : sizeMode;
   // Dosage-form-aware nouns (server-owned mapping, exposed on the
   // TrialBatchDto). Falls back to generic "unit" / "units" for
   // legacy versions where the snapshot doesn't record a dosage
@@ -224,13 +239,13 @@ function CreateMoModal({
   const parsedQtyLive = Number.parseInt(quantity.trim(), 10);
   const previewCapsules =
     Number.isFinite(parsedQtyLive) && parsedQtyLive > 0
-      ? sizeMode === "units"
+      ? effectiveSizeMode === "units"
         ? parsedQtyLive
         : parsedQtyLive * servingsPerPack
       : null;
   const previewPacks =
     Number.isFinite(parsedQtyLive) && parsedQtyLive > 0
-      ? sizeMode === "units"
+      ? effectiveSizeMode === "units"
         ? parsedQtyLive / servingsPerPack
         : parsedQtyLive
       : null;
@@ -258,10 +273,14 @@ function CreateMoModal({
     try {
       await createMutation.mutateAsync({
         quantity: parsedQty,
-        // Only send size_mode when the toggle is meaningful — trial
-        // batches + one-per-pack formulations pass the default
-        // ("packs" ≡ passthrough) and the server ignores the field.
-        size_mode: showUnitsToggle ? sizeMode : undefined,
+        // ``effectiveSizeMode`` forces "units" on trial-kind (input
+        // IS individual capsules for bench-scale) and honours the
+        // packs/units toggle on sample-kind. One-per-pack sample
+        // formulations still pass through "packs" (1 unit == 1 pack).
+        // Only send when non-default so the BE's legacy default
+        // ("packs" passthrough) still fires for sample+packs.
+        size_mode:
+          effectiveSizeMode === "units" ? "units" : undefined,
         // Run-identity fields — kind + combo now get committed here,
         // not on Plan-Batch. Server updates the trial batch's stored
         // values before firing the MO so downstream reads (BOM view,
@@ -365,7 +384,7 @@ function CreateMoModal({
             </div>
             <p className="text-[10px] text-ink-500">
               {kind === "trial"
-                ? "Bench-scale test — bypasses PSP's Final Release, no packaging combo."
+                ? `Bench-scale test — quantity below is individual ${unitPlural} (not packs). Bypasses PSP's Final Release, no packaging combo.`
                 : "Customer-sample production with a picked packaging combo. Follows the full commercial release path."}
             </p>
           </fieldset>
@@ -458,12 +477,20 @@ function CreateMoModal({
           ) : null}
 
           <div className="flex flex-col gap-2">
+            {/* Kind-aware label + hint. The word ambiguity that
+                bit before ("Quantity" reading as either capsules or
+                packs depending on toggle state you couldn't see for
+                trial-kind) is gone — trial forces individual units
+                and says so on the label; sample says which mode
+                the toggle currently reflects. */}
             <label
               htmlFor="psp-mo-quantity"
               className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-700"
             >
               <Package className="h-3 w-3 text-ink-500" />
-              Quantity ({sizeMode === "units" ? `individual ${unitPlural}` : "complete packs"})
+              {kind === "trial"
+                ? `Number of ${unitPlural} to produce`
+                : `Quantity (${effectiveSizeMode === "units" ? `individual ${unitPlural}` : "complete packs"})`}
             </label>
 
             {showUnitsToggle ? (
@@ -505,17 +532,27 @@ function CreateMoModal({
               inputMode="numeric"
               value={quantity}
               onChange={(e) => setQuantity(e.target.value)}
+              placeholder={kind === "trial" ? `e.g. 3 ${unitPlural}` : undefined}
               required
               className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm tabular-nums"
             />
 
             <p className="text-[10px] text-ink-500">
-              {showUnitsToggle
-                ? `Complete packs (default) = full bottles / pouches. Switch to Individual ${unitPlural} to ship a handful of loose ${unitPlural} instead of a full pack — common on cycle sample slots.`
-                : "Number of finished units this MO will produce."}
+              {kind === "trial"
+                ? `Bench-scale test — the number IS the raw count of finished ${unitPlural}. PSP MO produces the exact ${unitPlural} count you enter (e.g. 3 ${unitPlural} for QC pen-and-paper). No pack multiplier applied.`
+                : showUnitsToggle
+                  ? `Complete packs (default) = full bottles / pouches. Switch to Individual ${unitPlural} to ship a handful of loose ${unitPlural} instead of a full pack — common on cycle sample slots.`
+                  : "Number of finished units this MO will produce."}
             </p>
 
-            {showUnitsToggle && previewCapsules !== null && previewPacks !== null ? (
+            {/* Preview line renders whenever the input is a positive
+                number AND the arithmetic is non-trivial (there's a
+                pack ↔ unit conversion happening). Suppresses on
+                one-per-pack formulations where packs == units. */}
+            {previewCapsules !== null &&
+            previewPacks !== null &&
+            servingsPerPack > 1 &&
+            (showUnitsToggle || kind === "trial") ? (
               <p className="rounded-lg bg-ink-50 px-3 py-1.5 text-[11px] text-ink-600 ring-1 ring-inset ring-ink-200">
                 PSP will book{" "}
                 <strong className="text-ink-1000 tabular-nums">
