@@ -3690,6 +3690,17 @@ def sync_sample_customer_order_to_psp(
         # already sends this per-MO — we're just closing the same
         # gap on the sample-CO-first path.
         "npd_formulation_uuid": str(formulation.id),
+        # Project flavour ("custom" | "ready_to_go"). PSP persists on
+        # the CO row and downstream surfaces gate on it — most
+        # visibly, the output-qc "Trial batch validation required"
+        # card hides on RTG (RTG's FINAL-spec approval IS the
+        # recipe-validation gate). The commercial-CO sync already
+        # sends this on ``sync_customer_order_to_psp``; the sample
+        # sync was missing it, so RTG customer-paid samples landed
+        # on PSP without the flag and hit the Custom-safe fallback.
+        "npd_project_type": (
+            getattr(formulation, "project_type", "") or ""
+        ),
         # Sample CO line qty. When the caller already knows the
         # actual PSP MO qty (i.e. this sync is being fired from
         # ``create_psp_manufacturing_order_for_trial_batch`` after
