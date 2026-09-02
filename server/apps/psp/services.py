@@ -6859,6 +6859,39 @@ def create_psp_manufacturing_order_for_trial_batch(
     kind = getattr(trial_batch, "kind", None) or "sample"
     project_type = "trial" if kind == "trial" else "sample"
 
+    # Customer-paid sample fulfilment override: when the batch came
+    # from the /samples fulfilment queue (``source_payment_id`` set
+    # OR ``cycle_slot`` set — either is a real customer commitment
+    # attached to a CO), FORCE ``project_type = "sample"`` regardless
+    # of what the scientist picked for ``batch.kind``. Reason: PSP
+    # tags MO outputs as ``is_rnd = true`` when ``project_type == "trial"``,
+    # which correctly parks bench-scale R&D lots on the R&D floor.
+    # But a customer-paid sample must ship to that customer — it
+    # needs the commercial release + dispatch path (``is_rnd = false``),
+    # not the R&D floor. Historically, scientists commonly picked
+    # ``trial`` on customer sample runs too (bench-scale of a
+    # customer's kit), producing R&D lots the wizard couldn't ship.
+    # This override respects the customer commitment over the kind
+    # label — same rule as the sample-CO ``sample_kind`` flag on
+    # PSP and the ``is_customer_sample_fulfilment`` FE gate.
+    is_customer_fulfilment = (
+        getattr(trial_batch, "source_payment_id", None) is not None
+    )
+    if not is_customer_fulfilment:
+        # ``trial_batch.cycle_slot`` is a reverse OneToOne (defined
+        # on ``CycleSlot`` with ``related_name="cycle_slot"``) so
+        # accessing it raises ``RelatedObjectDoesNotExist`` when
+        # no slot points at this batch. Try/except beats a
+        # separate ``.objects.filter(trial_batch=...).exists()``
+        # round-trip — the accessor path is preferred when the
+        # attr already got prefetched somewhere upstream.
+        try:
+            is_customer_fulfilment = trial_batch.cycle_slot is not None
+        except Exception:  # noqa: BLE001 — reverse-OneToOne miss
+            is_customer_fulfilment = False
+    if is_customer_fulfilment:
+        project_type = "sample"
+
     # Packaging overlay — only for sample batches, and only sent
     # when the scientist opted into one. Three legal states:
     #
