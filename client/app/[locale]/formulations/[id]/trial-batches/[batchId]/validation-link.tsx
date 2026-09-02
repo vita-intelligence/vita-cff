@@ -57,6 +57,7 @@ export function ValidationLink({
   formulationId,
   batchId,
   kind,
+  projectType,
   formulationValidated = false,
   linkedPspMoUuid = null,
 }: {
@@ -67,6 +68,16 @@ export function ValidationLink({
    *  when the formulation version is already validated — see the
    *  gating rule in the docstring above. */
   kind: BatchKind;
+  /** ``custom`` vs ``ready_to_go``. On RTG projects the Start
+   *  CTA is hidden entirely — the RTG SKU's FINAL-spec approval is
+   *  the validation gate; sample fulfillment against it is just
+   *  production, not R&D validation. Custom projects keep the CTA
+   *  (validation happens per trial-batch record).
+   *
+   *  Empty string on legacy trial batches without the field set —
+   *  falls through to the existing custom-flow gating so nothing
+   *  regresses. */
+  projectType?: "custom" | "ready_to_go" | "";
   /** ``true`` when *another* batch of the same formulation version
    *  has a passed validation. Comes from the batch read serializer;
    *  only load-bearing when ``kind === "sample"``. */
@@ -143,6 +154,18 @@ export function ValidationLink({
         {tV("link.open")}
       </Link>
     );
+  }
+
+  // RTG sample batches are just production runs of a pre-validated
+  // SKU — the RTG's FINAL-spec approval flow is what validates the
+  // recipe. There's no per-batch validation to run here, so hide
+  // the CTA entirely (no chip either — the "Start validation" tile
+  // has no place on the fulfillment-run page, empty or with a
+  // "product validated" message). Trial-kind batches on an RTG
+  // project (in-house R&D validation runs BEFORE the SKU publishes)
+  // keep the CTA.
+  if (kind === "sample" && projectType === "ready_to_go") {
+    return null;
   }
 
   // Sample batch for a formulation version that another batch has

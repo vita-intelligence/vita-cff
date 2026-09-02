@@ -32,6 +32,11 @@ export interface TrialBatchDto {
   readonly formulation_id: string;
   readonly formulation_name: string;
   readonly formulation_version_number: number;
+  /** ``custom`` vs ``ready_to_go``. Load-bearing on the trial-batch
+   *  detail page's "Start validation" CTA: RTG sample runs are just
+   *  production of a pre-validated SKU, not R&D validation, so the
+   *  button hides on RTG regardless of ``formulation_validated``. */
+  readonly formulation_project_type: "custom" | "ready_to_go" | "";
   /** PSP Manufacturing Order uuid this batch spawned. ``null``
    *  when the scientist hasn't clicked "Create MO on PSP" yet;
    *  populated on that action + used as the PSP-side idempotency

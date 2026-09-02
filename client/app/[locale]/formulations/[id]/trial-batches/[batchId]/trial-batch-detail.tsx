@@ -341,6 +341,7 @@ export function TrialBatchDetail({
             formulationId={formulationId}
             batchId={initialBatch.id}
             kind={batch.kind}
+            projectType={batch.formulation_project_type}
             formulationValidated={batch.formulation_validated}
             linkedPspMoUuid={batch.psp_manufacturing_order_uuid}
           />

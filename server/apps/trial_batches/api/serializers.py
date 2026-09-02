@@ -19,6 +19,17 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
     formulation_version_number = serializers.IntegerField(
         source="formulation_version.version_number", read_only=True
     )
+    #: ``custom`` vs ``ready_to_go``. Exposed so FE surfaces can gate
+    #: RTG-specific behaviour off the batch payload without a second
+    #: formulation fetch. Load-bearing on the trial-batch detail page:
+    #: the "Start validation" CTA is meaningless on RTG customer-
+    #: sample runs (the RTG SKU's FINAL-spec approval IS the
+    #: validation gate — every sample fulfillment is just production,
+    #: not an R&D validation).
+    formulation_project_type = serializers.CharField(
+        source="formulation_version.formulation.project_type",
+        read_only=True,
+    )
     created_by_name = serializers.SerializerMethodField()
     #: Terminal-or-in-progress validation status attached to this
     #: batch. Nullable — batches without a validation record return
@@ -123,6 +134,7 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
             "formulation_id",
             "formulation_name",
             "formulation_version_number",
+            "formulation_project_type",
             "psp_manufacturing_order_uuid",
             "validation_status",
             "formulation_validated",
