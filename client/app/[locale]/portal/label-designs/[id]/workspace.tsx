@@ -1135,6 +1135,15 @@ function ContentBlockTab({ id }: { id: string }) {
 
 function BriefTab({ id, data }: { id: string; data: LabelDesignDto }) {
   const prefs = data.preferences_detail;
+  // Brief editable ONLY while the workflow is still gating on it
+  // (``design_preferences_pending``). Once our designer has picked
+  // it up (status advances to ``design_in_progress`` / anything
+  // downstream), the brief locks — otherwise the customer can
+  // silently overwrite the brief the designer is actively building
+  // to, and no one notices until the first draft comes back "wrong".
+  // Matches the web-site portal's rule at
+  // ``web-site/src/app/[locale]/portal/label-designs/[id]/page.tsx:BriefTab``.
+  const editable = data.status === "design_preferences_pending";
   if (!prefs) {
     return (
       <Card>
@@ -1142,12 +1151,14 @@ function BriefTab({ id, data }: { id: string; data: LabelDesignDto }) {
         <p className="mt-2 text-sm text-neutral-600">
           You haven&rsquo;t shared a brief yet.
         </p>
-        <Link
-          href={`/portal/label-designs/${id}/preferences`}
-          className="mt-3 inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-white hover:bg-neutral-800"
-        >
-          <PencilLine className="h-3.5 w-3.5" /> Fill it in
-        </Link>
+        {editable ? (
+          <Link
+            href={`/portal/label-designs/${id}/preferences`}
+            className="mt-3 inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-white hover:bg-neutral-800"
+          >
+            <PencilLine className="h-3.5 w-3.5" /> Fill it in
+          </Link>
+        ) : null}
       </Card>
     );
   }
@@ -1162,12 +1173,21 @@ function BriefTab({ id, data }: { id: string; data: LabelDesignDto }) {
             </p>
           ) : null}
         </div>
-        <Link
-          href={`/portal/label-designs/${id}/preferences`}
-          className="inline-flex items-center gap-1 border-2 border-black bg-white px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.15em] hover:bg-neutral-100"
-        >
-          Edit
-        </Link>
+        {editable ? (
+          <Link
+            href={`/portal/label-designs/${id}/preferences`}
+            className="inline-flex items-center gap-1 border-2 border-black bg-white px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.15em] hover:bg-neutral-100"
+          >
+            Edit
+          </Link>
+        ) : (
+          <span
+            title="The brief is locked while our designer works on it. Send additions or corrections via the Chat tab."
+            className="inline-flex items-center gap-1 border-2 border-emerald-600 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.15em] text-emerald-800"
+          >
+            Locked
+          </span>
+        )}
       </div>
       <dl className="mt-4 grid gap-3 sm:grid-cols-2">
         <BriefField label="Company">{prefs.company_name}</BriefField>

@@ -1977,7 +1977,14 @@ function computeFillTarget(
   let waterMg: number | null = null;
   let gummyBaseMg: number | null = null;
   let waterItemId: string | null = null;
-  let waterLabel = "Deionised Water (gummy base)";
+  // Transient in-flight label — shown ONLY when the scientist has
+  // picks but no water-named item AND hasn't yet saved. Backend save
+  // auto-injects the org's default water item (or blocks with
+  // ``gummy_water_default_missing`` when no default is flagged), so
+  // this fallback is a warning-tone placeholder — never a persisted
+  // ingredient. Wording flagged so scientists don't mistake it for a
+  // real PSP item with no code.
+  let waterLabel = "⚠ Water — pick or save to auto-inject";
   const gummyBaseRows: GummyBaseRow[] = [];
   if (isGummy && targetFillWeightMg && targetFillWeightMg > 0) {
     const waterPct = resolveBandPct("water", excipientOverrides);

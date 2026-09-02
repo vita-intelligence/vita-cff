@@ -636,13 +636,25 @@ export function useCreateFinalSpecFromTrial(
 ): UseMutationResult<
   ProjectOverviewDto,
   ApiError,
-  { trialBatchId: string; formulationVersionId: string }
+  {
+    trialBatchId: string;
+    formulationVersionId: string;
+    code?: string;
+    quantity?: number;
+    coverNotes?: string;
+  }
 > {
   const queryClient = useQueryClient();
   return useMutation<
     ProjectOverviewDto,
     ApiError,
-    { trialBatchId: string; formulationVersionId: string }
+    {
+      trialBatchId: string;
+      formulationVersionId: string;
+      code?: string;
+      quantity?: number;
+      coverNotes?: string;
+    }
   >({
     mutationFn: (args) =>
       createFinalSpecFromTrial(orgId, formulationId, args),

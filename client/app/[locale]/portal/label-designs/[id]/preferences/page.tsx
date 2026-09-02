@@ -125,6 +125,21 @@ export default function PreferencesPage({
     setProductCodes((prev) => prev || ld.data!.formulation_code || "");
   }, [ld.data]);
 
+  // Deep-link guard. The brief is only editable while the workflow is
+  // gating on it (``design_preferences_pending``). If the customer
+  // bookmarks / re-visits this URL after our designer has picked the
+  // brief up, redirect back to the workspace's Brief tab which will
+  // render the locked read-only view. Mirrors the ``BriefTab``
+  // ``editable`` gate on ``workspace.tsx`` so the two entry points
+  // agree — otherwise a bookmarked customer could still hit Submit
+  // and the backend would 400 with no visible explanation.
+  useEffect(() => {
+    if (!ld.data) return;
+    if (ld.data.status !== "design_preferences_pending") {
+      router.replace(`/portal/label-designs/${id}?tab=brief`);
+    }
+  }, [ld.data, id, router]);
+
   // ---- Validation -----------------------------------------------------
   // Run on submit. Returns a map of field-key → message; empty map
   // = good to go. The form scrolls to the first error and renders a

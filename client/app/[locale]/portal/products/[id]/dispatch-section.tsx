@@ -143,38 +143,6 @@ export function DispatchSection({
           </div>
         )}
 
-        {(dispatch.carrier ||
-          dispatch.tracking_number ||
-          dispatch.seal_number ||
-          dispatch.temperature_c) && (
-          <div className="mb-4 border border-black/60 bg-neutral-50 p-4">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-black/60">
-              Shipment paperwork
-            </p>
-            <div className="mt-2 grid gap-3 text-sm sm:grid-cols-2">
-              <DispatchField label="Delivery company" value={dispatch.carrier} />
-              <DispatchField
-                label="Tracking number"
-                value={dispatch.tracking_number}
-                mono
-              />
-              {dispatch.seal_number && (
-                <DispatchField
-                  label="Seal number"
-                  value={dispatch.seal_number}
-                  mono
-                />
-              )}
-              {dispatch.temperature_c && (
-                <DispatchField
-                  label="Temperature"
-                  value={`${dispatch.temperature_c} °C`}
-                />
-              )}
-            </div>
-          </div>
-        )}
-
         <div className="space-y-3">
           {dispatch.pickup_events.map((event, idx) => (
             <PickupEventBlock

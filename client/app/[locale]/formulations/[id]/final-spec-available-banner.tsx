@@ -1,14 +1,17 @@
 "use client";
 
 import { Button, Modal } from "@heroui/react";
-import { FileCheck2, Sparkles, X } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { FileCheck2, ShieldCheck, Sparkles, X } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
+import { apiClient } from "@/lib/api";
 import { useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import type {
   FinalSpecAvailableDto,
+  FormulationVersionDto,
   ProjectOverviewDto,
 } from "@/services/formulations";
 import {
@@ -21,6 +24,28 @@ import { useTrialBatches } from "@/services/trial_batches";
 const INPUT_CLASS =
   "w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400";
 const LABEL_CLASS = "text-xs font-medium text-ink-700";
+
+
+/** Render one dropdown row as ``v3 · 1 Sep 2026 — Optional label``.
+ *  Date parse defensive against malformed / missing ``created_at``.
+ *  Mirrors the helper on ``new-spec-sheet-button.tsx`` — kept as a
+ *  local copy rather than shared util because the two callers live
+ *  in unrelated components with no natural common module. */
+function formatVersionOptionLabel(v: FormulationVersionDto): string {
+  const parts: string[] = [`v${v.version_number}`];
+  const created = v.created_at ? new Date(v.created_at) : null;
+  if (created && !Number.isNaN(created.getTime())) {
+    parts.push(
+      created.toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      }),
+    );
+  }
+  const head = parts.join(" · ");
+  return v.label ? `${head} — ${v.label}` : head;
+}
 
 
 /**
@@ -95,6 +120,7 @@ export function FinalSpecAvailableBanner({
         onCreated={() => setDismissed(true)}
         orgId={orgId}
         formulationId={overview.id}
+        projectCode={overview.code ?? ""}
         defaults={state}
       />
     </>
@@ -108,6 +134,7 @@ function CreateFinalSpecModal({
   onCreated,
   orgId,
   formulationId,
+  projectCode,
   defaults,
 }: {
   open: boolean;
@@ -115,6 +142,10 @@ function CreateFinalSpecModal({
   onCreated: () => void;
   orgId: string;
   formulationId: string;
+  //: Project code (e.g. "MA01446"). Seeds the ``code`` input so the
+  //: FINAL sheet's code lands as ``<projectCode>-FINAL`` by default.
+  //: Scientist can still override before submitting.
+  projectCode: string;
   defaults: FinalSpecAvailableDto;
 }) {
   const tErrors = useTranslations("errors");
@@ -123,9 +154,61 @@ function CreateFinalSpecModal({
   const versionsQuery = useFormulationVersions(orgId, formulationId);
   const createMutation = useCreateFinalSpecFromTrial(orgId, formulationId);
 
+  // Trial-batch cycle lookup — used to seed the run-quantity input
+  // from the proposal's contracted quantity. Same endpoint the spec-
+  // sheets tab already hits (`useCycleForSpecTab`); 404 is expected
+  // when no cycle exists yet, treat any error as "no default" rather
+  // than blocking the modal.
+  const cycleQuery = useQuery<{ proposal_line_quantity: number | null } | null>({
+    queryKey: ["trial-batch-cycle-by-formulation", orgId, formulationId],
+    queryFn: async () => {
+      try {
+        const { data } = await apiClient.get<{
+          cycle: { proposal_line_quantity: number | null };
+        }>(
+          `/api/organizations/${orgId}/formulations/${formulationId}/trial-batch-cycle/`,
+        );
+        return data.cycle;
+      } catch {
+        return null;
+      }
+    },
+    staleTime: 30_000,
+    enabled: open,
+  });
+  const defaultQuantity = cycleQuery.data?.proposal_line_quantity ?? null;
+
   const [trialBatchId, setTrialBatchId] = useState(defaults.trial_batch_id);
-  const [versionId, setVersionId] = useState(defaults.formulation_version_id);
+  // Deliberately do NOT seed from ``defaults.formulation_version_id``
+  // (the trial's pinned version). Scientists iterate the recipe post-
+  // trial and expect the FINAL to pin against their newest save, not
+  // the one the trial physically consumed. Empty initial → the
+  // effectiveVersionId memo below falls through to the newest ready
+  // version. User can still manually swap either dropdown.
+  const [versionId, setVersionId] = useState("");
+  // Extra fields matching the button-modal UX — code, run quantity,
+  // cover notes. Scientist can leave any of them blank and the
+  // backend falls back to the source-draft copy (or a dosage-form
+  // default) so the modal stays lightweight when nothing's being
+  // overridden.
+  const [code, setCode] = useState(
+    projectCode ? `${projectCode}-FINAL` : "",
+  );
+  const [quantity, setQuantity] = useState<string>(
+    defaultQuantity != null ? String(defaultQuantity) : "",
+  );
+  const [coverNotes, setCoverNotes] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Late-arriving cycle → sync the quantity seed only if the user
+  // hasn't typed yet (matches the button-modal's ``defaultQuantity``
+  // sync pattern). Same effect keeps the code seed in step if the
+  // projectCode prop changes after mount.
+  useEffect(() => {
+    if (defaultQuantity == null) return;
+    if (quantity.trim().length > 0) return;
+    setQuantity(String(defaultQuantity));
+  }, [defaultQuantity, quantity]);
 
   // Only offer trial batches that passed validation — anything else
   // is a category error (the FINAL spec cites its evidentiary root).
@@ -142,17 +225,30 @@ function CreateFinalSpecModal({
   // ``is_auto=true`` intermediates AND versions that didn't pass the
   // readiness gate. A FINAL cut against a half-built version would
   // be a broken artefact from day one.
+  //
+  // Sort newest-first (``version_number DESC``) so the latest
+  // iteration sits at the TOP of the dropdown AND becomes the default
+  // preselection. Scientists iterating a recipe post-trial expect the
+  // freshly-saved version to be the one the FINAL pins against —
+  // "the trial batch validated the direction; the last save is what
+  // the customer's actually signing". The trial-batch dropdown above
+  // still shows which trial provided the evidentiary basis; the
+  // version dropdown is a separate choice they can override.
   const readyVersions = useMemo(
     () =>
-      (versionsQuery.data ?? []).filter((v) => !v.is_auto && v.is_complete),
+      (versionsQuery.data ?? [])
+        .filter((v) => !v.is_auto && v.is_complete)
+        .slice()
+        .sort((a, b) => b.version_number - a.version_number),
     [versionsQuery.data],
   );
 
-  // Default from the banner snapshot may point at a version that's
-  // no longer "ready" (someone edited it back into an incomplete
-  // state between pass + open). Fall back to the newest ready
-  // version so the dropdown lands on a valid option instead of
-  // rendering a stale ghost selection.
+  // Default: the user's most recent named + complete version. The
+  // banner-supplied ``defaults.formulation_version_id`` (the trial's
+  // pinned version) used to win here, but scientists iterating past
+  // the trial expected the newest — not the trial's — to pre-select.
+  // Falls back to whatever the user manually re-picked when it's
+  // still in the ready list.
   const effectiveVersionId = useMemo(() => {
     if (readyVersions.some((v) => v.id === versionId)) return versionId;
     return readyVersions[0]?.id ?? "";
@@ -162,10 +258,22 @@ function CreateFinalSpecModal({
     event.preventDefault();
     if (!trialBatchId || !effectiveVersionId) return;
     setErrorMessage(null);
+    const parsedQty = Number.parseInt(quantity, 10);
     try {
       await createMutation.mutateAsync({
         trialBatchId,
         formulationVersionId: effectiveVersionId,
+        // Only send fields the user actually typed — blank/empty ones
+        // fall through to the backend's source-draft copy fallback.
+        // Quantity is intentionally the one field where an out-of-
+        // range value gets swallowed here (backend returns 400 on 0
+        // or negative) so we don't send a garbage number the modal
+        // silently accepts.
+        ...(code.trim() ? { code: code.trim() } : {}),
+        ...(Number.isFinite(parsedQty) && parsedQty > 0
+          ? { quantity: parsedQty }
+          : {}),
+        ...(coverNotes.trim() ? { coverNotes: coverNotes.trim() } : {}),
       });
       // Drop the banner locally + trigger an SSR revalidation. The
       // overview is loaded server-side (`load-project.ts`), so the
@@ -188,10 +296,16 @@ function CreateFinalSpecModal({
         <Modal.Container size="md">
           <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
             <form onSubmit={handleSubmit} style={{ display: "contents" }}>
-              <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+              <Modal.Header className="flex items-center justify-between gap-3 border-b border-ink-200 px-6 py-4">
                 <Modal.Heading className="text-base font-semibold text-ink-1000">
                   Create final spec sheet
                 </Modal.Heading>
+                {/* Green "Final" badge — matches the badge on the
+                    button-modal path so both surfaces read as the
+                    same commercial-authoring flow. */}
+                <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800 ring-1 ring-emerald-500/30">
+                  <ShieldCheck className="h-3 w-3" /> Final
+                </span>
                 <button
                   type="button"
                   onClick={onClose}
@@ -202,12 +316,22 @@ function CreateFinalSpecModal({
                 </button>
               </Modal.Header>
               <Modal.Body className="flex flex-col gap-4 px-6 py-6">
-                <p className="text-sm text-ink-500">
-                  The FINAL spec is a frozen record — cite the trial batch
-                  that provides its evidentiary basis + the formulation
-                  version it locks against. Pre-selected below from the most
-                  recent passed trial; swap either dropdown before creating.
-                </p>
+                {/* Same emerald info card the button-modal shows, so
+                    scientists opening either surface get the same
+                    context on what a FINAL sheet is + why it's a
+                    load-bearing commitment. */}
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-50/70 p-3 text-xs text-emerald-950">
+                  <p className="font-semibold">
+                    This is the customer-facing final specification.
+                  </p>
+                  <p className="mt-1">
+                    Cite the trial batch that provides its evidentiary basis +
+                    the formulation version it locks against. Pre-selected
+                    from the most recent passed trial; swap either dropdown
+                    before creating. Once created, the customer will be asked
+                    to sign it — that signature authorises full production.
+                  </p>
+                </div>
 
                 <label className="flex flex-col gap-1.5">
                   <span className={LABEL_CLASS}>Trial batch</span>
@@ -238,8 +362,7 @@ function CreateFinalSpecModal({
                   >
                     {readyVersions.map((v) => (
                       <option key={v.id} value={v.id}>
-                        v{v.version_number}
-                        {v.label ? ` — ${v.label}` : ""}
+                        {formatVersionOptionLabel(v)}
                       </option>
                     ))}
                   </select>
@@ -249,6 +372,41 @@ function CreateFinalSpecModal({
                       Save a named version from the builder first.
                     </span>
                   ) : null}
+                </label>
+
+                <label className="flex flex-col gap-1.5">
+                  <span className={LABEL_CLASS}>Code</span>
+                  <input
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                    className={INPUT_CLASS}
+                  />
+                </label>
+
+                <label className="flex flex-col gap-1.5">
+                  <span className={LABEL_CLASS}>Run quantity</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={quantity}
+                    onChange={(e) => setQuantity(e.target.value)}
+                    className={INPUT_CLASS}
+                  />
+                  <span className="text-xs text-ink-500">
+                    {defaultQuantity != null
+                      ? `Seeded from the proposal (${defaultQuantity} units). This is the last time you can change the run size — once the customer signs, it's locked.`
+                      : "This is the last time you can change the run size — once the customer signs, it's locked."}
+                  </span>
+                </label>
+
+                <label className="flex flex-col gap-1.5">
+                  <span className={LABEL_CLASS}>Cover notes</span>
+                  <textarea
+                    rows={3}
+                    value={coverNotes}
+                    onChange={(e) => setCoverNotes(e.target.value)}
+                    className={INPUT_CLASS}
+                  />
                 </label>
 
                 {errorMessage ? (

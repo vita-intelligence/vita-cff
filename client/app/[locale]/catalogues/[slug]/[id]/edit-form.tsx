@@ -31,6 +31,13 @@ const extendedUpdateSchema = updateItemSchema.extend({
 
 type ExtendedUpdateInput = z.infer<typeof extendedUpdateSchema>;
 
+/** Keys the backend serializer treats as system-reserved on
+ *  ``attributes`` — they survive ``validate_values`` regardless of
+ *  any AttributeDefinition rows and are edited via the dedicated
+ *  ``BandDefaultsSection`` below. Must stay in sync with
+ *  ``SYSTEM_ATTRIBUTE_KEYS`` in the backend serializer. */
+const SYSTEM_ATTRIBUTE_KEYS = ["default_for_bands"] as const;
+
 function initialAttributesFrom(
   item: ItemDto,
   definitions: readonly AttributeDefinitionDto[],
@@ -48,6 +55,14 @@ function initialAttributesFrom(
     } else {
       result[defn.key] = null;
     }
+  }
+  // System-reserved keys — populate from the persisted item so a
+  // reload of the edit form shows the flags the admin previously
+  // ticked. Missing / non-array → empty list so the checkbox section
+  // reads a stable value.
+  for (const key of SYSTEM_ATTRIBUTE_KEYS) {
+    const current = item.attributes?.[key];
+    result[key] = Array.isArray(current) ? current : [];
   }
   return result;
 }
@@ -275,6 +290,17 @@ export function EditItemForm({
         />
       ) : null}
 
+      {/* System-reserved band defaults. Editable via checkboxes on
+          the same item edit surface (no separate settings page) —
+          flipping a flag here is what makes an item the org's
+          auto-injected default for a specific formulation band (see
+          apps/formulations/services.resolve_default_item_for_band).
+          Wire lives on the JSON ``attributes.default_for_bands``
+          array; the serializer treats these keys as system-reserved
+          so they survive attribute validation regardless of any
+          AttributeDefinition rows. */}
+      <BandDefaultsSection control={control} />
+
       {errors.root?.message ? (
         <p
           role="alert"
@@ -384,6 +410,107 @@ export function EditItemForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+
+/**
+ * System-reserved "default for band" flags. These live on the same
+ * ``attributes`` JSON blob but are OUT of the user-defined attribute
+ * definition system — the backend serializer treats them as system-
+ * reserved keys that survive validate_values regardless of any
+ * AttributeDefinition rows.
+ *
+ * Ticking a checkbox flags this item as the org's default for the
+ * corresponding formulation band. The resolver
+ * (:func:`apps.formulations.services.resolve_default_item_for_band`)
+ * picks the newest-updated flagged item per band, so if two items
+ * are ticked for the same band the most recently saved one wins.
+ *
+ * Currently exposed: ``gummy_water`` only. The auto-inject +
+ * validation flow lives in
+ * :func:`apps.formulations.services._ensure_gummy_water_pick` — future
+ * bands (``mcc_carrier``, ``dcp_carrier``, ``powder_carrier``, etc.)
+ * plug into the same helper and add a row to ``BAND_OPTIONS`` here.
+ */
+const BAND_OPTIONS: readonly {
+  readonly key: string;
+  readonly label: string;
+  readonly description: string;
+}[] = [
+  {
+    key: "gummy_water",
+    label: "Gummy water",
+    description:
+      "Auto-injected into every gummy formulation's gummy-base picks when the scientist has not chosen a water-named item themselves. Prevents a phantom \"Deionised Water\" row appearing on the routing without a MA code or stage assignment.",
+  },
+];
+
+function BandDefaultsSection({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  control,
+}: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  control: any;
+}) {
+  return (
+    <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <div className="mb-3">
+        <h3 className="text-sm font-semibold text-ink-1000">
+          Default for band
+        </h3>
+        <p className="mt-0.5 text-xs text-ink-500">
+          Flag this item as the org&apos;s auto-injected default for one
+          or more formulation bands. If two items in the same catalogue
+          are flagged for the same band, the most recently saved one wins.
+        </p>
+      </div>
+      <Controller
+        control={control}
+        name={"attributes.default_for_bands" as never}
+        render={({ field }) => {
+          const value = Array.isArray(field.value)
+            ? (field.value as string[])
+            : [];
+          const toggle = (key: string, checked: boolean) => {
+            const next = checked
+              ? Array.from(new Set([...value, key]))
+              : value.filter((v) => v !== key);
+            field.onChange(next);
+          };
+          return (
+            <ul className="flex flex-col gap-3">
+              {BAND_OPTIONS.map((option) => {
+                const checked = value.includes(option.key);
+                return (
+                  <li key={option.key} className="flex items-start gap-3">
+                    <input
+                      id={`default-for-band-${option.key}`}
+                      type="checkbox"
+                      className="mt-0.5 size-4 rounded border-ink-300 text-orange-500 focus:ring-orange-500"
+                      checked={checked}
+                      onChange={(e) => toggle(option.key, e.target.checked)}
+                      onBlur={field.onBlur}
+                    />
+                    <label
+                      htmlFor={`default-for-band-${option.key}`}
+                      className="cursor-pointer select-none"
+                    >
+                      <p className="text-sm font-medium text-ink-1000">
+                        {option.label}
+                      </p>
+                      <p className="text-xs text-ink-500">
+                        {option.description}
+                      </p>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          );
+        }}
+      />
+    </div>
   );
 }
 

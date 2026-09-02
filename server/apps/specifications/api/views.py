@@ -28,6 +28,9 @@ from apps.specifications.api.serializers import (
 )
 from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
 from apps.specifications.models import SpecificationSheet
+from apps.formulations.services import (
+    SpecSheetBuilderIncomplete as _SpecSheetBuilderIncomplete,
+)
 from apps.specifications.services import (
     FinalSpecAlreadyExists,
     SpecRequiresCustomer,
@@ -197,6 +200,21 @@ class SpecificationListCreateView(APIView):
         except SpecRequiresCustomer:
             return Response(
                 {"code": "spec_requires_customer"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except _SpecSheetBuilderIncomplete as exc:
+            # Formulation isn't builder-complete (unassigned lines,
+            # empty stages, missing packaging, etc.). Backend hard-
+            # block that mirrors the FE ``spec_sheets_unlocked`` gate
+            # so a POST that skips the button check gets the same
+            # answer. Payload names WHICH gates failed so the FE
+            # renders a specific "Missing: unassigned lines, empty
+            # stages" list rather than a generic error.
+            return Response(
+                {
+                    "code": "spec_sheet_builder_incomplete",
+                    "missing": list(exc.missing),
+                },
                 status=status.HTTP_409_CONFLICT,
             )
         return Response(

@@ -21,6 +21,27 @@ const LABEL_CLASS = "text-xs font-medium text-ink-700";
 const HINT_CLASS = "text-xs text-ink-500";
 
 
+/** Render one dropdown row as ``v3 · 1 Sep 2026 — Optional label``.
+ *  Date parse is defensive: a malformed / missing ``created_at``
+ *  falls back to omitting the date rather than rendering "Invalid
+ *  Date". Label stays optional. */
+function formatVersionOptionLabel(v: FormulationVersionDto): string {
+  const parts: string[] = [`v${v.version_number}`];
+  const created = v.created_at ? new Date(v.created_at) : null;
+  if (created && !Number.isNaN(created.getTime())) {
+    parts.push(
+      created.toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      }),
+    );
+  }
+  const head = parts.join(" · ");
+  return v.label ? `${head} — ${v.label}` : head;
+}
+
+
 /**
  * "Generate specification sheet" trigger shown on the formulation
  * detail page. Opens a modal that asks which saved version to lock
@@ -115,8 +136,19 @@ export function NewSpecSheetButton({
   // are hidden too, so a director can't sign a sheet against a
   // broken snapshot. Freshly-migrated existing rows carry
   // ``is_complete=true`` for is_auto=false via the 0062 backfill.
+  //
+  // Sort newest-first so the freshest recipe iteration sits at the
+  // top of the dropdown AND becomes the default selection. Scientists
+  // saving a new version after a trial-batch cycle expect the newly-
+  // saved version to be pre-selected when they open Create FINAL —
+  // ordering by ``version_number DESC`` matches how they think about
+  // "the latest one".
   const eligibleVersions = useMemo(
-    () => versions.filter((v) => !v.is_auto && v.is_complete),
+    () =>
+      versions
+        .filter((v) => !v.is_auto && v.is_complete)
+        .slice()
+        .sort((a, b) => b.version_number - a.version_number),
     [versions],
   );
 
@@ -346,8 +378,7 @@ export function NewSpecSheetButton({
                   >
                     {eligibleVersions.map((v) => (
                       <option key={v.id} value={v.id}>
-                        v{v.version_number}
-                        {v.label ? ` — ${v.label}` : ""}
+                        {formatVersionOptionLabel(v)}
                       </option>
                     ))}
                   </select>

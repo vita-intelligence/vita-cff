@@ -438,6 +438,81 @@ PACKAGING_SLOT_TYPES: dict[str, str] = {
 }
 
 
+#: Keyword → slot fallback for PSP-mirrored packaging items. PSP items
+#: only carry the coarse ``psp_item_type == 'packaging'`` bucket flag
+#: (not the closure/material/label/tamper sub-type the local catalogue
+#: uses), so we infer the slot from the item name. Order matters —
+#: matched top-to-bottom, first hit wins. That way an
+#: "HDPE Lid Tamper-Evident" item lands on ``packaging_lid`` (Lid
+#: keyword first) rather than ``packaging_antitemper``: a lid IS a
+#: closure that happens to have tamper-evident features.
+_PACKAGING_KEYWORD_SLOTS: tuple[tuple[str, str], ...] = (
+    ("lid", "packaging_lid"),
+    ("cap", "packaging_lid"),
+    ("closure", "packaging_lid"),
+    ("bottle", "packaging_container"),
+    ("pouch", "packaging_container"),
+    ("tub", "packaging_container"),
+    ("jar", "packaging_container"),
+    ("container", "packaging_container"),
+    ("carton", "packaging_container"),
+    ("label", "packaging_label"),
+    ("sleeve", "packaging_label"),
+    ("wrap", "packaging_label"),
+    ("tamper", "packaging_antitemper"),
+    ("seal", "packaging_antitemper"),
+    ("shrink", "packaging_antitemper"),
+    ("band", "packaging_antitemper"),
+)
+
+
+def _infer_packaging_slots(formulation: Any) -> dict[str, Item]:
+    """Read the formulation's manual (source_kind='manual') packaging
+    lines and slot each item into one of the four spec-sheet FK slots.
+
+    * Local packaging catalogue items: use ``attributes.packaging_type``
+      (authoritative controlled vocab: closure / material / label /
+      tamper_proof).
+    * PSP-mirrored items: fall back to name-keyword inference via
+      :data:`_PACKAGING_KEYWORD_SLOTS`, guarded on
+      ``psp_item_type == 'packaging'`` so a semi-finished stage output
+      with a coincidental keyword ("Lid Formula") can't hijack a slot.
+    * First pick per slot wins; missing slots stay unset.
+
+    Called by BOTH the draft-create path (``create_sheet``) and the
+    FINAL-create path (``_build_final_spec``). Previously the FINAL
+    path shipped without any packaging inference — a scientist who
+    swapped packaging (e.g. bottle → pouch) between draft and FINAL
+    would generate a FINAL with empty packaging slots, silently
+    losing the switch on the customer-facing spec.
+    """
+
+    slot_for_type = {
+        packaging_type: slot for slot, packaging_type in PACKAGING_SLOT_TYPES.items()
+    }
+    packaging_by_slot: dict[str, Item] = {}
+    packaging_lines = formulation.lines.select_related("item").filter(
+        source_kind=FormulationLine.SOURCE_KIND_MANUAL,
+        item__isnull=False,
+    )
+    for line in packaging_lines:
+        item = line.item
+        attrs = item.attributes or {}
+        slot: str | None = None
+        packaging_type = attrs.get("packaging_type")
+        if packaging_type:
+            slot = slot_for_type.get(packaging_type)
+        if slot is None and attrs.get("psp_item_type") == "packaging":
+            lower_name = (item.name or "").lower()
+            for keyword, slot_candidate in _PACKAGING_KEYWORD_SLOTS:
+                if keyword in lower_name:
+                    slot = slot_candidate
+                    break
+        if slot and slot not in packaging_by_slot:
+            packaging_by_slot[slot] = item
+    return packaging_by_slot
+
+
 #: Allowed status moves. The spec sheet cannot jump arbitrarily; the
 #: scientist walks it forward through draft → in-review → approved
 #: → sent → accepted / rejected. The UI disables buttons that are
@@ -607,6 +682,51 @@ def get_sheet(
     if sheet is None:
         raise SpecificationNotFound()
     return sheet
+
+
+def _resolve_unique_sheet_code(
+    *,
+    organization: Any,
+    desired: str,
+    exclude_pk: Any = None,
+) -> str:
+    """Return ``desired`` if it's unique across the org's spec sheets;
+    otherwise append ``-2``, ``-3``, … until we find a free slot.
+
+    Called by both the DRAFT (:func:`create_sheet`) and FINAL
+    (:func:`_build_final_spec`) create paths, and by any code-editing
+    flow that wants "make it unique without failing on a collision".
+    Previously the DRAFT path raised :class:`SpecificationCodeConflict`
+    outright on duplicate — kicked the friction back to the scientist
+    who had to guess a free code by hand. Silent auto-suffix matches
+    the mental model on the FE modal (scientist types the intended
+    code once and the sheet lands).
+
+    Empty ``desired`` returns empty — the caller falls back to leaving
+    the code blank and the spec lists as "Untitled" until filled in.
+    ``exclude_pk`` scopes the uniqueness check to sheets OTHER than
+    the row currently being edited so a no-op save of the same code
+    passes through unchanged.
+    """
+
+    desired = (desired or "").strip()
+    if not desired:
+        return ""
+
+    def _taken(candidate: str) -> bool:
+        qs = SpecificationSheet.objects.filter(
+            organization=organization, code=candidate
+        )
+        if exclude_pk is not None:
+            qs = qs.exclude(pk=exclude_pk)
+        return qs.exists()
+
+    candidate = desired
+    suffix = 2
+    while _taken(candidate):
+        candidate = f"{desired}-{suffix}"
+        suffix += 1
+    return candidate
 
 
 @transaction.atomic
@@ -1420,15 +1540,65 @@ def create_sheet(
     ):
         raise SpecRequiresCustomer()
 
+    # Silent auto-suffix on duplicate code instead of raising
+    # :class:`SpecificationCodeConflict` outright. Scientist typed
+    # ``MA01446-FINAL``, one already exists → the sheet lands as
+    # ``MA01446-FINAL-2``. Blank code stays blank.
     if code:
-        duplicate = SpecificationSheet.objects.filter(
-            organization=organization, code=code
-        ).exists()
-        if duplicate:
-            raise SpecificationCodeConflict()
+        code = _resolve_unique_sheet_code(
+            organization=organization, desired=code
+        )
 
     if document_kind not in SpecificationDocumentKind.values:
         raise InvalidSpecificationDocumentKind()
+
+    # Builder-complete hard-block. The FE hides the "Create spec sheet"
+    # button when ``_compute_stage_gates(formulation).builder_complete``
+    # is False (missing lines / unassigned lines / empty stages /
+    # missing packaging / setup metadata gaps), but the button-hide
+    # is not enough — an API call, admin tool, or migration can still
+    # produce a spec sheet against a half-scaffolded recipe. That's
+    # exactly the "phantom water passed through to signed spec"
+    # scenario we hit on MA01446. Fail loudly here so bypassing the
+    # UI is impossible.
+    #
+    # Payload names which gate(s) failed so the FE renders "Missing:
+    # unassigned lines, empty stages" rather than a generic error.
+    #
+    # Lazy import — the overview module transitively pulls specs /
+    # proposals / trial-batches app graphs and would otherwise create
+    # a boot-time cycle with this module.
+    from apps.formulations.overview import _compute_stage_gates
+    from apps.formulations.services import (
+        FormulationBuilderIncomplete,
+        SpecSheetBuilderIncomplete,
+    )
+
+    gates = _compute_stage_gates(version.formulation)
+    if not gates.builder_complete:
+        missing_reasons: list[str] = []
+        # Re-run the individual predicates so the FE knows WHAT to fix.
+        # Cheaper than re-computing gates would be to have _compute_
+        # stage_gates return a structured breakdown; that refactor can
+        # follow. For now we surface the coarse "builder_complete"
+        # signal + let the FE guide the scientist back to the Builder
+        # (which has its own per-stage warnings).
+        line_stage_ids = list(
+            version.formulation.lines.values_list("stage_id", flat=True),
+        )
+        stage_ids = list(
+            version.formulation.stages.values_list("id", flat=True),
+        )
+        if not stage_ids:
+            missing_reasons.append("no_stages")
+        if not line_stage_ids:
+            missing_reasons.append("no_lines")
+        if any(sid is None for sid in line_stage_ids):
+            missing_reasons.append("unassigned_lines")
+        stages_with_lines = {sid for sid in line_stage_ids if sid is not None}
+        if stage_ids and any(sid not in stages_with_lines for sid in stage_ids):
+            missing_reasons.append("empty_stages")
+        raise SpecSheetBuilderIncomplete(tuple(missing_reasons))
 
     # One FINAL per project. The auto-create-on-validation path
     # short-circuits via ``_existing_final_for_formulation`` before
@@ -1470,86 +1640,24 @@ def create_sheet(
     dosage_form = snapshot_metadata.get("dosage_form", "") or ""
     spec_defaults = SPECIFICATION_TEXT_DEFAULTS.get(dosage_form, {})
 
-    # Auto-seed the four packaging FK slots from the builder's picks.
-    # Packaging isn't an M2M on Formulation — the scientist drops
-    # closure / material / label / tamper_proof items into a
-    # packaging stage via the Routing picker
-    # (``FormulationLine(source_kind='manual')``). Read those live
-    # lines here and slot each item into the matching sheet FK by:
-    #
-    # 1. Direct match on ``item.attributes.packaging_type`` (local
-    #    packaging catalogue: authoritative vocabulary).
-    # 2. Fallback for PSP-mirrored items — those carry only
-    #    ``psp_item_type == 'packaging'`` (packaging bucket flag),
-    #    not the closure/material/label/tamper_proof sub-type, so we
-    #    infer the slot from item-name keywords. This mirrors what
-    #    a scientist would guess reading the picked SKU list.
-    #
-    # First pick per slot wins. Falls through silently on any
-    # missing pick so scientists who haven't finalised packaging
-    # can still generate a draft sheet.
-    slot_for_type = {
-        packaging_type: slot for slot, packaging_type in PACKAGING_SLOT_TYPES.items()
-    }
-    # Keyword → slot map for the PSP-mirrored fallback. Order
-    # matters: keywords are matched in list order and first hit
-    # wins, so an "HDPE Lid Tamper-Evident" item lands on
-    # ``packaging_lid`` (Lid keyword comes first) rather than
-    # ``packaging_antitemper`` (Tamper keyword). Overlap is rare
-    # but the closure interpretation is the useful one — a lid IS
-    # a closure that also happens to have tamper-evident features.
-    _packaging_keyword_slots: tuple[tuple[str, str], ...] = (
-        ("lid", "packaging_lid"),
-        ("cap", "packaging_lid"),
-        ("closure", "packaging_lid"),
-        ("bottle", "packaging_container"),
-        ("pouch", "packaging_container"),
-        ("tub", "packaging_container"),
-        ("jar", "packaging_container"),
-        ("container", "packaging_container"),
-        ("carton", "packaging_container"),
-        ("label", "packaging_label"),
-        ("sleeve", "packaging_label"),
-        ("wrap", "packaging_label"),
-        ("tamper", "packaging_antitemper"),
-        ("seal", "packaging_antitemper"),
-        ("shrink", "packaging_antitemper"),
-        ("band", "packaging_antitemper"),
-    )
-    packaging_lines = (
-        version.formulation.lines.select_related("item")
-        .filter(
-            source_kind=FormulationLine.SOURCE_KIND_MANUAL,
-            item__isnull=False,
-        )
-    )
-    packaging_by_slot: dict[str, Item] = {}
-    for line in packaging_lines:
-        item = line.item
-        attrs = item.attributes or {}
-        slot: str | None = None
-        # Prefer the explicit sub-type when present.
-        packaging_type = attrs.get("packaging_type")
-        if packaging_type:
-            slot = slot_for_type.get(packaging_type)
-        # PSP-mirrored fallback — only apply the keyword heuristic
-        # when the item is tagged as packaging on the PSP side so a
-        # semi-finished stage output with a coincidental keyword
-        # ("Lid Formula") can't hijack a slot.
-        if slot is None and attrs.get("psp_item_type") == "packaging":
-            lower_name = (item.name or "").lower()
-            for keyword, slot_candidate in _packaging_keyword_slots:
-                if keyword in lower_name:
-                    slot = slot_candidate
-                    break
-        if slot and slot not in packaging_by_slot:
-            packaging_by_slot[slot] = item
+    packaging_by_slot = _infer_packaging_slots(version.formulation)
 
     # Auto-price the sheet from the version's snapshot lines + live PSP
     # data so the director doesn't have to eyeball the builder's cost
     # pill and re-type on approval. Director can still override on the
     # approval modal — this only fills the starting value.
     computed_unit_cost = compute_unit_cost_for_version(version)
+
+    # Seed quantity from the customer-signed proposal line when one
+    # exists. Draft creation historically defaulted to ``1``, which
+    # then silently propagated through to the FINAL and to the
+    # customer-facing invoice math (total = final_price × quantity).
+    # A run-of-1000 contract that ships as a "1 unit" invoice is
+    # exactly the class of bug the FINAL modal's explicit quantity
+    # input was added to prevent — this closes the same gap at the
+    # DRAFT layer so both flows agree on the contract quantity.
+    proposal_qty = _proposal_line_quantity_for_formulation(version.formulation)
+    seeded_quantity = proposal_qty if proposal_qty and proposal_qty > 0 else 1
 
     sheet = SpecificationSheet.objects.create(
         organization=organization,
@@ -1561,6 +1669,7 @@ def create_sheet(
         unit_cost=computed_unit_cost,
         margin_percent=margin_percent,
         final_price=final_price,
+        quantity=seeded_quantity,
         cover_notes=cover_notes,
         total_weight_label=total_weight_label,
         shelf_life=spec_defaults.get("shelf_life", ""),
@@ -1585,12 +1694,65 @@ def create_sheet(
     return sheet
 
 
+def _proposal_line_quantity_for_formulation(formulation: Any) -> int | None:
+    """Return the run size committed on the newest customer-signed /
+    accepted proposal line for ``formulation``, or ``None`` when no
+    signed proposal exists.
+
+    Duplicates the helper in
+    :mod:`apps.trial_batches.api.cycle_scientist_views` so both the
+    trial-batch cycle serializer AND the spec-sheet create paths can
+    pull the same contractual number without depending on each other.
+    Fresh sheets default to this quantity instead of the raw ``1``
+    fallback that historically shipped — a scientist who left the
+    quantity field untouched would otherwise silently create a spec
+    for 1 unit of a 1000-unit contract, and the customer-facing
+    invoice math would break exactly the way MA01446 hit today.
+    """
+
+    from apps.proposals.models import ProposalLine, ProposalStatus
+    from django.db.models import Q
+
+    line = (
+        ProposalLine.objects.filter(
+            Q(proposal__status=ProposalStatus.ACCEPTED.value)
+            | Q(
+                proposal__status=ProposalStatus.SENT.value,
+                proposal__customer_signed_at__isnull=False,
+            ),
+            formulation_version__formulation=formulation,
+        )
+        .order_by("-proposal__updated_at")
+        .values_list("quantity", flat=True)
+        .first()
+    )
+    return int(line) if line else None
+
+
+def _parse_positive_int(raw: Any) -> int | None:
+    """Coerce an incoming ``quantity`` override to a positive int.
+    Returns ``None`` on nil / empty / non-positive input so the caller
+    can fall back to the source-draft copy. Silent skip rather than
+    raise — quantity is optional at this layer."""
+
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 @transaction.atomic
 def create_final_spec_from_trial(
     *,
     trial_batch: Any,
     formulation_version: FormulationVersion,
     actor: Any,
+    code_override: str | None = None,
+    quantity_override: int | None = None,
+    cover_notes_override: str | None = None,
 ) -> SpecificationSheet:
     """Explicitly create a ``document_kind=FINAL`` spec sheet, pinning
     it to ``formulation_version`` and citing ``trial_batch`` as the
@@ -1606,6 +1768,16 @@ def create_final_spec_from_trial(
     the formulation and re-passes on a different trial, they explicitly
     pick that new pair via the banner rather than auto-inheriting.
 
+    ``code_override`` / ``quantity_override`` / ``cover_notes_override``
+    let the banner modal pass values the scientist typed instead of
+    silently copying whatever sat on the source draft. Any of them
+    left as ``None`` falls back to the source-draft copy or the
+    dosage-form default (see :func:`_build_final_spec`) — the modal
+    only sends fields it actually surfaces. Quantity is the
+    load-bearing one here: the FINAL locks the run size the customer
+    signs against, so it's the scientist's last chance to override
+    the seeded value from the proposal / trial cycle.
+
     Raises :class:`FinalSpecAlreadyExists` when the guard trips.
     """
     return _build_final_spec(
@@ -1613,6 +1785,9 @@ def create_final_spec_from_trial(
         actor=actor,
         source="create_final_spec",
         trial_batch=trial_batch,
+        code_override=code_override,
+        quantity_override=quantity_override,
+        cover_notes_override=cover_notes_override,
     )
 
 
@@ -1651,6 +1826,9 @@ def _build_final_spec(
     actor: Any,
     source: str,
     trial_batch: Any | None,
+    code_override: str | None = None,
+    quantity_override: int | None = None,
+    cover_notes_override: str | None = None,
 ) -> SpecificationSheet:
     """Shared spec-creation body used by both the explicit banner path
     (:func:`create_final_spec_from_trial`) and the legacy auto path
@@ -1663,6 +1841,12 @@ def _build_final_spec(
 
     ``source`` is stamped on the audit action (``spec_sheet.<source>``)
     so history reads distinguish which pathway created the sheet.
+
+    Overrides (``code_override`` / ``quantity_override`` /
+    ``cover_notes_override``): fed in by the banner modal when the
+    scientist typed a value. Fall back to the source-draft copy
+    otherwise. Keeps the auto-path (which never has an operator to
+    type overrides) working unchanged.
     """
     formulation = formulation_version.formulation
     organization = formulation.organization
@@ -1743,10 +1927,68 @@ def _build_final_spec(
     if source_unit_cost is None:
         source_unit_cost = compute_unit_cost_for_version(formulation_version)
 
+    # Auto-seed packaging FK slots from the formulation's current
+    # manual packaging picks. Reads the LIVE formulation (not the
+    # snapshot on ``formulation_version.snapshot_lines``) because
+    # packaging FKs point at :class:`Item` rows the sheet renders
+    # directly — the snapshot only carries copy for the ingredient
+    # declaration, not fresh Item pointers. Reads live picks so if
+    # the scientist swapped bottle → pouch between draft and FINAL,
+    # the FINAL surfaces the pouch. Previously this call was missing
+    # entirely and every FINAL shipped with empty packaging slots.
+    packaging_by_slot = _infer_packaging_slots(formulation)
+
+    # Resolve override-vs-copy for each field the banner modal
+    # surfaces. Non-empty override wins; blank / None falls back to
+    # whatever the current draft-copy / default resolution produces.
+    #
+    # Code resolution has two shapes:
+    #  * Scientist typed a full code (e.g. "MA01446-FINAL") → use it
+    #    as-is via ``_resolve_unique_sheet_code`` (silent -2, -3
+    #    suffix on collision). Piping through ``_next_unique_final_code``
+    #    would double-up ("MA01446-FINAL-FINAL") because that helper
+    #    always appends ``-FINAL`` to whatever base it's given.
+    #  * No override → walk the ``<code_base>-FINAL[-N]`` sequence
+    #    (existing behaviour for the auto-path and blank-code case).
+    resolved_code = (
+        _resolve_unique_sheet_code(
+            organization=organization, desired=code_override.strip()
+        )
+        if code_override and code_override.strip()
+        else _next_unique_final_code(base=code_base)
+    )
+    # Quantity resolution ladder:
+    #  1. Scientist typed an explicit override on the modal — always wins.
+    #  2. Source draft quantity when it's a real value (>= 2). A draft
+    #     that shipped with the historical ``1`` default is treated as
+    #     unset, not authoritative — otherwise a FINAL silently
+    #     inherits "1 unit of a 1000-unit contract" and the customer-
+    #     facing invoice math breaks (MA01446 hit this today).
+    #  3. Proposal line quantity — the contractual run size the
+    #     customer signed against on the proposal. Source of truth
+    #     when the draft was never explicitly re-quoted.
+    #  4. Absolute last-resort default of 1 (no signed proposal on
+    #     the formulation at all — rare, mostly test seed data).
+    draft_qty = (
+        int(getattr(source_draft, "quantity", 0) or 0) if source_draft else 0
+    )
+    if quantity_override is not None:
+        resolved_quantity = quantity_override
+    elif draft_qty > 1:
+        resolved_quantity = draft_qty
+    else:
+        proposal_qty = _proposal_line_quantity_for_formulation(formulation)
+        resolved_quantity = proposal_qty if proposal_qty and proposal_qty > 0 else 1
+    resolved_cover_notes = (
+        cover_notes_override.strip()
+        if cover_notes_override is not None and cover_notes_override.strip()
+        else _copy_or_default("cover_notes")
+    )
+
     sheet = SpecificationSheet.objects.create(
         organization=organization,
         formulation_version=formulation_version,
-        code=_next_unique_final_code(base=code_base),
+        code=resolved_code,
         client_name=_copy_or_default("client_name"),
         client_email=_copy_or_default("client_email"),
         client_company=_copy_or_default("client_company"),
@@ -1757,11 +1999,11 @@ def _build_final_spec(
         final_price=getattr(source_draft, "final_price", None)
         if source_draft
         else None,
-        quantity=getattr(source_draft, "quantity", 1) if source_draft else 1,
+        quantity=resolved_quantity,
         currency=getattr(source_draft, "currency", "GBP")
         if source_draft
         else "GBP",
-        cover_notes=_copy_or_default("cover_notes"),
+        cover_notes=resolved_cover_notes,
         total_weight_label=_copy_or_default("total_weight_label"),
         unit_quantity=_copy_or_default("unit_quantity"),
         food_contact_status=_copy_or_default("food_contact_status"),
@@ -1770,6 +2012,10 @@ def _build_final_spec(
         weight_uniformity=_copy_or_default("weight_uniformity", "weight_uniformity"),
         status=SpecificationStatus.DRAFT,
         document_kind=SpecificationDocumentKind.FINAL,
+        packaging_lid=packaging_by_slot.get("packaging_lid"),
+        packaging_container=packaging_by_slot.get("packaging_container"),
+        packaging_label=packaging_by_slot.get("packaging_label"),
+        packaging_antitemper=packaging_by_slot.get("packaging_antitemper"),
         created_by=actor,
         updated_by=actor,
     )

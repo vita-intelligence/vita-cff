@@ -16,6 +16,64 @@ def _code(value: str) -> ErrorDetail:
 
 
 # ---------------------------------------------------------------------------
+# System-reserved attribute keys
+# ---------------------------------------------------------------------------
+#
+# ``attributes`` on an item is normally a dict validated against the
+# catalogue's :class:`AttributeDefinition` rows — anything without a
+# matching definition is silently dropped by ``validate_values``. That
+# is the correct behaviour for user-defined columns (a stale form
+# submit shouldn't fail writes), but there is a small set of SYSTEM
+# concepts we want to store on the same JSON blob so ops can flip them
+# from the item edit form without a schema migration.
+#
+# Reserved keys:
+# * ``default_for_bands`` — list[str], e.g. ``["gummy_water"]``. Flags
+#   an item as the org's default for one or more auto-inject bands
+#   (see :func:`apps.formulations.services.resolve_default_item_for_band`).
+#
+# Any key listed here is:
+#   1. Passed through ``validate_values`` unchanged (not dropped).
+#   2. Coerced to the expected type below (list-of-str) with a
+#      ``default_for_bands: invalid`` error surfaced when malformed.
+#
+SYSTEM_ATTRIBUTE_KEYS: frozenset[str] = frozenset({"default_for_bands"})
+
+
+def _coerce_system_attribute(key: str, value: Any) -> tuple[Any, str | None]:
+    """Type-coerce a system-reserved attribute value. Returns
+    ``(coerced, error_code)`` — ``error_code`` is ``None`` on success."""
+
+    if key == "default_for_bands":
+        if value is None or value == "":
+            return [], None
+        if not isinstance(value, list):
+            return None, "invalid"
+        coerced: list[str] = []
+        for entry in value:
+            if not isinstance(entry, str):
+                return None, "invalid"
+            trimmed = entry.strip()
+            if trimmed:
+                coerced.append(trimmed)
+        # De-dup while preserving order so a UI double-submit doesn't
+        # bloat the list.
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for entry in coerced:
+            if entry in seen:
+                continue
+            seen.add(entry)
+            deduped.append(entry)
+        return deduped, None
+
+    # Unknown key in the reserved set — defensive default. Adding a
+    # new key to ``SYSTEM_ATTRIBUTE_KEYS`` requires a matching branch
+    # here; otherwise the value is dropped.
+    return None, "invalid"
+
+
+# ---------------------------------------------------------------------------
 # Catalogue metadata
 # ---------------------------------------------------------------------------
 
@@ -158,10 +216,33 @@ class ItemWriteSerializer(serializers.ModelSerializer):
             merged.update(incoming)
             incoming = merged
 
+        # Carve out system-reserved keys BEFORE ``validate_values``
+        # runs — that helper only knows about ``AttributeDefinition``
+        # rows and drops everything else silently. Reserved keys ride
+        # the same JSON blob for convenience (ops can flip them from
+        # the item edit form) but their coercion is hardcoded in
+        # :func:`_coerce_system_attribute`. Errors surface under the
+        # attribute key so the FE renders them next to the right input.
+        system_values: dict[str, Any] = {}
+        system_errors: dict[str, list[str]] = {}
+        for key in list(incoming.keys()):
+            if key in SYSTEM_ATTRIBUTE_KEYS:
+                coerced_value, sys_error = _coerce_system_attribute(
+                    key, incoming.pop(key)
+                )
+                if sys_error is not None:
+                    system_errors[key] = [sys_error]
+                    continue
+                system_values[key] = coerced_value
+
         coerced, errors = validate_values(
             catalogue=catalogue,
             incoming=incoming,
         )
+        # Merge system-key errors on top of definition errors so the FE
+        # receives both in a single 400 payload.
+        for key, codes in system_errors.items():
+            errors.setdefault(key, []).extend(codes)
         if errors:
             codified = {
                 key: [_code(c) for c in codes]
@@ -169,5 +250,9 @@ class ItemWriteSerializer(serializers.ModelSerializer):
             }
             raise serializers.ValidationError({"attributes": codified})
 
+        # Fold system values back onto the coerced dict so the
+        # ``update_item`` service persists them alongside the
+        # definition-backed attributes.
+        coerced.update(system_values)
         attrs["attributes"] = coerced
         return attrs

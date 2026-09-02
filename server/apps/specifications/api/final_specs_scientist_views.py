@@ -33,7 +33,7 @@ from apps.specifications.models import (
     SpecificationSheet,
     SpecificationStatus,
 )
-from apps.trial_batches.models import TrialBatchCycle
+from apps.trial_batches.models import TrialBatchCycle, TrialBatchCycleStatus
 
 
 def _serialise_sheet(
@@ -160,18 +160,30 @@ def _awaiting_final_projects(
     Filters:
     * Custom-formulation only (RTG projects don't go through this
       pipeline).
-    * ``customer_confirmed_done_at IS NOT NULL`` on the cycle.
+    * Cycle EITHER carries ``customer_confirmed_done_at`` (Path B:
+      max-reached / team-closed → customer clicked the "we're done"
+      terminal prompt) OR has ``status == SATISFIED`` (Path A:
+      customer marked a slot ``verdict=SATISFIED`` — the verdict
+      itself is the sign-off; ``customer_confirmed_done_at`` stays
+      null on that path). Both paths mean "customer is done with
+      trials — R&D owes them a FINAL". Without the SATISFIED
+      fallback the Path A projects never surfaced on this queue.
     * No FINAL sheet at ``approved`` / ``sent`` / ``accepted`` on
       the formulation. A ``rejected`` FINAL doesn't count — the
       customer already sent us back once, and if they've now
       re-confirmed done we owe them a fresh sheet.
     """
 
+    from django.db.models import Q
+
     cycles = (
         TrialBatchCycle.objects.filter(
             organization_id=org_id,
-            customer_confirmed_done_at__isnull=False,
             formulation__project_type=ProjectType.CUSTOM.value,
+        )
+        .filter(
+            Q(customer_confirmed_done_at__isnull=False)
+            | Q(status=TrialBatchCycleStatus.SATISFIED)
         )
         .select_related("formulation", "formulation__customer")
     )
@@ -193,6 +205,16 @@ def _awaiting_final_projects(
         if active_final:
             continue
         customer = getattr(formulation, "customer", None)
+        # Milestone timestamp: prefer the explicit
+        # ``customer_confirmed_done_at`` when it's set (Path B),
+        # otherwise fall back to the cycle's ``closed_at`` — that's
+        # when the SATISFIED verdict landed on Path A. Both are the
+        # customer's "done with trials" moment.
+        confirmed_done_at = (
+            cycle.customer_confirmed_done_at
+            if cycle.customer_confirmed_done_at is not None
+            else cycle.closed_at
+        )
         out.append(
             {
                 "card_kind": "awaiting_final",
@@ -210,7 +232,11 @@ def _awaiting_final_projects(
                     if customer is not None
                     else None
                 ),
-                "confirmed_done_at": cycle.customer_confirmed_done_at.isoformat(),
+                "confirmed_done_at": (
+                    confirmed_done_at.isoformat()
+                    if confirmed_done_at is not None
+                    else cycle.updated_at.isoformat()
+                ),
                 "updated_at": cycle.updated_at.isoformat(),
             }
         )

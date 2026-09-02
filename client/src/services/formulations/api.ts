@@ -584,13 +584,28 @@ export async function unlinkCustomerFromProject(
 export async function createFinalSpecFromTrial(
   orgId: string,
   formulationId: string,
-  args: { trialBatchId: string; formulationVersionId: string },
+  args: {
+    trialBatchId: string;
+    formulationVersionId: string;
+    /** Optional overrides fed in by the banner modal. Empty / undefined
+     *  → backend falls back to source-draft copy or dosage-form
+     *  default. Quantity is the load-bearing one — locks the run size
+     *  the customer signs against on the FINAL. */
+    code?: string;
+    quantity?: number;
+    coverNotes?: string;
+  },
 ): Promise<ProjectOverviewDto> {
   const { data } = await apiClient.post<ProjectOverviewDto>(
     formulationsEndpoints.createFinalSpec(orgId, formulationId),
     {
       trial_batch_id: args.trialBatchId,
       formulation_version_id: args.formulationVersionId,
+      ...(args.code !== undefined ? { code: args.code } : {}),
+      ...(args.quantity !== undefined ? { quantity: args.quantity } : {}),
+      ...(args.coverNotes !== undefined
+        ? { cover_notes: args.coverNotes }
+        : {}),
     },
   );
   return data;

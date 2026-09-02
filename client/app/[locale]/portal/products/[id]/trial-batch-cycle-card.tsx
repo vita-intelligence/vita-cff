@@ -1442,35 +1442,6 @@ function DispatchDetailsCard({
         </div>
       </dl>
 
-      <div className="mt-3 grid gap-3 border-t border-black/10 pt-3 text-sm sm:grid-cols-2">
-        <DispatchField label="Delivery company" value={dispatch.carrier} />
-        <DispatchField
-          label="Vehicle registration"
-          value={dispatch.vehicle_registration}
-          mono
-        />
-        <DispatchField label="Driver" value={dispatch.driver_name} />
-        <DispatchField
-          label="Waybill / CN ref"
-          value={dispatch.consignment_note_ref}
-          mono
-        />
-        <DispatchField
-          label="Tracking number"
-          value={dispatch.tracking_number}
-          mono
-        />
-        {dispatch.seal_number ? (
-          <DispatchField label="Seal number" value={dispatch.seal_number} mono />
-        ) : null}
-        {dispatch.temperature_c ? (
-          <DispatchField
-            label="Temperature"
-            value={`${dispatch.temperature_c} °C`}
-          />
-        ) : null}
-      </div>
-
       {hasEvents ? (
         <div className="mt-3 border-t border-black/10 pt-3">
           <div className="flex items-baseline justify-between">

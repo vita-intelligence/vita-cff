@@ -212,6 +212,105 @@ class InvalidGummyBaseItem(Exception):
     code = "invalid_gummy_base_item"
 
 
+class GummyWaterDefaultMissing(Exception):
+    """No item in the org's raw-materials catalogue is flagged as
+    the default for the ``gummy_water`` band. Save is blocked so a
+    gummy formulation never ships without a real PSP-linked water
+    line — the compute layer would otherwise render a hardcoded
+    "Deionised Water (gummy base)" phantom with no MA code and no
+    stage assignment, and MO creation would silently omit water
+    from the BOM. An admin needs to open any water item in the
+    catalogue and tick "Default for Gummy water" to unblock. The
+    frontend maps this code to a translation with a deep-link into
+    the catalogue filtered on ``name contains water``."""
+
+    code = "gummy_water_default_missing"
+
+
+class FormulationLocked(Exception):
+    """Recipe-level fields (lines, gummy_base_items and every other
+    band M2M, stages, packaging picks, excipient overrides) are
+    frozen because a FINAL specification for this formulation is
+    live (approved / sent / accepted). Every subsequent write to
+    those fields raises this exception with a loud code the FE
+    renders as a modal — silent drift AFTER the recipe of record
+    has been formalised is exactly the class of compliance breach
+    we're preventing.
+
+    Lock triggers — ONLY the FINAL spec:
+    * A FINAL spec sheet with ``status`` in ``{'approved', 'sent',
+      'accepted'}`` (either signed off internally, sent for signature,
+      or countersigned by the customer — all three states are
+      recipe-of-record for production).
+
+    Deliberately NOT locking on:
+    * Draft spec signed by the customer — the DRAFT captures the
+      recipe DIRECTION the customer is agreeing to pursue, but the
+      trial-batch cycle is designed to iterate the recipe until the
+      customer is satisfied. Scientists MUST be able to change the
+      formulation and save new versions during trial-batch cycles;
+      that's how the recipe converges before the FINAL is written.
+    * A completed trial batch — each trial is a single point in the
+      iteration. Its snapshot (FormulationVersion.snapshot_lines) is
+      already frozen by never being updated after write, so the
+      trial's audit trail is preserved regardless of what happens
+      to the CURRENT formulation. Locking here would block the
+      normal "run trial → iterate → run trial → …" cycle.
+
+    Unlock paths — once FINAL is live, no automatic unlock. If the
+    customer rejects the FINAL and asks for further iteration, the
+    scientist reverts the FINAL to draft (which clears the sign-off)
+    and iteration resumes.
+
+    Setup-only fields (name, description, sales_person, lead_scientist,
+    dosage_form/regulatory metadata, cost / margin, sample_price,
+    RTG marketing copy) are NOT covered — those don't affect the
+    recipe of record. Only bandwidth that would change what the
+    factory produces gets locked.
+    """
+
+    code = "formulation_locked"
+
+    def __init__(self, reasons: tuple[str, ...] = ()) -> None:
+        super().__init__("formulation_locked")
+        # Machine-readable list of which lock triggers fired so the FE
+        # can render "Locked because: FINAL spec signed by customer"
+        # rather than a bare error message.
+        self.reasons = reasons
+
+
+class SpecSheetBuilderIncomplete(Exception):
+    """Spec sheet creation was attempted against a formulation whose
+    ``_compute_stage_gates(formulation).builder_complete`` is False.
+    The FE already hides the "Create spec sheet" button in that state
+    (``spec_sheets_unlocked = builder_complete AND has_explicit_version``);
+    this exception exists so bypassing the button — API call, admin
+    tool, migration — hits the same rule. Payload names WHICH gate
+    failed so the FE can render "Missing: unassigned lines, empty
+    stages" instead of a generic error."""
+
+    code = "spec_sheet_builder_incomplete"
+
+    def __init__(self, missing: tuple[str, ...] = ()) -> None:
+        super().__init__("spec_sheet_builder_incomplete")
+        self.missing = missing
+
+
+class FormulationBuilderIncomplete(Exception):
+    """Explicit (non-auto) version save was attempted against an
+    incomplete builder. Same rule as :class:`SpecSheetBuilderIncomplete`
+    but fired one step earlier — a scientist can't freeze a snapshot
+    that would then feed a spec sheet the create-endpoint would
+    reject. Auto-drafts (``is_auto=True``) skip this check because
+    they're internal restore points, not commits."""
+
+    code = "formulation_builder_incomplete"
+
+    def __init__(self, missing: tuple[str, ...] = ()) -> None:
+        super().__init__("formulation_builder_incomplete")
+        self.missing = missing
+
+
 class InvalidAcidityItem(Exception):
     """Picked acidity regulator item is not in the org's raw_materials
     catalogue or doesn't carry ``use_as == "Acidity Regulator"``.
@@ -2841,6 +2940,42 @@ def set_formulation_stages(
     return list(formulation.stages.all())
 
 
+# Recipe-of-record fields — every one of these changes what the
+# factory would produce. Once a formulation crosses the lock threshold
+# (see :func:`is_formulation_locked`) writes to any of them raise
+# :class:`FormulationLocked` rather than silently drifting the recipe
+# from what the customer signed / QC certified. Setup metadata
+# (name, description, warehouse config, compliance flags, marketing
+# copy) is not covered — those don't change what gets made.
+RECIPE_LOCKED_FIELDS: frozenset[str] = frozenset(
+    {
+        # Core dosage-form parameters
+        "dosage_form",
+        "capsule_size",
+        "tablet_size",
+        "target_fill_weight_mg",
+        "water_volume_ml",
+        "powder_type",
+        # Every band picker M2M
+        "gummy_base_item_ids",
+        "flavouring_item_ids",
+        "colour_item_ids",
+        "sweetener_item_ids",
+        "glazing_item_ids",
+        "gelling_item_ids",
+        "premix_sweetener_item_ids",
+        "acidity_item_ids",
+        "capsule_shell_item_ids",
+        "mcc_carrier_item_ids",
+        "dcp_carrier_item_ids",
+        "anti_caking_item_ids",
+        "powder_carrier_item_ids",
+        # Excipient percentages override the default compute constants
+        "excipient_overrides",
+    }
+)
+
+
 @transaction.atomic
 def update_formulation(
     *,
@@ -2848,6 +2983,16 @@ def update_formulation(
     actor: Any,
     **changes: Any,
 ) -> Formulation:
+    # Recipe-of-record lock. Fires only when the payload actually
+    # touches a locked field so setup-tab edits (name, warehouse
+    # config, marketing copy, etc.) stay writable post-signature.
+    # The signed spec sheet + trial batch already froze the recipe;
+    # any silent mutation here would mean the customer's paper
+    # trail and the factory's build sheet disagree — exactly the
+    # audit-integrity gap we're closing.
+    touched_locked_fields = set(changes.keys()) & RECIPE_LOCKED_FIELDS
+    if touched_locked_fields:
+        _assert_recipe_unlocked(formulation)
     mutable = {
         "name",
         "code",
@@ -2908,6 +3053,21 @@ def update_formulation(
             organization=formulation.organization,
             raw_ids=changes.pop("gummy_base_item_ids"),
         )
+        # Auto-inject water default when the picks form a gummy matrix
+        # but no water-named item is present. Gated to gummy dosage
+        # forms — for other dosage forms ``gummy_base_items`` is
+        # meaningless anyway and we don't want to bloat picks with a
+        # water row that will never be consumed. Uses the incoming
+        # dosage_form when present (mid-flight change) else the row's
+        # current value. Raises ``GummyWaterDefaultMissing`` when no
+        # catalogue item is flagged — that surfaces as a 422 the FE
+        # renders with a "flag one in the catalogue" deep-link.
+        target_dosage = changes.get("dosage_form", formulation.dosage_form)
+        if target_dosage == DosageForm.GUMMY.value:
+            pending_gummy_bases = _ensure_gummy_water_pick(
+                organization=formulation.organization,
+                picks=pending_gummy_bases,
+            )
     pending_flavouring: list[Item] | None = None
     if "flavouring_item_ids" in changes:
         pending_flavouring = _resolve_flavouring_items(
@@ -3654,6 +3814,140 @@ def _resolve_powder_carrier_items(
         allowed_categories=MCC_CARRIER_USE_CATEGORIES,
         error_cls=InvalidPowderCarrierItem,
     )
+
+
+def is_formulation_locked(formulation: Formulation) -> tuple[bool, tuple[str, ...]]:
+    """Return ``(is_locked, reason_codes)`` for a formulation. See
+    :class:`FormulationLocked` for the trigger. Called from every
+    write-path that touches recipe-of-record fields (lines, band M2Ms,
+    stages, packaging picks, excipient overrides).
+
+    Kept as a standalone helper so the FE can query the same rule
+    via a read endpoint if it wants to disable inputs pre-emptively
+    (rather than only surfacing the error on save).
+
+    Only ONE trigger — a live FINAL spec. Draft-sign + completed
+    trial batches are iteration signals, not lock signals.
+    """
+
+    # Scoped import so this module can be loaded during formulations
+    # app registration without pulling the specs app graph in first.
+    from apps.specifications.models import (
+        SpecificationDocumentKind,
+        SpecificationSheet,
+        SpecificationStatus,
+    )
+
+    reasons: list[str] = []
+
+    live_final = SpecificationSheet.objects.filter(
+        formulation_version__formulation=formulation,
+        document_kind=SpecificationDocumentKind.FINAL.value,
+        status__in=(
+            SpecificationStatus.APPROVED.value,
+            SpecificationStatus.SENT.value,
+            SpecificationStatus.ACCEPTED.value,
+        ),
+    ).exists()
+    if live_final:
+        reasons.append("final_spec_live")
+
+    return (bool(reasons), tuple(reasons))
+
+
+def _assert_recipe_unlocked(formulation: Formulation) -> None:
+    """Raise :class:`FormulationLocked` when the formulation is locked.
+    Convenience wrapper used at the top of every recipe-write path so
+    the check reads as a single line at each call site."""
+
+    locked, reasons = is_formulation_locked(formulation)
+    if locked:
+        raise FormulationLocked(reasons)
+
+
+def resolve_default_item_for_band(
+    organization: Organization,
+    band_key: str,
+) -> Item | None:
+    """Return the org's catalogue item flagged as the default for a
+    given band key, or ``None`` when nothing is flagged.
+
+    Contract lives on the item's ``attributes`` JSON blob under
+    ``default_for_bands`` (a list of band keys). Any raw-materials
+    item whose list contains ``band_key`` is a candidate; the newest
+    ``updated_at`` wins so a fresh admin toggle takes effect immediately.
+
+    Zero new tables / no per-org settings surface — the item admin
+    already has an edit form, and this keeps "which item is the
+    default water" a per-item flag anyone with catalogue access can
+    flip. Ops swapping water suppliers just tick the flag on the new
+    item; no deploy, no migration.
+
+    Extensible to future band defaults (``mcc_carrier``, ``gummy_base``,
+    etc.) with zero schema churn — the same resolver serves them all.
+    """
+
+    return (
+        Item.objects.filter(
+            catalogue__organization=organization,
+            catalogue__slug__in=INGREDIENT_CATALOGUE_SLUGS,
+            is_archived=False,
+            attributes__default_for_bands__contains=[band_key],
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+
+
+def _ensure_gummy_water_pick(
+    *,
+    organization: Organization,
+    picks: list[Item],
+) -> list[Item]:
+    """Guarantee a water-named item is in a gummy formulation's
+    ``gummy_base_items`` picks whenever the scientist has picked
+    ANYTHING at all.
+
+    Behaviour:
+    * Empty picks (``[]``) → returned as-is. Empty is the scientist's
+      explicit "opt out of any gummy matrix — no water, no base" signal
+      (see ``_compute_gummy`` at services.py:1716-1722), and force-
+      injecting water here would silently override that choice.
+    * Any pick already has "water" / "aqua" in its name → returned
+      as-is. The compute layer will attach ``waterMg`` to that item's
+      identity (see ``math.ts:1992``).
+    * Non-empty picks with no water match → resolve the org's default
+      water item and APPEND it. When no default is flagged in the
+      catalogue → raise :class:`GummyWaterDefaultMissing` so save
+      fails with a clear code instead of shipping a phantom.
+
+    Kept idempotent so save-loops don't accumulate duplicate water
+    items — a subsequent save with the injected water already in
+    picks just returns the list untouched.
+    """
+
+    if not picks:
+        return picks
+
+    has_water = any(
+        re.search(r"(water|aqua)", (item.name or ""), re.IGNORECASE)
+        for item in picks
+    )
+    if has_water:
+        return picks
+
+    default_water = resolve_default_item_for_band(organization, "gummy_water")
+    if default_water is None:
+        raise GummyWaterDefaultMissing()
+
+    # De-dup guard: if the resolver returned an item that's already
+    # in picks (edge case — flagged item without "water" in the name),
+    # skip the append rather than double-adding. The stronger fix is
+    # to encourage water-named items; this is defense-in-depth.
+    if any(str(p.id) == str(default_water.id) for p in picks):
+        return picks
+
+    return [*picks, default_water]
 
 
 def _resolve_gummy_base_items(
@@ -5679,12 +5973,41 @@ def save_version(
     # readiness gate at save time so the create-spec-sheet dropdown
     # can hide snapshots that were saved mid-edit. Auto-drafts skip
     # the compute — they're internal restore points, not commits.
+    #
+    # Explicit (non-auto) saves ALSO get a hard-block when the gate
+    # fails: freezing an incomplete snapshot lets a scientist bypass
+    # the create-sheet check by pointing the sheet at an old-but-
+    # complete-looking version. Raise loudly so the caller has to
+    # finish the recipe first. Auto-drafts still land (they're
+    # restore points, never feed a spec sheet).
     is_complete = False
     if not is_auto:
         from apps.formulations.overview import _compute_stage_gates
 
         gates = _compute_stage_gates(formulation)
         is_complete = bool(gates.builder_complete)
+        if not is_complete:
+            line_stage_ids = list(
+                formulation.lines.values_list("stage_id", flat=True),
+            )
+            stage_ids = list(
+                formulation.stages.values_list("id", flat=True),
+            )
+            missing: list[str] = []
+            if not stage_ids:
+                missing.append("no_stages")
+            if not line_stage_ids:
+                missing.append("no_lines")
+            if any(sid is None for sid in line_stage_ids):
+                missing.append("unassigned_lines")
+            stages_with_lines = {
+                sid for sid in line_stage_ids if sid is not None
+            }
+            if stage_ids and any(
+                sid not in stages_with_lines for sid in stage_ids
+            ):
+                missing.append("empty_stages")
+            raise FormulationBuilderIncomplete(tuple(missing))
 
     version = FormulationVersion.objects.create(
         formulation=formulation,

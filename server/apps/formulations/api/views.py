@@ -41,8 +41,11 @@ from apps.formulations.services import (
     FormulationCodeConflict,
     FormulationCodeRequired,
     FormulationNotFound,
+    FormulationBuilderIncomplete,
+    FormulationLocked,
     FormulationRTGError,
     FormulationVersionNotFound,
+    GummyWaterDefaultMissing,
     InvalidAcidityItem,
     InvalidCapsuleSize,
     InvalidAntiCakingItem,
@@ -490,6 +493,34 @@ class FormulationDetailView(APIView):
             return Response(
                 {"gummy_base_item_ids": ["invalid_gummy_base_item"]},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        except GummyWaterDefaultMissing:
+            # No item in the org's raw-materials catalogue is flagged
+            # as the default for the ``gummy_water`` band. Save is
+            # blocked so a gummy formulation never ships with a
+            # phantom water row. The FE translates this code into a
+            # message with a deep-link into the catalogue prefiltered
+            # on "water" so an admin can flag one in ~5 seconds.
+            return Response(
+                {"gummy_base_item_ids": ["gummy_water_default_missing"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except FormulationLocked as exc:
+            # Recipe-of-record fields are frozen because the
+            # formulation crossed a compliance threshold (customer
+            # signed the draft spec / a live FINAL exists / a trial
+            # batch produced physical product). The scientist must
+            # clone into a new formulation to change the recipe;
+            # silent drift would leave the signed spec disagreeing
+            # with what the factory produces. Reasons list what
+            # specifically fired the lock so the FE renders
+            # "Locked because: draft spec signed, trial batch ran".
+            return Response(
+                {
+                    "detail": ["formulation_locked"],
+                    "lock_reasons": list(exc.reasons),
+                },
+                status=status.HTTP_409_CONFLICT,
             )
         except InvalidFlavouringItem:
             return Response(
@@ -1519,13 +1550,27 @@ class FormulationVersionListView(APIView):
         formulation = self._load(formulation_id)
         serializer = SaveVersionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        version = save_version(
-            formulation=formulation,
-            actor=request.user,
-            label=serializer.validated_data.get("label", ""),
-            stage_boms=serializer.validated_data.get("stage_boms") or None,
-            is_auto=serializer.validated_data.get("is_auto", False),
-        )
+        try:
+            version = save_version(
+                formulation=formulation,
+                actor=request.user,
+                label=serializer.validated_data.get("label", ""),
+                stage_boms=serializer.validated_data.get("stage_boms") or None,
+                is_auto=serializer.validated_data.get("is_auto", False),
+            )
+        except FormulationBuilderIncomplete as exc:
+            # Explicit (non-auto) version save requires the builder
+            # to be complete — otherwise a scientist could freeze a
+            # half-scaffolded snapshot and use it to bypass the
+            # create-sheet builder-complete check. Auto-drafts skip
+            # this rule (they're internal restore points).
+            return Response(
+                {
+                    "code": "formulation_builder_incomplete",
+                    "missing": list(exc.missing),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(
             FormulationVersionReadSerializer(version).data,
             status=status.HTTP_201_CREATED,
@@ -2617,11 +2662,42 @@ class FormulationCreateFinalSpecView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # Optional overrides typed by the scientist on the banner
+        # modal. Empty / missing → backend falls back to source-draft
+        # copy or dosage-form default. Quantity is the load-bearing
+        # one — locks the run size the customer signs against.
+        code_override = payload.get("code")
+        quantity_raw = payload.get("quantity")
+        try:
+            quantity_override = (
+                int(quantity_raw)
+                if quantity_raw not in (None, "")
+                else None
+            )
+        except (TypeError, ValueError):
+            return Response(
+                {"quantity": ["invalid"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if quantity_override is not None and quantity_override <= 0:
+            return Response(
+                {"quantity": ["min_value"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        cover_notes_override = payload.get("cover_notes")
+
         try:
             create_final_spec_from_trial(
                 trial_batch=trial_batch,
                 formulation_version=version,
                 actor=request.user,
+                code_override=code_override
+                if isinstance(code_override, str)
+                else None,
+                quantity_override=quantity_override,
+                cover_notes_override=cover_notes_override
+                if isinstance(cover_notes_override, str)
+                else None,
             )
         except FinalSpecAlreadyExists:
             return Response(

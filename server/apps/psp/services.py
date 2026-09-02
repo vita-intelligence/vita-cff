@@ -3225,8 +3225,28 @@ def _final_spec_state_for_proposal(proposal: Any) -> dict:
     cycle = TrialBatchCycle.objects.filter(
         formulation_id=primary_formulation_id
     ).first()
+    # ``customer_confirmed_done_at`` is only stamped explicitly on the
+    # "we're done" terminal-choice path (max-reached / team-closed →
+    # customer clicks a follow-up prompt). The other happy path —
+    # customer marks a slot as ``verdict=SATISFIED`` — auto-transitions
+    # the cycle to ``SATISFIED`` (see ``cycle_services.record_slot_verdict``)
+    # WITHOUT touching ``customer_confirmed_done_at`` because the
+    # verdict itself IS the sign-off. From PSP's viewpoint both paths
+    # are the same "customer said we're done with trials" milestone
+    # that should promote the CO from ``:trial_batches_in_flight`` to
+    # ``:awaiting_final_spec``. Fall back to the cycle's ``closed_at``
+    # timestamp on the SATISFIED path so PSP's mirror flag lands
+    # regardless of how the customer signalled done.
+    from apps.trial_batches.models import TrialBatchCycleStatus
     confirmed_done_at = (
-        cycle.customer_confirmed_done_at if cycle is not None else None
+        cycle.customer_confirmed_done_at
+        if cycle is not None and cycle.customer_confirmed_done_at is not None
+        else (
+            cycle.closed_at
+            if cycle is not None
+            and cycle.status == TrialBatchCycleStatus.SATISFIED
+            else None
+        )
     )
 
     # RTG multi-order isolation: for each downstream state below,
@@ -3839,6 +3859,38 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         except Exception:  # noqa: BLE001 — never break sync on a lookup
             pass
 
+        # Authoritative run quantity for PSP. Prefer a customer-
+        # accepted FINAL spec's quantity over the proposal-line
+        # quantity when one exists — the FINAL is the last thing
+        # the customer signed, and its modal explicitly frames the
+        # quantity input as "the last time you can change the run
+        # size — once the customer signs, it's locked". Falling back
+        # to the proposal-line quantity when no accepted FINAL
+        # exists (Custom projects pre-FINAL, RTG orders, legacy rows).
+        #
+        # Lazy import to avoid a specs → psp import cycle at boot.
+        from apps.specifications.models import (
+            SpecificationDocumentKind as _SDK,
+            SpecificationSheet as _Sheet,
+            SpecificationStatus as _SStatus,
+        )
+
+        accepted_final = (
+            _Sheet.objects.filter(
+                formulation_version__formulation=formulation,
+                document_kind=_SDK.FINAL.value,
+                status=_SStatus.ACCEPTED.value,
+            )
+            .order_by("-updated_at")
+            .values_list("quantity", flat=True)
+            .first()
+        )
+        authoritative_qty = (
+            int(accepted_final)
+            if accepted_final and int(accepted_final) > 0
+            else int(line.quantity or 1)
+        )
+
         line_payload.append(
             {
                 "npd_formulation_uuid": str(formulation.id),
@@ -3847,7 +3899,7 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
                     if getattr(formulation, "psp_finished_product_uuid", None)
                     else None
                 ),
-                "quantity": int(line.quantity or 1),
+                "quantity": authoritative_qty,
                 "unit_price": (
                     str(line.unit_price) if line.unit_price is not None else None
                 ),
@@ -4716,11 +4768,63 @@ def _convert_qty_to_target(
         return qty, tgt["symbol"], tgt["uuid"]
 
     if src["dimension"] != tgt["dimension"]:
-        # e.g. NPD sent mg (mass) for an item whose stock_uom is pcs
-        # (count). No universal bridge exists — return source-tagged
-        # qty and let PSP's dimension guard reject at the boundary,
-        # so the fault surfaces at the integration edge instead of
-        # deep in the MO parts table with a silently wrong unit.
+        # Cross-dimension. Two branches:
+        #
+        # * mass ↔ volume — the only cross-dimension bridge we can
+        #   safely apply is water density (1 g/mL). This is
+        #   overwhelmingly the practical case: the compute layer
+        #   emits water in mg (the gummy_water band's native
+        #   ``waterMg``) but PSP tracks Deionised Water in L. Without
+        #   this bridge every gummy BOM push post-water-auto-inject
+        #   fails at PSP's boundary check → the whole cascade aborts
+        #   → the finished-product BOM stays frozen → MO ships with
+        #   the OLD packaging (MA01446 bit this today).
+        #
+        #   Density-1 assumption is water-density. Applied blindly for
+        #   any non-water volume ingredient it'd produce numerically
+        #   wrong figures — but supplements almost never use non-water
+        #   volume ingredients, and the alternative (abort the whole
+        #   push) is a worse silent-drift failure mode. Log a warning
+        #   loud enough to spot in review if we ever have a
+        #   non-water volume item.
+        #
+        # * mass ↔ count / volume ↔ count — no bridge. Return source-
+        #   tagged qty and let PSP's dimension guard reject at the
+        #   boundary, so the fault surfaces at the integration edge
+        #   instead of deep in the MO parts table with a silently
+        #   wrong unit.
+        cross = tuple(sorted([src["dimension"], tgt["dimension"]]))
+        if cross == ("mass", "volume"):
+            # Density-1 bridge: 1 mL = 1 g (water assumption).
+            #   qty_g = qty × factor_to_g   (source mass in g)
+            #   qty_mL = qty_g              (density 1 g/mL)
+            #   qty_target = qty_mL / target.factor_to_mL
+            #
+            # ``factor_to_base`` on mass uses g as base and on volume
+            # uses mL as base per NPD's UoM seed (matches PSP's own
+            # ``Backend.Units`` conversion table). Base-to-base is a
+            # 1:1 exchange under density-1, so a single divide gets
+            # us home.
+            if src["dimension"] == "mass":
+                base_mass_g = qty * src["factor_to_base"]
+                converted_volume_ml = base_mass_g  # density 1 g/mL
+                converted = converted_volume_ml / tgt["factor_to_base"]
+            else:  # src is volume, tgt is mass
+                base_volume_ml = qty * src["factor_to_base"]
+                converted_mass_g = base_volume_ml  # density 1 g/mL
+                converted = converted_mass_g / tgt["factor_to_base"]
+            logger.info(
+                "PSP push_bom: applied water-density (1 g/mL) bridge for "
+                "%s (%s) → %s (%s). qty %s → %s.",
+                source_symbol,
+                src["dimension"],
+                tgt["symbol"],
+                tgt["dimension"],
+                qty,
+                converted,
+            )
+            return converted, tgt["symbol"], tgt["uuid"]
+
         logger.warning(
             "PSP push_bom: dimension mismatch — source %s (%s) → target %s (%s)."
             " Line will be rejected by PSP boundary check.",
@@ -4974,8 +5078,35 @@ def _override_to_bom_lines(
             continue
         # Per-serving → per-1-parent-unit. Works for both mass rows
         # (mg/serving × servings/pack = mg/pack) and count rows
-        # (1 shell/serving × 60 servings/pack = 60 shells/pack).
-        source_qty = value * servings
+        # where the qty scales with servings — capsule shells being
+        # the canonical case (1 shell/serving × 60 servings/pack =
+        # 60 shells/pack).
+        #
+        # ``is_per_output_unit`` opts a row OUT of that multiplication.
+        # Set explicitly by the FE for :class:`FormulationLine` rows
+        # whose ``stage_ratio_mode == "per_unit"`` — the operator has
+        # explicitly said "this qty is per finished pack, not per
+        # serving". Packaging is the canonical case: 1 pouch per pack,
+        # NOT 1 pouch per serving.
+        #
+        # Belt-and-braces auto-detect: even without the explicit flag,
+        # a target item whose ``psp_item_type == "packaging"`` gets
+        # the same treatment. Packaging is definitionally per-pack
+        # (bottle wraps 60 caps, pouch wraps 60 gummies, label sticks
+        # on 1 container) — never per-serving. This defends against
+        # the FE compensation math ever regressing (or a stale
+        # pre-compensation snapshot being re-pushed like MA01446 v4
+        # hit today). Without it, a 60-servings-per-pack gummy would
+        # ship "60 pouches per pack" — exactly the bug the user
+        # originally reported. The ``_bom_lines_from`` (non-override)
+        # path already skips manual lines from the servings scaling
+        # via its own manual branch; this keeps both entry points
+        # aligned.
+        is_per_output_unit = (
+            bool(row.get("is_per_output_unit"))
+            or (info or {}).get("item_type") == "packaging"
+        )
+        source_qty = value if is_per_output_unit else value * servings
         # Target UoM = child item's declared unit on NPD (which
         # mirrors its PSP stock_uom at item-push time). Same-dimension
         # source lands in the item's own unit; cross-dimension (e.g.
@@ -5464,7 +5595,7 @@ def _push_staged_cascade(
             local_items = list(
                 Item.objects.filter(
                     id__in=wanted_ids, psp_source_uuid__isnull=False
-                ).only("id", "psp_source_uuid", "unit")
+                ).only("id", "psp_source_uuid", "unit", "attributes")
             )
             # PSP-side stock UoM fetch — via a per-process cache so a
             # push referencing the same items again (retry, next cycle
@@ -5498,11 +5629,24 @@ def _push_staged_cascade(
                         stock_symbol = getattr(psp_item, "stock_uom_symbol", None)
                         stock_dimension = getattr(psp_item, "stock_uom_dimension", None)
 
+                # PSP item type — inferred from the local ``Item.attributes.
+                # psp_item_type`` mirror (set by the item-import sync).
+                # Load-bearing for the packaging autodetect below:
+                # backend infers ``is_per_output_unit`` when the target
+                # is a packaging item, so an overlooked ``per_unit``
+                # FE row (mg field only, no compensation) still ships
+                # to PSP as 1 pouch per pack instead of 60. Defense in
+                # depth against the FE compensation math ever silently
+                # regressing.
+                attrs = item.attributes if isinstance(item.attributes, dict) else {}
+                item_type = str(attrs.get("psp_item_type") or "").strip().lower()
+
                 override_item_lookup[str(item.id)] = {
                     "psp_uuid": str(item.psp_source_uuid),
                     "unit": local_unit or (stock_symbol or ""),
                     "stock_uom_symbol": stock_symbol or "",
                     "stock_uom_dimension": stock_dimension or "",
+                    "item_type": item_type,
                 }
 
     for stage in stages:
@@ -5650,7 +5794,41 @@ def _push_staged_cascade(
                 "lines": bom_lines,
                 **_bom_provenance(formulation),
             }
-            response = client.put_bom(output_uuid, payload)
+            # Per-stage try/except so a single stage's BOM PUT failure
+            # (e.g. a dimension mismatch PSP's boundary check rejects,
+            # a stale item UoM, a rate limit) doesn't abort the whole
+            # cascade and leave downstream stages — including the
+            # finished-product BOM — frozen at their pre-change state.
+            #
+            # Bug this closes (MA01446, 2026-09-02): scientist swapped
+            # bottles → pouches. Save v4 → blend-stage BOM push failed
+            # at PSP boundary because a legacy water line was tagged
+            # mg (mass) against a volume-dimension item. Cascade
+            # aborted before the finished-product BOM push. PSP's item
+            # 1446 BOM stayed at yesterday's snapshot (bottles + lids)
+            # and the MO created off that BOM shipped with bottles
+            # even though the FINAL spec said pouches. Silent drift
+            # is exactly what the audit trail can't survive.
+            #
+            # Continuing past a failed BOM push is safe: the semi-
+            # finished ITEM was already ensured before this call, so
+            # downstream stages can still link to its uuid — they just
+            # link to a semi that carries a stale BOM. That's a
+            # smaller, more localised badness than silently drifting
+            # the whole finished-product BOM.
+            try:
+                response = client.put_bom(output_uuid, payload)
+            except PspError:
+                logger.exception(
+                    "PSP push_bom: stage %s (%s) BOM PUT failed for "
+                    "formulation %s. Continuing cascade so downstream "
+                    "stages (incl. finished-product) still get their "
+                    "updates.",
+                    stage.id,
+                    stage_label,
+                    formulation.pk,
+                )
+                response = None
             if response is not None:
                 last_response = response
                 # Cache the BOM uuid PSP returned so the Preview tab's
@@ -5670,11 +5848,16 @@ def _push_staged_cascade(
         # Routing = one step for this stage's workstation. Skip
         # when the stage has no workstation picked yet — pushing
         # an empty-workstation routing would 422.
+        #
+        # Same per-stage try/except as the BOM PUT above — a failing
+        # routing shouldn't take down the cascade so downstream
+        # stages still receive their updates.
         if stage.workstation_group_uuid:
             _stringify_decimal = (
                 lambda v: str(v) if v is not None else None  # noqa: E731
             )
-            client.put_routing(
+            try:
+              client.put_routing(
                 output_uuid,
                 name=f"{formulation.code} — {stage_label} Routing",
                 other_fixed_cost=_stringify_decimal(stage.other_fixed_cost),
@@ -5711,7 +5894,15 @@ def _push_staged_cascade(
                         ),
                     }
                 ],
-            )
+              )
+            except PspError:
+                logger.exception(
+                    "PSP push_routing: stage %s (%s) routing PUT failed "
+                    "for formulation %s. Continuing cascade.",
+                    stage.id,
+                    stage_label,
+                    formulation.pk,
+                )
 
         if is_finished:
             previous_semi_uuid = None
