@@ -36,7 +36,6 @@ import {
   CheckCircle2,
   ExternalLink,
   Loader2,
-  Package,
   Search,
   Sparkles,
   X,
@@ -493,10 +492,7 @@ function CreateBatchModal({
 }) {
   const queryClient = useQueryClient();
   const formulation = item.formulation;
-  const defaultCombo = formulation?.combos.find((c) => c.is_default) ?? formulation?.combos[0] ?? null;
 
-  const [batchSize, setBatchSize] = useState("");
-  const [comboId, setComboId] = useState<string>(defaultCombo?.id ?? "");
   const [label, setLabel] = useState(
     formulation ? `Sample · ${formulation.display_name || formulation.name}` : "",
   );
@@ -524,15 +520,15 @@ function CreateBatchModal({
       if (!formulation?.approved_version_id) {
         throw new Error("This RTG doesn't have an approved version yet.");
       }
-      const size = Number.parseInt(batchSize, 10);
-      if (!Number.isFinite(size) || size <= 0) {
-        throw new Error("Batch size must be a positive number.");
-      }
+      // Planning-only defaults — the actual run identity (kind,
+      // combo, quantity) is captured on the Create-MO modal on the
+      // trial-batch page. Matches the trial-batches-panel change:
+      // one place per decision, no duplicates.
       return createTrialBatch(orgId, formulation.id, {
         formulation_version_id: formulation.approved_version_id,
-        batch_size_units: size,
+        batch_size_units: 1,
         kind: "sample",
-        packaging_combo_id: comboId || null,
+        packaging_combo_id: null,
         label: label.trim(),
         notes: notes.trim(),
         source_payment_id: item.payment.id,
@@ -560,9 +556,7 @@ function CreateBatchModal({
   );
 
   const canSubmit =
-    !!formulation?.approved_version_id &&
-    batchSize.trim().length > 0 &&
-    !mutation.isPending;
+    !!formulation?.approved_version_id && !mutation.isPending;
 
   const errorMessage = mutation.isError ? extractErrorMessage(mutation.error) : null;
 
@@ -619,46 +613,11 @@ function CreateBatchModal({
             </p>
           ) : null}
 
-          <Field label="Batch size (units)" htmlFor="batch_size">
-            <input
-              id="batch_size"
-              type="number"
-              inputMode="numeric"
-              min={1}
-              required
-              value={batchSize}
-              onChange={(e) => setBatchSize(e.target.value)}
-              className="h-10 w-full rounded-lg border border-ink-200 bg-ink-0 px-3 text-sm text-ink-1000 outline-none focus:border-ink-400 focus:ring-2 focus:ring-ink-200"
-              placeholder="e.g. 500"
-              autoFocus
-            />
-            <p className="mt-1 text-[11px] text-ink-500">
-              Sample-kind batches multiply by servings-per-pack behind the scenes.
-            </p>
-          </Field>
-
-          {formulation && formulation.combos.length > 0 ? (
-            <Field label="Packaging combo" htmlFor="packaging_combo">
-              <select
-                id="packaging_combo"
-                value={comboId}
-                onChange={(e) => setComboId(e.target.value)}
-                className="h-10 w-full rounded-lg border border-ink-200 bg-ink-0 px-3 text-sm text-ink-1000 outline-none focus:border-ink-400 focus:ring-2 focus:ring-ink-200"
-              >
-                <option value="">— No combo (loose-bulk) —</option>
-                {formulation.combos.map((combo) => (
-                  <option key={combo.id} value={combo.id}>
-                    {combo.name || "Unnamed combo"}
-                    {combo.is_default ? " (default)" : ""}
-                  </option>
-                ))}
-              </select>
-              <p className="mt-1 flex items-center gap-1 text-[11px] text-ink-500">
-                <Package className="size-3" aria-hidden />
-                Overlays the PSP MO&rsquo;s packaging BOM with this combo&rsquo;s items.
-              </p>
-            </Field>
-          ) : null}
+          <p className="rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-600 ring-1 ring-inset ring-ink-200">
+            Packaging combo and run quantity are captured later — when
+            you click Create Manufacturing Order on the trial batch&rsquo;s
+            page. Pick them once, at commit-to-produce time.
+          </p>
 
           <Field label="Label" htmlFor="batch_label">
             <input
@@ -668,6 +627,7 @@ function CreateBatchModal({
               maxLength={200}
               onChange={(e) => setLabel(e.target.value)}
               className="h-10 w-full rounded-lg border border-ink-200 bg-ink-0 px-3 text-sm text-ink-1000 outline-none focus:border-ink-400 focus:ring-2 focus:ring-ink-200"
+              autoFocus
             />
           </Field>
 
