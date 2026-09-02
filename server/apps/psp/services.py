@@ -6956,7 +6956,17 @@ def create_psp_manufacturing_order_for_trial_batch(
     npd_sample_payment_uuid: str | None = None
     source_payment_id = getattr(trial_batch, "source_payment_id", None)
     cycle_slot = getattr(trial_batch, "cycle_slot", None)
-    if kind == "sample" and (source_payment_id is not None or cycle_slot is not None):
+    # Presence of a source_payment OR cycle_slot means "this is a
+    # customer-facing run" (storefront sample kit or cycle-slot
+    # sample) — the customer commitment is what makes the batch
+    # kanban-worthy, not the batch's ``kind`` label. Previously
+    # gated on ``kind == "sample"`` too, but that silently dropped
+    # the sync for batches with the wrong kind (e.g. scientist
+    # picked ``trial`` at Plan-Batch time on a payment-sourced
+    # batch — batch fcd8593c was the reproducer), leaving the
+    # customer's paid MO orphaned off /projects. The customer
+    # commitment wins over the kind label here.
+    if source_payment_id is not None or cycle_slot is not None:
         # Fires for BOTH storefront samples (source_payment set) and
         # cycle-slot samples (cycle_slot set, source_payment None).
         # The sync inside now branches on which identity to use and
