@@ -30,6 +30,26 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
         source="formulation_version.formulation.project_type",
         read_only=True,
     )
+    #: ``True`` when this batch was created from the /samples
+    #: fulfilment queue with a ``source_payment_id`` — meaning a
+    #: customer paid for a specific sample kit and THIS batch is
+    #: producing it. Hides the "Start validation" CTA on the trial-
+    #: batch detail page: customer-paid samples are fulfilment
+    #: production of an already-validated recipe (Custom FINAL or
+    #: RTG published SKU), not R&D validation runs. Internal
+    #: validation trials (scientist creating a batch on NPD to
+    #: prove a recipe) have no source payment and keep the CTA.
+    #:
+    #: ``batch.kind`` is NOT the right signal — scientists commonly
+    #: pick ``trial`` on customer-paid samples too (bench-scale run
+    #: of a customer's sample kit) — so gating on kind misfires.
+    #: Cycle-slot samples (``cycle_slot`` set, ``source_payment``
+    #: null) also KEEP validation — they're part of the Custom-flow
+    #: validation cycle, not customer fulfilment.
+    is_customer_sample_fulfilment = serializers.SerializerMethodField()
+
+    def get_is_customer_sample_fulfilment(self, obj) -> bool:
+        return getattr(obj, "source_payment_id", None) is not None
     created_by_name = serializers.SerializerMethodField()
     #: Terminal-or-in-progress validation status attached to this
     #: batch. Nullable — batches without a validation record return
@@ -135,6 +155,7 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
             "formulation_name",
             "formulation_version_number",
             "formulation_project_type",
+            "is_customer_sample_fulfilment",
             "psp_manufacturing_order_uuid",
             "validation_status",
             "formulation_validated",

@@ -32,11 +32,28 @@ export interface TrialBatchDto {
   readonly formulation_id: string;
   readonly formulation_name: string;
   readonly formulation_version_number: number;
-  /** ``custom`` vs ``ready_to_go``. Load-bearing on the trial-batch
-   *  detail page's "Start validation" CTA: RTG sample runs are just
-   *  production of a pre-validated SKU, not R&D validation, so the
-   *  button hides on RTG regardless of ``formulation_validated``. */
+  /** ``custom`` vs ``ready_to_go``. Informational — the load-bearing
+   *  gate on the "Start validation" CTA is
+   *  ``is_customer_sample_fulfilment`` below (customer-paid samples
+   *  skip validation regardless of project flavour). */
   readonly formulation_project_type: "custom" | "ready_to_go" | "";
+  /** ``true`` when this batch was created from the /samples
+   *  fulfilment queue with a source payment — i.e. a customer paid
+   *  for a specific sample kit and THIS batch is producing it.
+   *  Hides the "Start validation" CTA: customer-paid samples are
+   *  fulfilment production of an already-validated recipe (Custom
+   *  FINAL or RTG published SKU), not R&D validation.
+   *
+   *  Internal validation trials (scientist creating a batch on NPD
+   *  to prove a recipe — Custom trial-slot OR RTG pre-publish
+   *  trial) have no source payment, so this is false and the CTA
+   *  correctly shows. ``batch.kind`` is NOT the right signal:
+   *  scientists commonly pick ``trial`` on a customer-paid sample
+   *  too (bench-scale run of a customer's sample kit), so gating
+   *  on kind misfires. Cycle-slot samples (``cycle_slot`` set,
+   *  ``source_payment`` null) ALSO keep the CTA — they're part of
+   *  the Custom-flow validation cycle, not customer fulfilment. */
+  readonly is_customer_sample_fulfilment: boolean;
   /** PSP Manufacturing Order uuid this batch spawned. ``null``
    *  when the scientist hasn't clicked "Create MO on PSP" yet;
    *  populated on that action + used as the PSP-side idempotency

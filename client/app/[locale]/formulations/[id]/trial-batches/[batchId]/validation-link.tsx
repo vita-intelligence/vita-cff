@@ -57,7 +57,7 @@ export function ValidationLink({
   formulationId,
   batchId,
   kind,
-  projectType,
+  isCustomerSampleFulfilment = false,
   formulationValidated = false,
   linkedPspMoUuid = null,
 }: {
@@ -68,17 +68,20 @@ export function ValidationLink({
    *  when the formulation version is already validated — see the
    *  gating rule in the docstring above. */
   kind: BatchKind;
-  /** ``custom`` vs ``ready_to_go``. On RTG projects the Start
-   *  CTA is hidden on EVERY batch regardless of kind — the RTG
-   *  SKU's FINAL-spec approval flow is the recipe-validation gate;
-   *  per-batch product validation is a Custom-flow concept that
-   *  doesn't apply to RTG. Custom projects keep the CTA (validation
-   *  happens per trial-batch record).
+  /** ``true`` when this batch was created from the /samples
+   *  fulfilment queue with a ``source_payment_id`` — i.e. a
+   *  customer paid for a specific sample kit and THIS batch is
+   *  producing it. Fulfilment ≠ validation, so the Start CTA hides
+   *  regardless of ``kind`` or ``project_type``. Internal
+   *  validation trials (scientist creating a batch on NPD to prove
+   *  a recipe — Custom trial-slot OR RTG pre-publish trial) have
+   *  no source payment, so this stays false and the CTA correctly
+   *  shows.
    *
-   *  Empty string on legacy trial batches without the field set —
-   *  falls through to the existing custom-flow gating so nothing
-   *  regresses. */
-  projectType?: "custom" | "ready_to_go" | "";
+   *  ``batch.kind`` is NOT the right signal: scientists commonly
+   *  pick ``trial`` on a customer-paid sample too (bench-scale run
+   *  of a customer's sample kit), so gating on kind misfires. */
+  isCustomerSampleFulfilment?: boolean;
   /** ``true`` when *another* batch of the same formulation version
    *  has a passed validation. Comes from the batch read serializer;
    *  only load-bearing when ``kind === "sample"``. */
@@ -157,18 +160,20 @@ export function ValidationLink({
     );
   }
 
-  // RTG projects hide the CTA on EVERY batch regardless of kind.
-  // The RTG SKU's FINAL-spec approval flow is what validates the
-  // recipe; every trial batch on an RTG project is either an
-  // internal test run of an already-validated recipe or a customer
-  // sample fulfilment. In neither case does per-batch product
-  // validation belong — it's a category error we imported from
-  // the Custom-flow vocabulary.
+  // Customer-paid sample fulfilment (batch has a source_payment_id
+  // → customer bought a specific sample kit via /samples) hides the
+  // CTA regardless of kind or project_type. That's fulfilment
+  // production of an already-validated recipe, not R&D validation.
+  // Internal validation trials — scientist creating a batch on NPD
+  // to prove a recipe (Custom trial-slot OR RTG pre-publish trial)
+  // — have no source payment, so this is false and the CTA shows
+  // (correctly — those DO need the validation form).
   //
-  // Custom projects keep the full gating below (kind=sample +
-  // formulation_validated shows "already validated"; kind=trial or
-  // unvalidated sample shows the Start button).
-  if (projectType === "ready_to_go") {
+  // Previous rule bailed on ``project_type === "ready_to_go"``,
+  // which was too wide: it hid the CTA on RTG internal validation
+  // trials too, which is where validation actually belongs before
+  // an RTG SKU is published to the catalog.
+  if (isCustomerSampleFulfilment) {
     return null;
   }
 
