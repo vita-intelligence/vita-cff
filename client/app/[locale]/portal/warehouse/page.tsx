@@ -114,7 +114,7 @@ export default async function PortalWarehousePage() {
   const hasStock = data.lots.length > 0;
 
   return (
-    <PortalShell active="products">
+    <PortalShell active="warehouse">
       <Link
         href="/portal/products"
         className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.18em] text-neutral-500 hover:text-black"

@@ -70,6 +70,7 @@ export function PortalLogo({ href = "/portal" }: { href?: string }) {
 export type PortalNavSection =
   | "home"
   | "products"
+  | "warehouse"
   | "proposals"
   | "specs"
   | "cff"
@@ -80,15 +81,18 @@ export type PortalNavSection =
 // Slim global nav: Products is the customer's mental anchor ("where
 // are my products?") and every action surface (proposals, specs,
 // labels, requests) is now reachable via the per-product detail
-// page. Settings stays for profile / password / avatar. New-project
-// entry point lives as a CTA on the Products page so we don't need
-// a "Requests" tab in the nav.
+// page. Warehouse surfaces the finished-goods bailee-custody stock
+// we hold on the customer's behalf (Phase 1 of the 3PL portal
+// integration). Settings stays for profile / password / avatar.
+// New-project entry point lives as a CTA on the Products page so
+// we don't need a "Requests" tab in the nav.
 const NAV_ITEMS: ReadonlyArray<{
   readonly key: PortalNavSection;
   readonly href: string;
   readonly label: string;
 }> = [
   { key: "products", href: "/portal/products", label: "Products" },
+  { key: "warehouse", href: "/portal/warehouse", label: "Warehouse" },
   { key: "settings", href: "/portal/settings", label: "Settings" },
 ];
 
