@@ -29,6 +29,7 @@ from django.contrib.contenttypes.models import ContentType
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from apps.client_portal.api.branding import staff_team_name
 from apps.client_portal.api.views import PortalAPIView
 from apps.client_portal.queries import customer_ids_for_account
 from apps.comments.models import Comment, CommentReadState
@@ -37,14 +38,15 @@ from apps.comments.models import Comment, CommentReadState
 _UNIX_EPOCH = _dt.datetime.fromtimestamp(0, tz=_dt.timezone.utc)
 
 
-def _author_snapshot(comment: Comment) -> dict[str, Any]:
+def _author_snapshot(comment: Comment, request: Request) -> dict[str, Any]:
     """One-line author identity used by the bell preview row. Mirrors
     the staff inbox shape so the FE rendering stays simple."""
 
     # Mirror :func:`apps.client_portal.api.messaging_views._author_payload`
     # so the bell preview row reads with the same identity rules as
     # the in-thread bubble. Staff authors render as the consistent
-    # "Vita team" brand voice rather than the operator's individual
+    # brand voice ("Vita team" on NPD, "Supplement Manufacture UK"
+    # on the SMK web-site) rather than the operator's individual
     # name — same constraint the per-page chat panels apply.
     if comment.client_account_id is not None:
         ca = comment.client_account
@@ -56,7 +58,7 @@ def _author_snapshot(comment: Comment) -> dict[str, Any]:
         )
         return {"kind": "client", "name": name}
     if comment.author_id is not None:
-        return {"kind": "staff", "name": "Vita team"}
+        return {"kind": "staff", "name": staff_team_name(request)}
     return {"kind": "system", "name": "System"}
 
 
@@ -72,7 +74,7 @@ def _preview(comment: Comment) -> str:
     return body
 
 
-def _gather_proposal_threads(client_account) -> list[dict[str, Any]]:
+def _gather_proposal_threads(client_account, request: Request) -> list[dict[str, Any]]:
     """Build the inbox rows for every proposal the client owns that
     has at least one shared comment.
 
@@ -141,13 +143,13 @@ def _gather_proposal_threads(client_account) -> list[dict[str, Any]]:
                 "unread_count": unread,
                 "last_message_at": latest.created_at.isoformat(),
                 "last_message_preview": _preview(latest),
-                "last_message_author": _author_snapshot(latest),
+                "last_message_author": _author_snapshot(latest, request),
             }
         )
     return rows
 
 
-def _gather_spec_threads(client_account) -> list[dict[str, Any]]:
+def _gather_spec_threads(client_account, request: Request) -> list[dict[str, Any]]:
     """Build the inbox rows for every spec attached to one of the
     client's proposals (per-line + legacy 1-to-1) that has at least
     one shared comment.
@@ -259,7 +261,7 @@ def _gather_spec_threads(client_account) -> list[dict[str, Any]]:
                 "unread_count": unread,
                 "last_message_at": latest.created_at.isoformat(),
                 "last_message_preview": _preview(latest),
-                "last_message_author": _author_snapshot(latest),
+                "last_message_author": _author_snapshot(latest, request),
                 "parent_proposal": (
                     {
                         "id": str(parent_proposal.id),
@@ -272,7 +274,7 @@ def _gather_spec_threads(client_account) -> list[dict[str, Any]]:
     return rows
 
 
-def _gather_cff_threads(client_account) -> list[dict[str, Any]]:
+def _gather_cff_threads(client_account, request: Request) -> list[dict[str, Any]]:
     """Build the inbox rows for every CFF this customer owns that
     has at least one shared comment.
 
@@ -362,13 +364,13 @@ def _gather_cff_threads(client_account) -> list[dict[str, Any]]:
                 "unread_count": unread,
                 "last_message_at": latest.created_at.isoformat(),
                 "last_message_preview": _preview(latest),
-                "last_message_author": _author_snapshot(latest),
+                "last_message_author": _author_snapshot(latest, request),
             }
         )
     return rows
 
 
-def _gather_label_design_threads(client_account) -> list[dict[str, Any]]:
+def _gather_label_design_threads(client_account, request: Request) -> list[dict[str, Any]]:
     """Build the inbox rows for every label design the client owns
     that has at least one shared comment.
 
@@ -453,18 +455,18 @@ def _gather_label_design_threads(client_account) -> list[dict[str, Any]]:
                 "unread_count": unread,
                 "last_message_at": latest.created_at.isoformat(),
                 "last_message_preview": _preview(latest),
-                "last_message_author": _author_snapshot(latest),
+                "last_message_author": _author_snapshot(latest, request),
             }
         )
     return rows
 
 
-def _all_threads(client_account) -> list[dict[str, Any]]:
+def _all_threads(client_account, request: Request) -> list[dict[str, Any]]:
     rows = (
-        _gather_proposal_threads(client_account)
-        + _gather_spec_threads(client_account)
-        + _gather_cff_threads(client_account)
-        + _gather_label_design_threads(client_account)
+        _gather_proposal_threads(client_account, request)
+        + _gather_spec_threads(client_account, request)
+        + _gather_cff_threads(client_account, request)
+        + _gather_label_design_threads(client_account, request)
     )
     rows.sort(key=lambda r: r["last_message_at"], reverse=True)
     return rows
@@ -474,7 +476,7 @@ class PortalInboxListView(PortalAPIView):
     """``GET /api/portal/inbox/``."""
 
     def get(self, request: Request) -> Response:
-        threads = _all_threads(request.user)
+        threads = _all_threads(request.user, request)
         return Response(
             {
                 "results": threads,
@@ -487,7 +489,7 @@ class PortalInboxUnreadCountView(PortalAPIView):
     """``GET /api/portal/inbox/unread_count/``."""
 
     def get(self, request: Request) -> Response:
-        threads = _all_threads(request.user)
+        threads = _all_threads(request.user, request)
         return Response(
             {"unread_count": sum(t["unread_count"] for t in threads)},
         )

@@ -31,6 +31,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from apps.cff_submissions.models import CFFSubmission
+from apps.client_portal.api.branding import brand_possessive, brand_short
 from apps.client_portal.api.views import PortalAPIView
 from apps.formulations.models import Formulation, ProjectStatus, ProjectType
 from apps.label_design.constants import LabelDesignPath, LabelDesignStatus
@@ -413,13 +414,26 @@ def _build_production_status(
 
     from apps.formulations.models import ProjectType
 
-    if formulation.project_type == ProjectType.READY_TO_GO.value:
+    is_rtg = formulation.project_type == ProjectType.READY_TO_GO.value
+
+    if is_rtg:
         from apps.client_portal.api.project_stage import _rtg_payment_approved
 
         if not _rtg_payment_approved(formulation, proposals):
             return None
 
-    copy = _PRODUCTION_PHASE_COPY.get(row.phase, {})
+    # PSP defaults a freshly-mirrored CO to ``trial_batches_in_flight``
+    # while it waits for the OrderWizard to advance. That phase makes
+    # sense on Custom (where an actual trial-batch cycle runs after
+    # sign) but NOT on RTG — RTG jumps straight from paid → production.
+    # Remap the phase for RTG display purposes so the ProductionCard
+    # reads "Preparing manufacturing order" instead of leaking the raw
+    # "Trial batches" copy that misrepresents the flow.
+    effective_phase = row.phase
+    if is_rtg and effective_phase == "trial_batches_in_flight":
+        effective_phase = "production_planning"
+
+    copy = _PRODUCTION_PHASE_COPY.get(effective_phase, {})
     # When a customer-driven routing request is live, override the
     # generic phase copy so the ProductionCard doesn't misleadingly
     # tell the customer "our logistics team is finalising the
@@ -673,6 +687,7 @@ def _build_pipeline(
     payment: Payment | None,
     cff: CFFSubmission | None,
     proposal_uuid: Any | None = None,
+    request: Any | None = None,
 ) -> list[dict]:
     """Return the eight pipeline stages with ``done`` / ``current`` /
     ``future`` state.
@@ -705,7 +720,7 @@ def _build_pipeline(
             f"{cff_submitted_at.strftime('%d %b %Y') if cff_submitted_at else ''}"
         ).strip()
         if cff_done
-        else "Started by Vita directly — no formal request submitted.",
+        else f"Started by {brand_short(request)} directly — no formal request submitted.",
     }
 
     # ---- Stage 2: Draft spec signed -------------------------------------
@@ -814,7 +829,7 @@ def _build_pipeline(
     draft_stage_done_or_customer_visible = (
         draft_signed is not None
         or draft_sent is not None
-        or draft_approved is not None
+        or draft_internally_prepared is not None
     )
     if proposal_drafted is not None:
         proposal_drafting_stage = {
@@ -1336,6 +1351,20 @@ def _build_pipeline(
             "completed_at": _iso(label_design.customer_approved_at),
             "detail": "Label artwork is locked. Production planning starts now.",
         }
+    elif label_design.status == LabelDesignStatus.NO_LABEL_REQUIRED:
+        # Customer opted out at the choose-path step. Roadmap reads
+        # this as a completed stage (green tick) — the workflow is
+        # closed, production isn't waiting on anything.
+        label_stage = {
+            "key": "label",
+            "label": "No label required",
+            "state": "done",
+            "completed_at": _iso(label_design.updated_at),
+            "detail": (
+                "You opted out of labelling for this order — we'll "
+                "manufacture and dispatch without applying a label."
+            ),
+        }
     elif label_design.status == LabelDesignStatus.CUSTOMER_APPROVAL:
         label_stage = {
             "key": "label",
@@ -1350,7 +1379,7 @@ def _build_pipeline(
             "label": "Label design — pick a path",
             "state": "current",
             "completed_at": None,
-            "detail": "Choose whether Vita designs the label for you or you design it yourself.",
+            "detail": f"Choose whether {brand_short(request)} designs the label for you or you design it yourself.",
         }
     elif label_design.status == LabelDesignStatus.DESIGN_PREFERENCES_PENDING:
         label_stage = {
@@ -1511,6 +1540,32 @@ def _build_pipeline(
             signed_proposal=signed_proposal,
             label_design=label_design,
         )
+        # A fresh RTG order sits with a ``draft`` proposal (auto-created
+        # at checkout, admin hasn't hit "Send" yet). In that window the
+        # shared ``proposal_stage`` falls through to the ``future``
+        # branch — none of Draft/Sample/Deposit/Trial/Final apply on
+        # RTG, so with proposal_stage=future the whole pipeline reads
+        # as ``[future, future, future, future]``. The FE's "no current
+        # stage" fallback then renders as "All steps so far are
+        # complete" (NPD) or as a roadmap with nothing highlighted
+        # (web-site) — both read to the customer as "project finished"
+        # / "nothing happening". Promote the proposal stage to
+        # ``current`` with quote-being-prepared copy so exactly one
+        # stage lights up during that window.
+        no_proposal_ever_sent = not any(
+            p.status in ("sent", "accepted", "rejected") for p in proposals
+        )
+        if proposal_stage["state"] == "future" and no_proposal_ever_sent:
+            proposal_stage = {
+                "key": "proposal",
+                "label": "Awaiting your quote",
+                "state": "current",
+                "completed_at": None,
+                "detail": (
+                    "We're preparing your quote — you'll be able to review "
+                    "and sign it here as soon as it's ready."
+                ),
+            }
         payment_done = rtg_payment_stage["state"] == "done"
         if not payment_done:
             # Both replacement dicts MUST carry ``parallel_group`` —
@@ -1574,6 +1629,7 @@ def _build_next_action(
     proposals: list[Proposal],
     sheets: list[SpecificationSheet],
     label_design: LabelDesign | None,
+    request: Any | None = None,
 ) -> dict | None:
     """The single "what do I do next?" action for the customer.
 
@@ -1601,7 +1657,7 @@ def _build_next_action(
         if label_design.status == LabelDesignStatus.LABEL_PATH_PENDING:
             return {
                 "label": "Choose how the label will be designed",
-                "subtitle": "Pick Vita's team or design it yourself.",
+                "subtitle": f"Pick {brand_possessive(request)} team or design it yourself.",
                 "url": f"/portal/label-designs/{label_design.id}/choose-path",
                 "urgency": "medium",
             }
@@ -2058,6 +2114,11 @@ class PortalProductDetailView(PortalAPIView):
             LabelDesignStatus.DIRECTOR_REVIEW: 6,
             LabelDesignStatus.ON_HOLD: 7,
             LabelDesignStatus.LABEL_APPROVED: 8,
+            #: Terminal opt-out — bucketed with the other terminal
+            #: state so it never wins the "which label row blocks
+            #: me?" selector on a formulation with multiple label
+            #: rows (RTG multi-order).
+            LabelDesignStatus.NO_LABEL_REQUIRED: 8,
         }
         label_design = (
             min(
@@ -2150,12 +2211,14 @@ class PortalProductDetailView(PortalAPIView):
                     payment=payment,
                     cff=cff,
                     proposal_uuid=proposal_uuid,
+                    request=request,
                 ),
                 "next_action": _build_next_action(
                     formulation=formulation,
                     proposals=proposals,
                     sheets=sheets,
                     label_design=label_design,
+                    request=request,
                 ),
                 "documents": _build_documents(
                     proposals=proposals,

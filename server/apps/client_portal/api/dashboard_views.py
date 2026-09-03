@@ -28,6 +28,7 @@ from __future__ import annotations
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from apps.client_portal.api.branding import brand_short
 from apps.client_portal.api.project_stage import (
     STAGE_LABELS as _STAGE_LABELS,
     resolve_stage as _resolve_stage,
@@ -60,7 +61,7 @@ URGENCY_LOW = 3
 # ---------------------------------------------------------------------------
 
 
-def _build_actions(customer_ids) -> list[dict]:
+def _build_actions(customer_ids, request=None) -> list[dict]:
     """Every "needs your attention" item across the customer's projects.
 
     Each action has a stable ``kind`` so the FE can route the
@@ -319,8 +320,8 @@ def _build_actions(customer_ids) -> list[dict]:
                     "title": "Choose how the label will be designed",
                     "subtitle": (
                         f"{ld.formulation.name or ld.formulation.code} · "
-                        "pick whether Vita designs it for you or you "
-                        "design it yourself"
+                        f"pick whether {brand_short(request)} designs it "
+                        "for you or you design it yourself"
                     ),
                     "url": f"/portal/label-designs/{ld.id}/choose-path",
                     **common,
@@ -686,7 +687,7 @@ class PortalDashboardView(PortalAPIView):
         customer_ids = customer_ids_for_account(request.user)
         return Response(
             {
-                "actions": _build_actions(customer_ids),
+                "actions": _build_actions(customer_ids, request=request),
                 "products": _build_products(customer_ids),
             }
         )

@@ -27,6 +27,7 @@ const STATUS_LABELS: Record<LabelDesignStatus, string> = {
   director_review: "In director review",
   customer_approval: "Awaiting your approval",
   label_approved: "Approved",
+  no_label_required: "No label required",
   on_hold: "On hold",
 };
 

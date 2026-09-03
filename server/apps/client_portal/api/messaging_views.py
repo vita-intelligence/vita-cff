@@ -46,6 +46,7 @@ from apps.client_portal.api.views import (
     _err,
     _load_owned_proposal,
 )
+from apps.client_portal.api.branding import staff_team_name
 from apps.client_portal.queries import customer_ids_for_account
 from apps.comments.broadcast import schedule_comment_broadcast
 from apps.comments.notifications import enqueue_notifications_for_comment
@@ -117,15 +118,16 @@ def _target_label(comment: Comment) -> tuple[str, Any]:
     return "other", comment.object_id
 
 
-def _author_payload(comment: Comment) -> dict[str, str]:
+def _author_payload(comment: Comment, request: Request) -> dict[str, str]:
     """Compose the masked author bag exposed to the portal.
 
-    Staff authors render as "Vita team" — we deliberately don't
-    leak the operator's name so the client experience is one
-    consistent brand voice. Client authors render with the
-    customer company on file. Both sides may carry an
-    ``avatar_image`` (base64 data URL); empty string means the
-    UI falls back to initials.
+    Staff authors render as a single collective voice ("Vita team"
+    on NPD, "Supplement Manufacture UK" on the SMK web-site) — we
+    deliberately don't leak the operator's individual name so the
+    client experience is one consistent brand voice. Client
+    authors render with the customer company on file. Both sides
+    may carry an ``avatar_image`` (base64 data URL); empty string
+    means the UI falls back to initials.
     """
 
     if comment.client_account_id is not None:
@@ -139,10 +141,11 @@ def _author_payload(comment: Comment) -> dict[str, str]:
             "name": company,
             "avatar": comment.client_account.avatar_image or "",
         }
+    staff_name = staff_team_name(request)
     if comment.author_id is not None:
         return {
             "kind": "staff",
-            "name": "Vita team",
+            "name": staff_name,
             "avatar": comment.author.avatar_image or "",
         }
     # Legacy kiosk-guest comments — shouldn't surface in portal
@@ -150,12 +153,12 @@ def _author_payload(comment: Comment) -> dict[str, str]:
     # gracefully if a row ever slips through.
     return {
         "kind": "staff",
-        "name": comment.guest_name or "Vita team",
+        "name": comment.guest_name or staff_name,
         "avatar": "",
     }
 
 
-def _parent_payload(comment: Comment) -> dict[str, Any] | None:
+def _parent_payload(comment: Comment, request: Request) -> dict[str, Any] | None:
     """Compose the short preview block surfaced above a quoted-reply
     bubble. Returns ``None`` for root messages so the wire shape
     stays compact.
@@ -168,7 +171,7 @@ def _parent_payload(comment: Comment) -> dict[str, Any] | None:
     parent = comment.parent
     if parent is None:
         return None
-    author = _author_payload(parent)
+    author = _author_payload(parent, request)
     body = "" if parent.is_deleted else (parent.body or "")
     return {
         "id": str(parent.id),
@@ -179,9 +182,9 @@ def _parent_payload(comment: Comment) -> dict[str, Any] | None:
     }
 
 
-def _serialise(comment: Comment) -> dict[str, Any]:
+def _serialise(comment: Comment, request: Request) -> dict[str, Any]:
     kind, target_id = _target_label(comment)
-    author = _author_payload(comment)
+    author = _author_payload(comment, request)
     return {
         "id": comment.id,
         "body": "" if comment.is_deleted else comment.body,
@@ -192,7 +195,7 @@ def _serialise(comment: Comment) -> dict[str, Any]:
         "author_avatar": author["avatar"],
         "thread_target_type": kind,
         "thread_target_id": target_id,
-        "parent": _parent_payload(comment),
+        "parent": _parent_payload(comment, request),
     }
 
 
@@ -292,7 +295,7 @@ class ProposalMessagesView(PortalAPIView):
             .order_by("created_at")
         )
 
-        rows = [_serialise(c) for c in spec_comments]
+        rows = [_serialise(c, request) for c in spec_comments]
 
         # Read state per spec — single query, indexed lookup. The
         # portal uses this to render the "Seen ✓" tick.
@@ -394,7 +397,7 @@ class SpecMessagePostView(PortalAPIView):
                 lambda c=comment: enqueue_notifications_for_comment(c.id)
             )
 
-        return Response(_serialise(comment), status=status.HTTP_201_CREATED)
+        return Response(_serialise(comment, request), status=status.HTTP_201_CREATED)
 
 
 class ProposalChatListView(PortalAPIView):
@@ -441,7 +444,7 @@ class ProposalChatListView(PortalAPIView):
         )
         return Response(
             {
-                "results": [_serialise(c) for c in comments],
+                "results": [_serialise(c, request) for c in comments],
                 "read_state": (
                     read_row["last_read_at"].isoformat()
                     if read_row else None
@@ -517,7 +520,7 @@ class ProposalChatPostView(PortalAPIView):
                 lambda c=comment: enqueue_notifications_for_comment(c.id)
             )
 
-        return Response(_serialise(comment), status=status.HTTP_201_CREATED)
+        return Response(_serialise(comment, request), status=status.HTTP_201_CREATED)
 
 
 class ProposalChatReadView(PortalAPIView):
@@ -611,7 +614,7 @@ class LabelDesignChatListView(PortalAPIView):
         )
         return Response(
             {
-                "results": [_serialise(c) for c in comments],
+                "results": [_serialise(c, request) for c in comments],
                 "read_state": (
                     read_row["last_read_at"].isoformat()
                     if read_row
@@ -681,7 +684,7 @@ class LabelDesignChatPostView(PortalAPIView):
                 lambda c=comment: enqueue_notifications_for_comment(c.id)
             )
 
-        return Response(_serialise(comment), status=status.HTTP_201_CREATED)
+        return Response(_serialise(comment, request), status=status.HTTP_201_CREATED)
 
 
 class LabelDesignChatReadView(PortalAPIView):
@@ -750,7 +753,7 @@ class SpecMessageThreadView(PortalAPIView):
         )
         return Response(
             {
-                "results": [_serialise(c) for c in comments],
+                "results": [_serialise(c, request) for c in comments],
                 "read_state": (
                     {str(sheet.id): read_row["last_read_at"].isoformat()}
                     if read_row

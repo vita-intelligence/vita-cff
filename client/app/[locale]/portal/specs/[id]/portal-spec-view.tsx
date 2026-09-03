@@ -344,7 +344,11 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
                 onClick={() => setPending(true)}
               >
                 <PenLine className="h-4 w-4" />
-                {isFinal ? "Authorise production & sign" : "Sign this specification"}
+                {isFinal
+                  ? isRtg
+                    ? "Approve specification & sign"
+                    : "Authorise production & sign"
+                  : "Sign this specification"}
               </PortalButton>
               {isFinal ? (
                 <button
@@ -372,7 +376,7 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
             ) : null}
           </div>
         ) : (
-          <SignedConfirmation isFinal={isFinal} />
+          <SignedConfirmation isFinal={isFinal} isRtg={isRtg} />
         )}
       </Card>
 
@@ -399,15 +403,25 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
         }}
         title={
           isFinal
-            ? `Authorise production — ${spec.code || "final specification"}`
+            ? isRtg
+              ? `Approve specification — ${spec.code || "specification"}`
+              : `Authorise production — ${spec.code || "final specification"}`
             : `Sign — ${spec.code || "specification"}`
         }
         subtitle={
           isFinal
-            ? `By signing, you confirm you're satisfied with the product and authorise Vita Manufacture to produce the quantity agreed in proposal ${proposalCode || "(see your proposals)"}.`
+            ? isRtg
+              ? "By signing, you confirm the specification is correct. Production begins once your proposal is signed and payment has landed."
+              : `By signing, you confirm you're satisfied with the product and authorise Vita Manufacture to produce the quantity agreed in proposal ${proposalCode || "(see your proposals)"}.`
             : "Draw your signature with your mouse, finger or stylus."
         }
-        confirmLabel={isFinal ? "I authorise production" : "Submit signature"}
+        confirmLabel={
+          isFinal
+            ? isRtg
+              ? "Approve specification"
+              : "I authorise production"
+            : "Submit signature"
+        }
         busy={busy}
         errorMessage={actionError}
         onConfirm={onSign}
@@ -689,19 +703,25 @@ function FinalProductionBanner({
 }
 
 
-function SignedConfirmation({ isFinal }: { isFinal: boolean }) {
+function SignedConfirmation({ isFinal, isRtg }: { isFinal: boolean; isRtg: boolean }) {
+  // On RTG the FINAL spec sign is a recipe-approval step — the
+  // proposal + payment are the true production-release gate.
+  // Custom keeps "Production authorised" wording because the FINAL
+  // spec sign IS the release on that flow.
+  const titleFinal = isRtg ? "Specification approved" : "Production authorised";
+  const bodyFinal = isRtg
+    ? "Recipe locked in. Production begins once your proposal is signed and payment has landed."
+    : "Thank you — your product is now authorised for production. We'll invoice you and get moving as soon as payment lands.";
   return (
     <div className="mt-6 border-2 border-black bg-black p-5 text-white">
       <div className="flex items-start gap-3">
         <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0" />
         <div>
           <p className="text-[10px] font-bold uppercase tracking-[0.3em]">
-            {isFinal ? "Production authorised" : "Specification signed"}
+            {isFinal ? titleFinal : "Specification signed"}
           </p>
           <p className="mt-1 text-sm font-medium leading-snug">
-            {isFinal
-              ? "Thank you — your product is now authorised for production. We'll invoice you and get moving as soon as payment lands."
-              : "You signed this specification. We'll be in touch with next steps shortly."}
+            {isFinal ? bodyFinal : "You signed this specification. We'll be in touch with next steps shortly."}
           </p>
         </div>
       </div>

@@ -374,14 +374,31 @@ def _collect_projects(
 
     items: list[dict] = []
     for row in rows:
+        proposals_for_row = proposals_by_form.get(row.id, [])
         stage_key, _action_url = resolve_stage(
             formulation=row,
-            proposals=proposals_by_form.get(row.id, []),
+            proposals=proposals_for_row,
             sheets=sheets_by_form.get(row.id, []),
             label_design=labels_by_form.get(row.id),
         )
         status_label = STAGE_LABELS.get(stage_key, STAGE_LABELS["unknown"])
         tone, needs = STAGE_TONES.get(stage_key, ("in_progress", False))
+        # Contracted total + order size — customer's answer to "how
+        # much am I paying for this and how many packs?" Both read
+        # off the same chosen proposal (signed / sent / draft in
+        # that order) so amount and quantity always match — even
+        # when a live draft has drifted from the accepted number.
+        chosen = _pick_project_proposal(proposals_for_row)
+        amount, currency = _project_amount(chosen)
+        quantity = _project_quantity(chosen)
+        # Subtitle mirrors RTG copy ("1,500 units") once we know the
+        # order size — otherwise the generic "Custom formulation"
+        # label so pre-quote projects still read cleanly.
+        subtitle = (
+            f"Custom formulation · {quantity:,} units"
+            if quantity is not None
+            else "Custom formulation"
+        )
         items.append(
             {
                 "kind": "project",
@@ -393,19 +410,91 @@ def _collect_projects(
                 # mental model ("the CFF became a project called X").
                 "code": row.code or "",
                 "title": row.name or row.code or "Untitled formulation",
-                "subtitle": "Custom formulation",
+                "subtitle": subtitle,
                 "status_key": stage_key,
                 "status_label": status_label,
                 "status_tone": tone,
                 "href": f"/portal/projects/{row.id}",
-                "amount": None,
-                "currency": "",
-                "quantity": None,
+                "amount": amount,
+                "currency": currency,
+                "quantity": quantity,
                 "updated_at": row.updated_at,
                 "needs_attention": needs,
             }
         )
     return items
+
+
+def _pick_project_proposal(proposals: list) -> Any | None:
+    """Choose which proposal to read amount + quantity off for a
+    custom-formulation activity card.
+
+    Preference order:
+      1. Signed / accepted proposal — the commercial ceremony is done
+         and the number is frozen. This is what the customer paid.
+      2. Sent proposal — offered to the customer, unsigned.
+      3. Newest draft — quote-in-flight, so the customer sees an
+         indicative number while the commercial team finalises it.
+    """
+
+    if not proposals:
+        return None
+    # Signed OR accepted counts as "settled" — the accepted-status
+    # branch catches the ``accepted`` FSM state that the proposal
+    # transitions to on customer sign, before ``customer_signed_at``
+    # is necessarily populated by every code path. Both mean the
+    # commercial ceremony is done.
+    signed = next(
+        (
+            p for p in proposals
+            if getattr(p, "customer_signed_at", None) is not None
+            or p.status == "accepted"
+        ),
+        None,
+    )
+    sent = next((p for p in proposals if p.status == "sent"), None)
+    # Proposals are already ordered newest-first by the fetch helper;
+    # ``next`` gives us the first (most recent) match.
+    draft = next((p for p in proposals if p.status == "draft"), None)
+    return signed or sent or draft or proposals[0]
+
+
+def _project_amount(proposal: Any | None) -> tuple[str | None, str]:
+    """Contracted total + currency for the chosen proposal.
+
+    Returns ``(amount_string_or_none, currency_code)``.
+    """
+
+    if proposal is None:
+        return (None, "")
+    total = getattr(proposal, "total_excl_vat", None) or getattr(
+        proposal, "subtotal", None
+    )
+    if total is None:
+        return (None, "")
+    try:
+        return (_decimal_str(Decimal(total)), getattr(proposal, "currency", "") or "")
+    except Exception:  # noqa: BLE001
+        return (None, "")
+
+
+def _project_quantity(proposal: Any | None) -> int | None:
+    """Order size (packs) off the chosen proposal.
+
+    Returns ``None`` when no proposal exists yet or the quantity
+    hasn't been captured — surfacing ``None`` upstream so the FE can
+    omit the "· N units" suffix cleanly.
+    """
+
+    if proposal is None:
+        return None
+    qty = getattr(proposal, "quantity", None)
+    if qty is None:
+        return None
+    try:
+        return int(qty)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -624,9 +713,23 @@ def _collect_rtg(
             title = f"{base_title} · Order #{idx}"
         else:
             title = base_title
-        status_label, tone, needs = _RTG_STATUS_MAP.get(
-            row.status, ("In flight", "in_progress", False),
-        )
+        # Prefer PSP's live production phase over the proposal FSM
+        # status once the CO is confirmed on PSP — the proposal
+        # remains ``accepted`` forever after the customer signs, but
+        # the badge should track what's actually happening on the
+        # shop floor ("In production", "On the way", etc.) not
+        # freeze on "Signed". Falls through to the FSM map when the
+        # PSP mirror isn't ready yet (unpaid, un-synced, or the
+        # phase key isn't one we render — see
+        # ``_PSP_PHASE_TO_ACTIVITY_STATUS``).
+        psp_status = _rtg_status_from_psp(row, formulation)
+        if psp_status is not None:
+            status_key, status_label, tone, needs = psp_status
+        else:
+            status_key = row.status
+            status_label, tone, needs = _RTG_STATUS_MAP.get(
+                row.status, ("In flight", "in_progress", False),
+            )
         # Route each RTG order to the shared per-project detail page
         # keyed by the PROPOSAL id, not the formulation id — the
         # customer can order the same catalog product N times and
@@ -645,7 +748,7 @@ def _collect_rtg(
                 "code": row.code or "",
                 "title": title,
                 "subtitle": _rtg_subtitle(row, formulation),
-                "status_key": row.status,
+                "status_key": status_key,
                 "status_label": status_label,
                 "status_tone": tone,
                 "href": href,
@@ -657,6 +760,51 @@ def _collect_rtg(
             }
         )
     return items
+
+
+def _rtg_status_from_psp(
+    proposal: Proposal, formulation: Any
+) -> tuple[str, str, str, bool] | None:
+    """``(status_key, status_label, tone, needs_attention)`` derived
+    from the locally-mirrored PSP production phase, or ``None`` when
+    we should fall back to :data:`_RTG_STATUS_MAP`.
+
+    Fallback triggers: no PspProductionStatus row for this proposal
+    yet (fresh order, CO not on PSP or not confirmed), the phase key
+    isn't in :data:`_PSP_PHASE_TO_ACTIVITY_STATUS` (unknown state, be
+    conservative), or the CO is still in a pre-production phase we
+    don't want to leak to the badge (proposal not signed, awaiting
+    approval, etc.).
+
+    Reads from the local mirror only — no HTTP round-trip. The
+    mirror is push-based (PSP notifies vita-cff on every CO change
+    via ``/api/psp-integration/production-status/upsert/``) so this
+    stays cheap even as the activity feed pages through many RTG
+    rows.
+    """
+
+    if formulation is None:
+        return None
+    # Post-commitment states only. Draft / in_review / approved / sent
+    # / rejected are all pre-signature — the FSM map already renders
+    # the right customer-facing copy for those.
+    if proposal.status != ProposalStatus.ACCEPTED:
+        return None
+
+    from apps.psp.status_lookup import get_production_status_for
+
+    row = get_production_status_for(formulation, proposal_uuid=proposal.id)
+    if row is None:
+        return None
+    phase_key = (row.phase or "").strip()
+    if not phase_key:
+        return None
+
+    mapped = _PSP_PHASE_TO_ACTIVITY_STATUS.get(phase_key)
+    if mapped is None:
+        return None
+    label, tone, needs = mapped
+    return (phase_key, label, tone, needs)
 
 
 def _rtg_subtitle(proposal: Proposal, formulation: Any) -> str:

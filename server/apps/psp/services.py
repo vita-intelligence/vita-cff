@@ -3900,37 +3900,58 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         except Exception:  # noqa: BLE001 — never break sync on a lookup
             pass
 
-        # Authoritative run quantity for PSP. Prefer a customer-
-        # accepted FINAL spec's quantity over the proposal-line
-        # quantity when one exists — the FINAL is the last thing
-        # the customer signed, and its modal explicitly frames the
-        # quantity input as "the last time you can change the run
-        # size — once the customer signs, it's locked". Falling back
-        # to the proposal-line quantity when no accepted FINAL
-        # exists (Custom projects pre-FINAL, RTG orders, legacy rows).
+        # Authoritative run quantity for PSP.
+        #
+        # Custom flow: prefer the customer-ACCEPTED FINAL spec's
+        # quantity — the FINAL is a per-project document and its
+        # modal explicitly frames the quantity input as "the last
+        # time you can change the run size — once the customer signs
+        # it's locked". Fall back to the proposal-line quantity when
+        # no accepted FINAL exists (pre-FINAL, legacy rows).
+        #
+        # RTG flow: SKIP the FINAL lookup entirely. RTG's FINAL spec
+        # is a director-signed CATALOG template, not a per-order
+        # document — its ``quantity`` is a template placeholder
+        # (typically 1) representing "one pack of the finished
+        # product", NOT the customer's ordered pack count. If we let
+        # the Custom logic apply here, every RTG order silently
+        # collapses to qty=1 on PSP regardless of what the customer
+        # actually paid for (observed: PROP-0002 was for 1500 packs
+        # of RTG00001, MO00143 was created with quantity=1 because
+        # the accepted FINAL spec's template quantity=1 overrode the
+        # proposal line's 1500). The proposal line's ``quantity`` IS
+        # the authoritative customer-order size for RTG.
         #
         # Lazy import to avoid a specs → psp import cycle at boot.
+        from apps.formulations.models import ProjectType as _ProjectType
         from apps.specifications.models import (
             SpecificationDocumentKind as _SDK,
             SpecificationSheet as _Sheet,
             SpecificationStatus as _SStatus,
         )
 
-        accepted_final = (
-            _Sheet.objects.filter(
-                formulation_version__formulation=formulation,
-                document_kind=_SDK.FINAL.value,
-                status=_SStatus.ACCEPTED.value,
+        is_rtg = (
+            getattr(formulation, "project_type", "") == _ProjectType.READY_TO_GO.value
+        )
+
+        if is_rtg:
+            authoritative_qty = int(line.quantity or 1)
+        else:
+            accepted_final = (
+                _Sheet.objects.filter(
+                    formulation_version__formulation=formulation,
+                    document_kind=_SDK.FINAL.value,
+                    status=_SStatus.ACCEPTED.value,
+                )
+                .order_by("-updated_at")
+                .values_list("quantity", flat=True)
+                .first()
             )
-            .order_by("-updated_at")
-            .values_list("quantity", flat=True)
-            .first()
-        )
-        authoritative_qty = (
-            int(accepted_final)
-            if accepted_final and int(accepted_final) > 0
-            else int(line.quantity or 1)
-        )
+            authoritative_qty = (
+                int(accepted_final)
+                if accepted_final and int(accepted_final) > 0
+                else int(line.quantity or 1)
+            )
 
         line_payload.append(
             {
