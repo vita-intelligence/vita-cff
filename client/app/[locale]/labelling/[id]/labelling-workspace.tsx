@@ -19,6 +19,7 @@ const PdfPreview = dynamic(
 
 import {
   AlertCircle,
+  Ban,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -104,6 +105,7 @@ const STATUS_LABELS: Record<LabelDesignStatus, string> = {
   director_review: "Awaiting director review",
   customer_approval: "Awaiting customer approval",
   label_approved: "Label approved",
+  no_label_required: "No label required (customer opted out)",
   on_hold: "On hold",
 };
 
@@ -623,6 +625,12 @@ const STATUS_PRESENTATION: Record<
     icon: CheckCircle2,
     headline: "Label approved",
     sub: "Customer signed off. Ready for production hand-off.",
+  },
+  no_label_required: {
+    tone: "emerald",
+    icon: Ban,
+    headline: "No label required",
+    sub: "Customer opted out at the choose-path step. No artwork to produce; production ships unlabelled.",
   },
   on_hold: {
     tone: "rose",

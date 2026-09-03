@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { AlertTriangle, Check, Paintbrush, Pencil } from "lucide-react";
+import { AlertTriangle, Ban, Check, Paintbrush, Pencil } from "lucide-react";
 
 import {
   PageHeader,
@@ -14,12 +14,13 @@ import {
 } from "@/services/label-design";
 
 
-type PathKey = "design_by_us" | "design_by_customer";
+type PathKey = "design_by_us" | "design_by_customer" | "no_label";
 
 
 const PATH_LABELS: Record<PathKey, string> = {
   design_by_us: "Vita designs it for me",
   design_by_customer: "I’ll design it myself",
+  no_label: "I don’t want a label",
 };
 
 
@@ -71,7 +72,7 @@ export default function ChoosePathPage({
         subtitle="Pick whichever fits — you can paste our spec-derived content block into any tool, or hand the brief to our team."
         back={{ href: projectHref, label: "Back to project" }}
       />
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-3">
         <PathOption
           icon={<Paintbrush className="h-7 w-7 text-black" />}
           title={PATH_LABELS.design_by_us}
@@ -89,6 +90,15 @@ export default function ChoosePathPage({
           priceLabel="Free"
           selected={selected === "design_by_customer"}
           onSelect={() => setSelected("design_by_customer")}
+        />
+        <PathOption
+          icon={<Ban className="h-7 w-7 text-black" />}
+          title={PATH_LABELS.no_label}
+          body="Manufacture and dispatch the product unlabelled. Suits bulk / warehouse-only orders and customers who label downstream themselves."
+          nextStep="Next: closes the workflow →"
+          priceLabel="Free"
+          selected={selected === "no_label"}
+          onSelect={() => setSelected("no_label")}
         />
       </div>
 

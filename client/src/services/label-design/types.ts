@@ -9,12 +9,14 @@ export type LabelDesignStatus =
   | "director_review"
   | "customer_approval"
   | "label_approved"
+  | "no_label_required"
   | "on_hold";
 
 export type LabelDesignPath =
   | ""
   | "design_by_us"
-  | "design_by_customer";
+  | "design_by_customer"
+  | "no_label";
 
 export type RevisionSource = "staff_upload" | "customer_upload";
 export type ReviewKind = "scientist" | "director";

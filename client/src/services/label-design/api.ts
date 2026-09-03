@@ -446,7 +446,7 @@ export async function portalFetchLabelDesign(
 
 export async function portalChoosePath(
   ldId: string,
-  path: "design_by_us" | "design_by_customer",
+  path: "design_by_us" | "design_by_customer" | "no_label",
 ): Promise<LabelDesignDto> {
   const { data } = await apiClient.post<LabelDesignDto>(
     ep.portalChoosePath(ldId),

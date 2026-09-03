@@ -36,6 +36,7 @@ import {
 import {
   AlertCircle,
   ArrowRight,
+  Ban,
   CheckCircle2,
   Clock,
   Download,
@@ -124,6 +125,7 @@ const STATUS_LABELS: Record<LabelDesignStatus, string> = {
   director_review: "Director review",
   customer_approval: "Your approval needed",
   label_approved: "Approved",
+  no_label_required: "No label required",
   on_hold: "On hold",
 };
 
@@ -210,7 +212,9 @@ export function PortalLabelDesignWorkspace({ id }: { id: string }) {
               <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-neutral-500">
                 {data.design_path === "design_by_us"
                   ? "Vita is designing"
-                  : "You are designing"}
+                  : data.design_path === "design_by_customer"
+                    ? "You are designing"
+                    : "No label — opted out"}
               </span>
             ) : null}
           </span>
@@ -281,7 +285,7 @@ function TabBar({
 function StatusBadge({ status }: { status: LabelDesignStatus }) {
   const label = STATUS_LABELS[status] ?? status;
   const tone =
-    status === "label_approved"
+    status === "label_approved" || status === "no_label_required"
       ? "bg-emerald-100 text-emerald-900 ring-emerald-600/30"
       : status === "on_hold"
       ? "bg-amber-100 text-amber-900 ring-amber-600/30"
@@ -645,6 +649,29 @@ function ActionPanel({
             <h3 className="text-lg font-bold">Your label is approved</h3>
             <p className="text-sm text-neutral-600">
               We&rsquo;ll be in touch with the next steps for production.
+            </p>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  if (status === "no_label_required") {
+    return (
+      <Card className="border-emerald-600 bg-emerald-50">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center border-2 border-black bg-white">
+            <Ban className="h-5 w-5 text-black" />
+          </span>
+          <div className="flex-1">
+            <Eyebrow>YOUR CHOICE</Eyebrow>
+            <h3 className="mt-1 text-lg font-bold">No label required</h3>
+            <p className="mt-1 text-sm text-neutral-800">
+              You&rsquo;ve opted out of labelling for this order. We&rsquo;ll
+              manufacture and dispatch the product unbranded — no artwork
+              will be produced or reviewed. If you&rsquo;ve changed your
+              mind, drop a note in the project chat and our team will
+              reopen the label workflow.
             </p>
           </div>
         </div>

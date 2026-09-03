@@ -53,6 +53,13 @@ class LabelDesignStatus(models.TextChoices):
     DIRECTOR_REVIEW = "director_review", _("Director review")
     CUSTOMER_APPROVAL = "customer_approval", _("Customer approval")
     LABEL_APPROVED = "label_approved", _("Label approved")
+    #: Terminal — customer explicitly opted out of labelling at the
+    #: choose-path step (unbranded / bulk order, warehouse-only fill,
+    #: or their own downstream labelling line). PSP renders this on
+    #: the CO badge as "No label required" and production doesn't
+    #: wait on any label workflow. Cannot be undone without staff
+    #: intervention (same posture as ``LABEL_APPROVED``).
+    NO_LABEL_REQUIRED = "no_label_required", _("No label required")
     ON_HOLD = "on_hold", _("On hold")
 
 
@@ -85,6 +92,9 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
             LabelDesignStatus.DESIGN_PREFERENCES_PENDING,
             #: DESIGN_BY_CUSTOMER is free — go straight to design.
             LabelDesignStatus.DESIGN_IN_PROGRESS,
+            #: NO_LABEL closes the workflow instantly — no design fee,
+            #: no brief, no review chain. Terminal.
+            LabelDesignStatus.NO_LABEL_REQUIRED,
             LabelDesignStatus.ON_HOLD,
         }
     ),
@@ -129,6 +139,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
         }
     ),
     LabelDesignStatus.LABEL_APPROVED: frozenset(),  # terminal
+    LabelDesignStatus.NO_LABEL_REQUIRED: frozenset(),  # terminal
     LabelDesignStatus.ON_HOLD: frozenset(
         {
             # Resume targets — see ``services.resume_from_hold`` which
@@ -160,10 +171,18 @@ MAX_CUSTOMER_REJECTIONS_BEFORE_HOLD = 3
 
 
 class LabelDesignPath(models.TextChoices):
-    """Which side of the table is doing the artistic work."""
+    """Which side of the table is doing the artistic work.
+
+    ``NO_LABEL`` is the "we won't be labelling this order" opt-out —
+    the workflow terminates at pick-time (see
+    :attr:`LabelDesignStatus.NO_LABEL_REQUIRED`) so downstream
+    consumers can treat the label stage as skipped rather than
+    stalled.
+    """
 
     DESIGN_BY_US = "design_by_us", _("Vita designs")
     DESIGN_BY_CUSTOMER = "design_by_customer", _("Customer designs")
+    NO_LABEL = "no_label", _("No label required")
 
 
 class RevisionSource(models.TextChoices):

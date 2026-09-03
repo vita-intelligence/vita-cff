@@ -386,7 +386,7 @@ function _invalidatePortalLabel(
 export function usePortalChoosePath(ldId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (path: "design_by_us" | "design_by_customer") =>
+    mutationFn: (path: "design_by_us" | "design_by_customer" | "no_label") =>
       portalChoosePath(ldId, path),
     onSuccess: () => _invalidatePortalLabel(qc, ldId),
   });

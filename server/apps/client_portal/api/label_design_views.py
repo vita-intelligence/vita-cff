@@ -189,6 +189,14 @@ class PortalLabelDesignChoosePathView(PortalAPIView):
                 if payment is not None
                 else "customer chose design_by_us — no design fee configured, skipping gate"
             )
+        elif path == LabelDesignPath.NO_LABEL:
+            # Opt-out — customer doesn't want a label on this order.
+            # Skip the review chain entirely and land in the terminal
+            # NO_LABEL_REQUIRED state. Downstream (portal pipeline,
+            # PSP badge) treats this as "label stage complete, no
+            # artwork will follow" so production doesn't wait.
+            target = LabelDesignStatus.NO_LABEL_REQUIRED
+            notes = "customer opted out — no label required for this order"
         else:
             target = LabelDesignStatus.DESIGN_IN_PROGRESS
             notes = f"customer chose {path}"
