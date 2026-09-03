@@ -165,9 +165,17 @@ interface ProjectReleaseDocument {
   readonly uploaded_at: string;
 }
 
+interface BaileeCustodyPanelPayload {
+  readonly headline: string;
+  readonly detail: string;
+  readonly cta_label: string;
+  readonly cta_href: string;
+}
+
 interface ExtendedProductionStatus extends ProductionStatusPayload {
   readonly dispatch?: ProjectDispatch | null;
   readonly release_documents?: ReadonlyArray<ProjectReleaseDocument>;
+  readonly bailee_custody?: BaileeCustodyPanelPayload | null;
 }
 
 
@@ -290,11 +298,23 @@ export default async function PortalProductDetailPage({
         </section>
       ) : null}
 
-      {/* Dispatch — multi-visit pickup timeline + evidence photos +
-          per-event Confirm-receipt CTA. Mirrors the website portal's
-          ProjectDispatchCard so a customer looking at the same
-          project on either surface sees identical information. */}
-      {(data.production_status as ExtendedProductionStatus | null)?.dispatch ? (
+      {/* Bailee-custody CTA — RTG / 3PL flow. Rendered instead of the
+          direct-ship DispatchSection when the finished goods are
+          sitting on our 3PL shelf. Points the customer at the
+          Warehouse tab where the qty-on-hand + Request-dispatch flow
+          lives; keeps the product page as a "journey complete"
+          surface. */}
+      {(data.production_status as ExtendedProductionStatus | null)?.bailee_custody ? (
+        <BailleeCustodyPanel
+          panel={
+            (data.production_status as ExtendedProductionStatus).bailee_custody!
+          }
+        />
+      ) : (data.production_status as ExtendedProductionStatus | null)?.dispatch ? (
+        /* Dispatch — multi-visit pickup timeline + evidence photos +
+           per-event Confirm-receipt CTA. Mirrors the website portal's
+           ProjectDispatchCard so a customer looking at the same
+           project on either surface sees identical information. */
         <DispatchSection
           dispatch={
             (data.production_status as ExtendedProductionStatus).dispatch!
@@ -377,6 +397,33 @@ export default async function PortalProductDetailPage({
 // ---------------------------------------------------------------------------
 // Universal CTA
 // ---------------------------------------------------------------------------
+
+
+function BailleeCustodyPanel({ panel }: { panel: BaileeCustodyPanelPayload }) {
+  return (
+    <section className="mb-10">
+      <Eyebrow>Warehouse</Eyebrow>
+      <a
+        href={panel.cta_href}
+        className="group mt-3 flex flex-col gap-3 border-2 border-black bg-emerald-100 p-5 transition-all hover:shadow-[4px_4px_0_0_black] sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div className="min-w-0">
+          <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-emerald-900">
+            Held for you
+          </p>
+          <p className="mt-1 text-lg font-black uppercase leading-tight text-black sm:text-xl">
+            {panel.headline}
+          </p>
+          <p className="mt-1 text-sm text-emerald-900">{panel.detail}</p>
+        </div>
+        <span className="inline-flex shrink-0 items-center gap-2 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-white transition-transform group-hover:translate-x-0.5">
+          {panel.cta_label}
+          <ArrowRight className="h-4 w-4" />
+        </span>
+      </a>
+    </section>
+  );
+}
 
 
 function NextActionBanner({ action }: { action: NextAction }) {

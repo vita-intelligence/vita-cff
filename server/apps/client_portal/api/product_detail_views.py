@@ -262,6 +262,14 @@ _PRODUCTION_PHASE_COPY: dict[str, dict[str, str]] = {
         "label": "Cancelled",
         "detail": "This order has been cancelled.",
     },
+    "in_bailee_custody": {
+        "label": "Held in our warehouse",
+        "detail": (
+            "Your finished goods are on our 3PL shelf. Head over to Warehouse "
+            "in the portal to see the on-hand qty + storage costs, and request "
+            "dispatches whenever you're ready to ship."
+        ),
+    },
 }
 
 
@@ -506,6 +514,33 @@ def _build_production_status(
         "release_documents": _release_documents_for_formulation(
             formulation, proposal_uuid=proposal_uuid
         ),
+        # RTG / 3PL bailee-custody CTA panel data. Populated only when
+        # PSP reports ``in_bailee_custody`` for this CO — everything
+        # else stays ``None`` and the FE hides the panel. Kept as a
+        # small helper payload (label + href) rather than the full
+        # inventory blob so the product page doesn't have to plumb
+        # through the customer-scoped warehouse fetch — the Warehouse
+        # tab itself owns that read.
+        "bailee_custody": _bailee_custody_panel(row.phase),
+    }
+
+
+def _bailee_custody_panel(phase: str) -> dict | None:
+    """Render-time metadata for the product-detail BailleeCustodyPanel.
+    ``None`` when PSP hasn't parked the CO into bailee custody — the
+    FE branches on presence to decide whether to mount the panel.
+    """
+    if phase != "in_bailee_custody":
+        return None
+    return {
+        "headline": "Held in our warehouse",
+        "detail": (
+            "Your finished goods are safely on our 3PL shelf. Live "
+            "on-hand qty, storage costs, and send-out requests live on "
+            "the Warehouse tab."
+        ),
+        "cta_label": "Open Warehouse",
+        "cta_href": "/portal/warehouse",
     }
 
 
@@ -1440,7 +1475,8 @@ def _build_pipeline(
     # ``production_planning`` and beyond count as "started".
     from apps.client_portal.api.project_stage import _PSP_PHASE_TO_STAGE
     production_started = _PSP_PHASE_TO_STAGE.get(production_phase) is not None
-    production_done_terminal = production_phase == "delivered"
+    production_done_terminal = production_phase in ("delivered", "dispatched")
+    production_bailee_terminal = production_phase == "in_bailee_custody"
     if production_done_terminal:
         production_stage = {
             "key": "production",
@@ -1448,6 +1484,26 @@ def _build_pipeline(
             "state": "done",
             "completed_at": _iso(getattr(production_status, "pushed_at", None)),
             "detail": "Your batch has been delivered.",
+        }
+    elif production_bailee_terminal:
+        # RTG / 3PL flow — production + release are done and the goods
+        # are sitting in our bailee-custody warehouse waiting for the
+        # customer to trigger send-outs from ``/portal/warehouse``. The
+        # product-page journey has finished; the ongoing send-out
+        # activity lives on the Warehouse tab and is not this page's
+        # concern. Mark the production stage ``done`` so the customer
+        # gets a positive "you're clear" signal instead of the
+        # perpetually-``current`` "we're still working on it" chip.
+        production_stage = {
+            "key": "production",
+            "label": "Held in our warehouse",
+            "state": "done",
+            "completed_at": _iso(getattr(production_status, "pushed_at", None)),
+            "detail": (
+                "Your finished goods are safely on our 3PL shelf. Head over "
+                "to the Warehouse tab to see on-hand qty and request "
+                "dispatches whenever you're ready."
+            ),
         }
     elif production_started:
         # PSP is actively working on it — show the live phase label.

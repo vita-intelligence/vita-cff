@@ -866,6 +866,10 @@ _PSP_PHASE_TO_ACTIVITY_STATUS: dict[str, tuple[str, str, bool]] = {
     "awaiting_pickup": ("Awaiting courier", "in_progress", False),
     "dispatched": ("On the way", "success", False),
     "delivered": ("Delivered", "success", False),
+    #: RTG-only terminal-ish state — released output lots are in 3PL
+    #: bailee custody, storage charges accruing, customer triggers
+    #: send-outs from /portal/warehouse.
+    "in_bailee_custody": ("Held for you — request dispatch anytime", "success", False),
 }
 
 

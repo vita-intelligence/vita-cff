@@ -116,6 +116,7 @@ STAGE_LABELS: dict[str, str] = {
     "production_in_progress": "In production",
     "production_quality_check": "Quality release",
     "awaiting_dispatch": "Preparing dispatch",
+    "in_bailee_custody": "Held for you at our warehouse",
     "dispatched": "On the way",
     "delivered": "Delivered",
     "on_hold": "On hold",
@@ -162,6 +163,7 @@ STAGE_TONES: dict[str, tuple[str, bool]] = {
     "production_in_progress": ("in_progress", False),
     "production_quality_check": ("in_progress", False),
     "awaiting_dispatch": ("in_progress", False),
+    "in_bailee_custody": ("success", False),
     "dispatched": ("in_progress", False),
     "delivered": ("success", False),
     "on_hold": ("danger", False),
@@ -193,6 +195,9 @@ _PSP_PHASE_TO_STAGE: dict[str, str | None] = {
     "awaiting_routing": "awaiting_dispatch",
     "ready_to_dispatch": "awaiting_dispatch",
     "awaiting_pickup": "awaiting_dispatch",
+    # RTG / 3PL terminal-ish state — goods are on our 3PL shelf,
+    # customer triggers send-outs from /portal/warehouse.
+    "in_bailee_custody": "in_bailee_custody",
     # In transit / delivered.
     "dispatched": "dispatched",
     "delivered": "delivered",
