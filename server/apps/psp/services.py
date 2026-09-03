@@ -1302,6 +1302,50 @@ class PspClient:
             return None
         return response
 
+    def list_customer_dispatch_requests(
+        self,
+        customer_uuid: Any,
+        *,
+        status: str | None = None,
+        lot_uuid: str | None = None,
+        limit: int | None = None,
+    ) -> dict | None:
+        """GET ``/api/integration/customer-dispatch-requests/:customer_uuid``.
+
+        Sister endpoint to
+        :meth:`get_customer_bailee_inventory` — lists every dispatch
+        request (any status) the customer has queued, newest first.
+        Powers the portal's `/portal/warehouse/requests` history page.
+
+        Shape (mirrored from
+        :mod:`BackendWeb.IntegrationCustomerDispatchRequestListController`):
+
+            {
+              "customer": {"uuid": "…", "name": "…"},
+              "summary": {"total": 12, "pending": 3, "completed": 8,
+                          "cancelled": 1},
+              "requests": [ {request payload} … ]
+            }
+        """
+
+        cleaned = str(customer_uuid or "").strip()
+        if not cleaned:
+            return None
+        query: dict[str, str] = {}
+        if status:
+            query["status"] = status
+        if lot_uuid:
+            query["lot_uuid"] = lot_uuid
+        if isinstance(limit, int) and limit > 0:
+            query["limit"] = str(limit)
+        response = self._request(
+            f"api/integration/customer-dispatch-requests/{cleaned}",
+            query=query or None,
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
+
     def sync_sample_customer_order(self, payload: dict) -> dict | None:
         """Push a sample-fulfilment payload to PSP so a CO is created
         (or refreshed) for a customer sample run.
@@ -7923,6 +7967,37 @@ def get_psp_customer_bailee_inventory(
     client = _client_factory(config)
     try:
         return client.get_customer_bailee_inventory(customer_uuid)
+    except PspError:
+        return None
+
+
+def list_psp_customer_dispatch_requests(
+    *,
+    organization: Any,
+    customer_uuid: Any,
+    status: str | None = None,
+    lot_uuid: str | None = None,
+    limit: int | None = None,
+) -> dict | None:
+    """Fetch the customer's dispatch-request history from PSP.
+
+    Sister of :func:`get_psp_customer_bailee_inventory` — same silent-
+    degrade posture (returns ``None`` on integration off / decrypt
+    failure / PSP unreachable). Portal treats a nil response as
+    "nothing to show" and renders the empty state.
+    """
+
+    if not is_psp_live(organization):
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.list_customer_dispatch_requests(
+            customer_uuid, status=status, lot_uuid=lot_uuid, limit=limit
+        )
     except PspError:
         return None
 

@@ -1,9 +1,11 @@
+import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import {
   AlertCircle,
   Boxes,
   Calendar,
+  History,
   MapPin,
   Package,
   Warehouse,
@@ -54,6 +56,12 @@ interface BaileeLot {
   readonly code: string | null;
   readonly item: ItemSummary;
   readonly qty_on_hand: string;
+  /** Sum of `pending` dispatch requests already queued against this
+   *  lot — what the customer's already asked for but hasn't been
+   *  picked yet. `qty_available` is `qty_on_hand - qty_pending`. */
+  readonly qty_pending_dispatch: string | null;
+  /** What the customer can freshly request. Clamped ≥ 0. */
+  readonly qty_available: string | null;
   readonly unit_of_measurement: { readonly symbol: string };
   readonly bailee_routed_at: string | null;
   readonly held_volume_m3: string;
@@ -64,6 +72,8 @@ interface BaileeLot {
 interface Summary {
   readonly lot_count: number;
   readonly total_qty_on_hand: string;
+  readonly total_qty_pending_dispatch: string | null;
+  readonly total_qty_available: string | null;
   readonly total_held_volume_m3: string;
   readonly total_accrued_charge: string;
 }
@@ -105,6 +115,8 @@ export default async function PortalWarehousePage() {
         summary: {
           lot_count: 0,
           total_qty_on_hand: "0",
+          total_qty_pending_dispatch: "0",
+          total_qty_available: "0",
           total_held_volume_m3: "0",
           total_accrued_charge: "0",
         },
@@ -124,6 +136,16 @@ export default async function PortalWarehousePage() {
             : "We're not holding any finished-goods stock for you right now."
         }
       />
+
+      <div className="mt-4 flex justify-end">
+        <Link
+          href="/portal/warehouse/requests"
+          className="inline-flex items-center gap-1.5 border-2 border-black bg-white px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-black transition-all hover:bg-neutral-100"
+        >
+          <History className="h-3.5 w-3.5" />
+          My dispatch requests
+        </Link>
+      </div>
 
       {hasStock ? (
         <SummaryStrip data={data} />
@@ -182,12 +204,21 @@ export default async function PortalWarehousePage() {
 
 
 function SummaryStrip({ data }: { data: Snapshot }) {
+  const pendingNum = Number.parseFloat(
+    data.summary.total_qty_pending_dispatch ?? "0",
+  );
+  const hasPending = Number.isFinite(pendingNum) && pendingNum > 0;
   return (
     <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
       <SummaryTile
         icon={<Boxes className="h-5 w-5" />}
         label="Lots on shelves"
         value={String(data.summary.lot_count)}
+        subtitle={
+          hasPending
+            ? `${formatDecimal(data.summary.total_qty_pending_dispatch ?? "0", 0)} units pending`
+            : undefined
+        }
       />
       <SummaryTile
         icon={<Package className="h-5 w-5" />}
@@ -208,10 +239,12 @@ function SummaryTile({
   icon,
   label,
   value,
+  subtitle,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
+  subtitle?: string;
 }) {
   return (
     <div className="border-2 border-black bg-white p-4">
@@ -220,6 +253,9 @@ function SummaryTile({
         <p className="text-[10px] font-bold uppercase tracking-[0.25em]">{label}</p>
       </div>
       <p className="mt-2 text-2xl font-black tabular-nums">{value}</p>
+      {subtitle ? (
+        <p className="mt-1 text-[10px] font-semibold text-orange-700">{subtitle}</p>
+      ) : null}
     </div>
   );
 }
@@ -232,6 +268,12 @@ function LotCard({ lot, currency }: { lot: BaileeLot; currency: string }) {
         .filter(Boolean)
         .join(" · ")
     : "Location pending";
+  // Fall back to on-hand when the PSP payload predates the pending /
+  // available fields (defensive — the wire types allow null on both
+  // for backward compat).
+  const availableQty = lot.qty_available ?? lot.qty_on_hand;
+  const pendingNum = Number.parseFloat(lot.qty_pending_dispatch ?? "0");
+  const hasPending = Number.isFinite(pendingNum) && pendingNum > 0;
   return (
     <article className="border-2 border-black bg-white p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -249,11 +291,20 @@ function LotCard({ lot, currency }: { lot: BaileeLot; currency: string }) {
         </div>
         <div className="text-right">
           <p className="text-2xl font-black tabular-nums">
-            {formatDecimal(lot.qty_on_hand, 0)}
+            {formatDecimal(availableQty, 0)}
             <span className="ml-1 text-sm text-neutral-500">
               {lot.unit_of_measurement.symbol}
             </span>
           </p>
+          <p className="mt-0.5 text-[10px] uppercase tracking-widest text-neutral-500">
+            Available to request
+          </p>
+          {hasPending ? (
+            <p className="mt-1 text-[10px] font-semibold text-orange-700">
+              {formatDecimal(lot.qty_pending_dispatch ?? "0", 0)}{" "}
+              {lot.unit_of_measurement.symbol} pending dispatch
+            </p>
+          ) : null}
           {lot.code ? (
             <p className="mt-0.5 font-mono text-[10px] text-neutral-500">{lot.code}</p>
           ) : null}
@@ -261,21 +312,31 @@ function LotCard({ lot, currency }: { lot: BaileeLot; currency: string }) {
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-3 border-t border-neutral-200 pt-3 text-xs sm:grid-cols-4">
+        <MetaCell
+          label="On hand"
+          value={`${formatDecimal(lot.qty_on_hand, 0)} ${lot.unit_of_measurement.symbol}`}
+        />
         <MetaCell label="Volume" value={`${formatDecimal(lot.held_volume_m3, 4)} m³`} />
         <MetaCell
           label="Accrued storage"
           value={formatMoney(lot.accrued_charge, currency)}
         />
-        <MetaCell label="On our shelf since" value={formatDate(lot.bailee_routed_at)} />
         <MetaCell label="Days held" value={String(daysSince(lot.bailee_routed_at))} />
       </div>
 
-      <div className="mt-4 flex justify-end border-t border-neutral-200 pt-3">
+      <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-neutral-200 pt-3">
+        <Link
+          href={`/portal/warehouse/requests?lot=${encodeURIComponent(lot.uuid)}`}
+          className="inline-flex items-center gap-1.5 border-2 border-black bg-white px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-black transition-all hover:bg-neutral-100"
+        >
+          <History className="h-3.5 w-3.5" />
+          View requests
+        </Link>
         <DispatchRequestButton
           lotUuid={lot.uuid}
           lotCode={lot.code || lot.item.code || "Lot"}
           itemName={lot.item.name || "—"}
-          qtyOnHand={lot.qty_on_hand}
+          qtyOnHand={availableQty}
           unitSymbol={lot.unit_of_measurement.symbol}
         />
       </div>

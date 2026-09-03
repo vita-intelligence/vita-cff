@@ -183,6 +183,10 @@ class PortalWarehouseDispatchRequestView(PortalAPIView):
     """``POST /api/portal/warehouse/dispatch-requests/`` — customer
     clicks "Request dispatch" on their /portal/warehouse page.
 
+    ``GET`` on the same URL returns the caller's dispatch-request
+    history (any status). See :meth:`get` for the response shape and
+    query params.
+
     Body:
 
         {
@@ -208,6 +212,9 @@ class PortalWarehouseDispatchRequestView(PortalAPIView):
     carries ``{"detail": "<psp_code>", "message": "<customer copy>"}``
     so the FE can inline the error next to the qty input.
     """
+
+    def get(self, request: Request) -> Response:
+        return _list_dispatch_requests(request)
 
     def post(self, request: Request) -> Response:
         from apps.psp.services import create_psp_customer_fulfilment_request
@@ -263,6 +270,98 @@ class PortalWarehouseDispatchRequestView(PortalAPIView):
             return _dispatch_error(err, code)
 
         return Response(payload, status=http_status.HTTP_201_CREATED)
+
+
+def _list_dispatch_requests(request: Request) -> Response:
+    """GET side of ``dispatch-requests/`` — history of the caller's
+    dispatch requests, any status. Called by
+    :meth:`PortalWarehouseDispatchRequestView.get`.
+
+    Query params (all optional):
+      * ``status`` — ``pending`` / ``completed`` / ``cancelled``.
+      * ``lot_uuid`` — narrow to a single lot.
+      * ``limit`` — cap the row count (PSP caps at 500).
+
+    Silent-degrade posture: PSP off / decrypt failure / unreachable
+    all collapse to the empty envelope so the portal renders "no
+    dispatch requests yet" instead of an error banner.
+    """
+    from apps.psp.services import list_psp_customer_dispatch_requests
+
+    empty = _empty_dispatch_request_envelope()
+    customer_ids = customer_ids_for_account(request.user)
+    if not customer_ids:
+        return Response(empty)
+
+    canonical_id = (
+        getattr(request.user, "customer_id", None) or customer_ids[0]
+    )
+    customer = (
+        Customer.objects
+        .filter(pk=canonical_id)
+        .only("id", "organization_id")
+        .first()
+    )
+    if customer is None:
+        return Response(empty)
+
+    organization = getattr(customer, "organization", None) or _org_from_id(
+        customer.organization_id
+    )
+    if organization is None:
+        return Response(empty)
+
+    status_param = _strip_or_none(request.query_params.get("status"))
+    lot_uuid_param = _strip_or_none(request.query_params.get("lot_uuid"))
+    limit_param_raw = request.query_params.get("limit")
+    limit_param: int | None = None
+    if limit_param_raw:
+        try:
+            limit_param = max(1, int(limit_param_raw))
+        except (TypeError, ValueError):
+            limit_param = None
+
+    snapshot = list_psp_customer_dispatch_requests(
+        organization=organization,
+        customer_uuid=str(customer.id),
+        status=status_param,
+        lot_uuid=lot_uuid_param,
+        limit=limit_param,
+    )
+    if not isinstance(snapshot, dict):
+        return Response(empty)
+
+    return Response(_normalise_dispatch_request_envelope(snapshot))
+
+
+def _empty_dispatch_request_envelope() -> dict[str, Any]:
+    return {
+        "customer": {"uuid": None, "name": None},
+        "summary": {"total": 0, "pending": 0, "completed": 0, "cancelled": 0},
+        "requests": [],
+    }
+
+
+def _normalise_dispatch_request_envelope(snapshot: dict[str, Any]) -> dict[str, Any]:
+    envelope = _empty_dispatch_request_envelope()
+    customer = snapshot.get("customer")
+    if isinstance(customer, dict):
+        envelope["customer"] = {
+            "uuid": customer.get("uuid"),
+            "name": customer.get("name"),
+        }
+    summary = snapshot.get("summary")
+    if isinstance(summary, dict):
+        envelope["summary"] = {
+            "total": summary.get("total", 0) or 0,
+            "pending": summary.get("pending", 0) or 0,
+            "completed": summary.get("completed", 0) or 0,
+            "cancelled": summary.get("cancelled", 0) or 0,
+        }
+    requests_list = snapshot.get("requests")
+    if isinstance(requests_list, list):
+        envelope["requests"] = requests_list
+    return envelope
 
 
 def _dispatch_error(code: str, status_code: int) -> Response:
