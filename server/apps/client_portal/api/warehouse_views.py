@@ -76,7 +76,7 @@ class PortalWarehouseStockView(PortalAPIView):
         customer = (
             Customer.objects
             .filter(pk=canonical_id)
-            .only("id", "uuid", "organization_id")
+            .only("id", "organization_id")
             .first()
         )
         if customer is None:
@@ -88,8 +88,11 @@ class PortalWarehouseStockView(PortalAPIView):
         if organization is None:
             return Response(empty)
 
+        # ``Customer.id`` IS the UUID (Django uuid-typed PK, no separate
+        # ``uuid`` field), so this is the identity PSP knows the customer
+        # by via the ``resolve_customer`` helper on the CO sync path.
         snapshot = get_psp_customer_bailee_inventory(
-            organization=organization, customer_uuid=str(customer.uuid)
+            organization=organization, customer_uuid=str(customer.id)
         )
         if not isinstance(snapshot, dict):
             return Response(empty)

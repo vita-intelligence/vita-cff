@@ -1,9 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import Link from "next/link";
 import {
   AlertCircle,
-  ArrowLeft,
   Boxes,
   Calendar,
   MapPin,
@@ -115,23 +113,15 @@ export default async function PortalWarehousePage() {
 
   return (
     <PortalShell active="warehouse">
-      <Link
-        href="/portal/products"
-        className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.18em] text-neutral-500 hover:text-black"
-      >
-        <ArrowLeft className="h-3.5 w-3.5" /> Back to portal
-      </Link>
-      <div className="mt-4">
-        <PageHeader
-          eyebrow="Warehouse"
-          title="Your stock with us"
-          subtitle={
-            hasStock
-              ? `${data.summary.lot_count} ${data.summary.lot_count === 1 ? "lot" : "lots"} on our shelves — storage costs are accruing at ${formatMoney(data.rate_per_m3_per_day ?? "0", data.currency)}/m³/day.`
-              : "We're not holding any finished-goods stock for you right now."
-          }
-        />
-      </div>
+      <PageHeader
+        eyebrow="Warehouse"
+        title="Your stock with us"
+        subtitle={
+          hasStock
+            ? `${data.summary.lot_count} ${data.summary.lot_count === 1 ? "lot" : "lots"} on our shelves — storage costs are accruing at ${formatMoney(data.rate_per_m3_per_day ?? "0", data.currency)}/m³/day.`
+            : "We're not holding any finished-goods stock for you right now."
+        }
+      />
 
       {hasStock ? (
         <SummaryStrip data={data} />
