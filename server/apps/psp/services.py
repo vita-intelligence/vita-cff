@@ -1227,6 +1227,44 @@ class PspClient:
             return None
         return response
 
+    def get_customer_bailee_inventory(self, customer_uuid: Any) -> dict | None:
+        """GET ``/api/integration/customer-bailee-inventory/:customer_uuid``.
+
+        Returns PSP's snapshot of the finished-goods stock we hold in
+        bailee custody for that customer — one row per lot, plus a
+        summary section with lot count / total qty / total held m³ /
+        total accrued storage charge. Powers the portal warehouse-
+        visibility page.
+
+        Shape (mirrored from
+        :mod:`BackendWeb.IntegrationCustomerBaileeInventoryController`):
+
+            {
+              "customer": {"uuid": "…", "name": "…"},
+              "currency": "GBP",
+              "rate_per_m3_per_day": "1.5000",
+              "summary": {
+                "lot_count": …, "total_qty_on_hand": "…",
+                "total_held_volume_m3": "…", "total_accrued_charge": "…"
+              },
+              "lots": [ {lot payload} … ]
+            }
+
+        Returns ``None`` on 404 (unknown customer uuid on PSP) or on
+        any transport failure — the portal treats absent snapshot as
+        "no held stock right now" and renders the empty-state copy.
+        """
+
+        cleaned = str(customer_uuid or "").strip()
+        if not cleaned:
+            return None
+        response = self._request(
+            f"api/integration/customer-bailee-inventory/{cleaned}"
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
+
     def sync_sample_customer_order(self, payload: dict) -> dict | None:
         """Push a sample-fulfilment payload to PSP so a CO is created
         (or refreshed) for a customer sample run.
@@ -7729,6 +7767,37 @@ def get_psp_customer_order_snapshot(
     client = _client_factory(config)
     try:
         return client.get_customer_order_snapshot(co_uuid)
+    except PspError:
+        return None
+
+
+def get_psp_customer_bailee_inventory(
+    *,
+    organization: Any,
+    customer_uuid: Any,
+) -> dict | None:
+    """Fetch the customer's bailee-custody inventory snapshot from PSP.
+
+    Powers Phase 1 of the 3PL portal integration — the customer's
+    warehouse-visibility page reads this to render the "here's what
+    we're holding for you + how much storage is accruing" surface.
+
+    Silent-degrade posture — returns ``None`` when the integration
+    isn't live, the token can't be decrypted, PSP is unreachable, or
+    PSP doesn't recognise the customer uuid. The portal treats the
+    empty response as "no held stock" and shows the empty-state
+    copy, not an error banner.
+    """
+
+    if not is_psp_live(organization):
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.get_customer_bailee_inventory(customer_uuid)
     except PspError:
         return None
 

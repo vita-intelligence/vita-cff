@@ -74,6 +74,7 @@ from .views import (
 )
 from .dashboard_views import PortalDashboardView
 from .activity_views import PortalActivityView
+from .warehouse_views import PortalWarehouseStockView
 from .product_detail_views import (
     PortalProductDetailView,
     PortalProductDispatchPhotoView,
@@ -363,6 +364,18 @@ urlpatterns = [
     # Storefront cart checkout — drains cart lines into a draft
     # Proposal (products) + PENDING Payments (samples).
     path("checkout/", PortalCheckoutView.as_view(), name="checkout"),
+
+    # 3PL / warehouse visibility — bailee inventory + accrued storage
+    # charges for the caller's customer, proxied from PSP's
+    # ``/api/integration/customer-bailee-inventory/:customer_uuid``.
+    # Phase 1 of the 3PL portal integration; Phase 2 adds
+    # customer-triggered dispatch requests, Phase 3 the Shopify
+    # webhook.
+    path(
+        "warehouse/stock/",
+        PortalWarehouseStockView.as_view(),
+        name="portal-warehouse-stock",
+    ),
 
     # Profile / settings.
     path("profile/", ProfileView.as_view(), name="profile"),
