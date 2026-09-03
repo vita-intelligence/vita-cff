@@ -215,7 +215,9 @@ class PortalCheckoutView(PortalAPIView):
         )
 
         try:
-            result = place_portal_checkout(account=request.user, payload=payload)
+            result = place_portal_checkout(
+                account=request.user, payload=payload, request=request
+            )
         except CheckoutError as exc:
             return Response(
                 {"detail": exc.code, "message": str(exc)},

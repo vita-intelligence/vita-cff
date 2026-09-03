@@ -501,6 +501,62 @@ def _replace_any(paragraph, needles: Iterable[str], replacement: str) -> bool:
     return False
 
 
+#: Longest-first — "Vita Manufacture Ltd" must be swapped before the
+#: shorter "Vita Manufacture" substring or the "Ltd" suffix would
+#: dangle after a partial replace.
+_BRAND_SWAP_PAIRS: tuple[tuple[str, str], ...] = (
+    ("Vita Manufacture Ltd", "Supplement Manufacture UK Ltd"),
+    ("Vita Manufacture", "Supplement Manufacture UK"),
+)
+
+
+def _swap_all_occurrences_in_paragraph(paragraph, needle: str, replacement: str) -> None:
+    """Replace EVERY occurrence of ``needle`` in a paragraph — the
+    sibling :func:`_replace_in_paragraph` only touches the first
+    match (correct for the CRM ``Ref:`` / ``Dear ,`` slot fillers,
+    wrong for a doc-wide brand sweep where a single paragraph can
+    mention "Vita Manufacture" three times)."""
+
+    runs = paragraph.runs
+    if not runs:
+        return
+    joined = "".join(r.text or "" for r in runs)
+    if needle not in joined:
+        return
+    new_text = joined.replace(needle, replacement)
+    runs[0].text = new_text
+    for extra in runs[1:]:
+        extra.text = ""
+
+
+def _apply_brand_swap(doc: _Document) -> None:
+    """Sweep every paragraph / table cell / header / footer in the
+    document swapping the templated ``Vita Manufacture`` brand text
+    for the Supplement Manufacture UK equivalent.
+
+    Called at the tail of :func:`render_docx_bytes` when the
+    proposal's ``brand_key`` is SMK, so it operates on already-
+    painted text (signatory team removal, deposit clause rewrite,
+    etc. have all completed). Leaves CRM ``<w:sdt>`` bound fields
+    alone — those carry per-proposal data (customer name, prices),
+    not brand copy.
+    """
+
+    def _sweep(paragraphs) -> None:
+        for p in paragraphs:
+            for needle, replacement in _BRAND_SWAP_PAIRS:
+                _swap_all_occurrences_in_paragraph(p, needle, replacement)
+
+    _sweep(doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                _sweep(cell.paragraphs)
+    for section in doc.sections:
+        _sweep(section.header.paragraphs)
+        _sweep(section.footer.paragraphs)
+
+
 def _paint_customer_table(table: Table, ctx: ProposalRenderContext) -> None:
     """Fill the six-row customer-details table.
 
@@ -1239,6 +1295,16 @@ def render_docx_bytes(proposal: Proposal) -> bytes:
     # clean. ``_append_internal_signatures`` remains in the module
     # so a future flow that does want the block (e.g. internal copy)
     # can call it directly.
+
+    # Brand swap — runs LAST so it sees every downstream painter's
+    # output (signatory team lines deleted, deposit clause rewritten,
+    # etc.). SMK-branded proposals get the ``Vita Manufacture`` body
+    # copy swapped for the SMK equivalent; default (Vita) proposals
+    # pass through unchanged.
+    from apps.client_portal.api.branding import BRAND_KEY_SMK
+
+    if proposal.brand_key == BRAND_KEY_SMK:
+        _apply_brand_swap(doc)
 
     buffer = io.BytesIO()
     doc.save(buffer)

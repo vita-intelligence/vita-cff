@@ -54,6 +54,23 @@ class ProposalTemplateType(models.TextChoices):
     READY_TO_GO = "ready_to_go", _("Ready to Go")
 
 
+class ProposalBrand(models.TextChoices):
+    """Which brand voice the rendered proposal document carries.
+
+    Snapshotted at creation time so a signed proposal never
+    silently rebrands after the fact — the doc hash would change
+    and we'd lose provenance. Only the storefront checkout on the
+    Supplement Manufacture UK web-site opts into SMK; every other
+    creation path (NPD staff drafts, CFF triage, direct API)
+    defaults to the parent Vita Manufacture brand.
+    """
+
+    VITA = "vita", _("Vita Manufacture")
+    SUPPLEMENT_MANUFACTURE_UK = "supplement_manufacture_uk", _(
+        "Supplement Manufacture UK"
+    )
+
+
 class Proposal(models.Model):
     """A commercial offer pinned to a frozen formulation version."""
 
@@ -113,6 +130,20 @@ class Proposal(models.Model):
         max_length=16,
         choices=ProposalTemplateType.choices,
         default=ProposalTemplateType.CUSTOM,
+    )
+    brand_key = models.CharField(
+        _("brand"),
+        max_length=32,
+        choices=ProposalBrand.choices,
+        default=ProposalBrand.VITA,
+        help_text=_(
+            "Which brand voice the rendered doc carries. Frozen at "
+            "creation time; the storefront checkout on the Supplement "
+            "Manufacture UK web-site sets ``supplement_manufacture_uk`` "
+            "so downstream renders swap 'Vita Manufacture' for the SMK "
+            "equivalent. Never rewrite after send — doing so would "
+            "invalidate the doc hash."
+        ),
     )
     status = models.CharField(
         _("status"),

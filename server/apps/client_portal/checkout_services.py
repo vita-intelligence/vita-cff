@@ -114,6 +114,7 @@ def place_portal_checkout(
     *,
     account: ClientAccount,
     payload: CheckoutInput,
+    request=None,
 ) -> CheckoutResult:
     """Route each line to its correct destination.
 
@@ -121,6 +122,11 @@ def place_portal_checkout(
     ordering the same SKU in two different packaging combos gets
     two independent quotes (each with its own signed spec sheet
     and deposit gate). Sample lines each get one PENDING payment.
+
+    ``request`` — optional, threaded through so each created Proposal
+    can snapshot the calling portal's brand voice
+    (``brand_key = supplement_manufacture_uk`` when the checkout
+    originated on the SMK web-site; default Vita otherwise).
     """
 
     customer = account.customer
@@ -145,6 +151,7 @@ def place_portal_checkout(
             customer=customer,
             line=line,
             payload=payload,
+            request=request,
         )
         proposal_ids.append(str(proposal.pk))
 
@@ -166,6 +173,7 @@ def _create_line_proposal(
     customer,
     line: CheckoutLineInput,
     payload: CheckoutInput,
+    request=None,
 ) -> Proposal:
     """One draft RTG :class:`Proposal` for a single cart line.
 
@@ -204,12 +212,15 @@ def _create_line_proposal(
         template_sheet.margin_percent if template_sheet is not None else None
     )
 
+    from apps.client_portal.api.branding import brand_key
+
     proposal = Proposal.objects.create(
         organization=customer.organization,
         formulation_version=version,
         customer=customer,
         code=_generate_unique_code(customer.organization),
         template_type=ProposalTemplateType.READY_TO_GO,
+        brand_key=brand_key(request),
         status=ProposalStatus.DRAFT,
         # Denormalized customer fields — the modal captured these
         # for THIS order. We do NOT write them back to Customer or
