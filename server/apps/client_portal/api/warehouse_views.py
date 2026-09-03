@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from rest_framework import status as http_status
 from rest_framework.request import Request
 from rest_framework.response import Response
 
@@ -156,3 +157,126 @@ def _org_from_id(organization_id: Any) -> Any | None:
     from apps.organizations.models import Organization
 
     return Organization.objects.filter(pk=organization_id).first()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — customer-triggered dispatch requests
+# ---------------------------------------------------------------------------
+
+
+# PSP `detail` code → customer-facing message. Everything falls back to
+# the generic "psp_error" bucket when we can't map. Keys mirror
+# ``apps.psp.services._KNOWN_DISPATCH_ERROR_CODES``.
+_DISPATCH_ERROR_COPY: dict[str, str] = {
+    "lot_not_found": "That lot isn't held for you any more — refresh the page.",
+    "bad_qty": "Enter a positive quantity.",
+    "no_bailee_placement": "That lot has no stock on our shelves right now.",
+    "insufficient_qty": "That's more than we currently have on our shelves for this lot (net of any pending requests).",
+    "missing_key": "Missing required field — refresh and try again.",
+    "validation_error": "Couldn't queue that request — please check the values and try again.",
+    "psp_unavailable": "Our warehouse system is temporarily unreachable. Please try again in a moment.",
+    "psp_error": "Couldn't queue that dispatch request. Please try again or ping us in the project chat.",
+}
+
+
+class PortalWarehouseDispatchRequestView(PortalAPIView):
+    """``POST /api/portal/warehouse/dispatch-requests/`` — customer
+    clicks "Request dispatch" on their /portal/warehouse page.
+
+    Body:
+
+        {
+          "lot_uuid": "…",
+          "qty": "150",
+          "notes": "…" (optional),
+          "reference": "…" (optional — the customer's own reference)
+        }
+
+    Ownership + qty validation happen on PSP (which we trust as the
+    authoritative source for who owns which bailee lot). This view
+    only:
+
+    1. Resolves the caller's canonical Customer id via
+       :func:`customer_ids_for_account` — no logged-in account, no
+       dispatch (401 by the PortalAPIView permission chain).
+    2. Passes the customer's uuid + the body through to PSP as-is.
+       Phase 2 hard-codes ``source="portal"``; Phase 3 will let the
+       webhook layer override.
+
+    On success we return 201 + PSP's dispatch snapshot (uuid, status,
+    qty, requested_at). On validation failure the response body
+    carries ``{"detail": "<psp_code>", "message": "<customer copy>"}``
+    so the FE can inline the error next to the qty input.
+    """
+
+    def post(self, request: Request) -> Response:
+        from apps.psp.services import create_psp_customer_fulfilment_request
+
+        lot_uuid = (request.data.get("lot_uuid") or "").strip()
+        qty_raw = request.data.get("qty")
+        notes = _strip_or_none(request.data.get("notes"))
+        reference = _strip_or_none(request.data.get("reference"))
+
+        if not lot_uuid:
+            return _dispatch_error("missing_key", http_status.HTTP_400_BAD_REQUEST)
+        if qty_raw in (None, ""):
+            return _dispatch_error("bad_qty", http_status.HTTP_400_BAD_REQUEST)
+
+        customer_ids = customer_ids_for_account(request.user)
+        if not customer_ids:
+            return _dispatch_error("psp_error", http_status.HTTP_400_BAD_REQUEST)
+
+        canonical_id = getattr(request.user, "customer_id", None) or customer_ids[0]
+        customer = (
+            Customer.objects
+            .filter(pk=canonical_id)
+            .only("id", "organization_id")
+            .first()
+        )
+        if customer is None:
+            return _dispatch_error("psp_error", http_status.HTTP_400_BAD_REQUEST)
+
+        organization = getattr(customer, "organization", None) or _org_from_id(
+            customer.organization_id
+        )
+        if organization is None:
+            return _dispatch_error("psp_unavailable", http_status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        payload, err = create_psp_customer_fulfilment_request(
+            organization=organization,
+            customer_uuid=str(customer.id),
+            lot_uuid=lot_uuid,
+            qty=qty_raw,
+            reference=reference,
+            notes=notes,
+            source="portal",
+        )
+        if err is not None:
+            # Preserve PSP's HTTP semantics: transport / config errors
+            # land as 503; anything else is a validation error the
+            # customer can act on.
+            code = (
+                http_status.HTTP_503_SERVICE_UNAVAILABLE
+                if err == "psp_unavailable"
+                else http_status.HTTP_400_BAD_REQUEST
+            )
+            return _dispatch_error(err, code)
+
+        return Response(payload, status=http_status.HTTP_201_CREATED)
+
+
+def _dispatch_error(code: str, status_code: int) -> Response:
+    return Response(
+        {
+            "detail": code,
+            "message": _DISPATCH_ERROR_COPY.get(code, _DISPATCH_ERROR_COPY["psp_error"]),
+        },
+        status=status_code,
+    )
+
+
+def _strip_or_none(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None

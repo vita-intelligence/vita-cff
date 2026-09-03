@@ -1227,6 +1227,43 @@ class PspClient:
             return None
         return response
 
+    def create_customer_fulfilment_request(self, payload: dict) -> dict | None:
+        """POST ``/api/integration/customer-fulfilment-requests``.
+
+        Portal-triggered dispatch request — a customer clicked
+        "Request dispatch" on their /portal/warehouse page. PSP
+        creates a ``pending`` three_pl_dispatches row that lands on
+        the mobile picker queue; a warehouse operator completes the
+        physical send-out on mobile exactly as they would for a
+        staff-typed request.
+
+        Payload shape (see the Elixir controller):
+
+            {
+              "customer_uuid": "…",
+              "lot_uuid": "…",
+              "qty": "150",
+              "reference": "…" (optional),
+              "notes": "…" (optional),
+              "source": "portal" (default),
+              "external_reference": nil (Phase 3 will fill)
+            }
+
+        Returns PSP's response body (dispatch snapshot) on success;
+        bubbles ``PspError`` on transport failure or 4xx so the
+        portal view can map to a validation error the customer
+        sees ("Not enough stock on hand", "Lot not found", etc.).
+        """
+
+        response = self._request(
+            "api/integration/customer-fulfilment-requests",
+            method="POST",
+            body=payload,
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
+
     def get_customer_bailee_inventory(self, customer_uuid: Any) -> dict | None:
         """GET ``/api/integration/customer-bailee-inventory/:customer_uuid``.
 
@@ -7769,6 +7806,94 @@ def get_psp_customer_order_snapshot(
         return client.get_customer_order_snapshot(co_uuid)
     except PspError:
         return None
+
+
+def create_psp_customer_fulfilment_request(
+    *,
+    organization: Any,
+    customer_uuid: Any,
+    lot_uuid: Any,
+    qty: Any,
+    reference: str | None = None,
+    notes: str | None = None,
+    source: str = "portal",
+    external_reference: str | None = None,
+) -> tuple[dict | None, str | None]:
+    """Push a portal-triggered dispatch request into PSP.
+
+    Returns ``(payload, error_code)``:
+
+    * On success: ``(dict, None)`` where dict is PSP's dispatch
+      snapshot (uuid, status, qty, requested_at, source, etc.).
+    * On PSP validation error (4xx): ``(None, error_code)`` where
+      error_code is PSP's ``detail`` string ("insufficient_qty",
+      "bad_qty", "lot_not_found", …) so the portal view can render
+      a customer-safe validation message.
+    * On PSP unavailable / decrypt failed / transport error:
+      ``(None, "psp_unavailable")`` — the portal view surfaces the
+      "we couldn't reach the warehouse system" copy.
+
+    Silent-degrade is NOT the right posture on the write path — a
+    customer clicking "Request dispatch" needs to know whether it
+    landed or not. Different from Phase 1's inventory read, which
+    treats an unreachable PSP as "no stock on hand".
+    """
+
+    if not is_psp_live(organization):
+        return None, "psp_unavailable"
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None, "psp_unavailable"
+
+    payload = {
+        "customer_uuid": str(customer_uuid),
+        "lot_uuid": str(lot_uuid),
+        "qty": str(qty),
+        "reference": reference,
+        "notes": notes,
+        "source": source,
+        "external_reference": external_reference,
+    }
+
+    client = _client_factory(config)
+    try:
+        response = client.create_customer_fulfilment_request(payload)
+    except PspError as exc:
+        # ``_request`` embeds PSP's response body in the exception
+        # message for 4xx responses ("HTTP 422. Body: {...detail...}").
+        # Sniff for the known detail codes so the portal view can
+        # render a specific message; anything unrecognised falls back
+        # to the generic "psp_error" bucket.
+        detail = _sniff_psp_error_detail(exc)
+        return None, detail or "psp_error"
+
+    if not isinstance(response, dict):
+        return None, "psp_error"
+    return response, None
+
+
+_KNOWN_DISPATCH_ERROR_CODES = (
+    "lot_not_found",
+    "bad_qty",
+    "no_bailee_placement",
+    "insufficient_qty",
+    "missing_key",
+    "validation_error",
+)
+
+
+def _sniff_psp_error_detail(exc: PspError) -> str | None:
+    """Best-effort extraction of PSP's ``detail`` code from the
+    exception message. ``_request`` doesn't expose the raw body as a
+    dict on the exception, but it does inline it into the message
+    string for 4xx responses, so a substring scan is fine here."""
+
+    msg = str(exc)
+    for code in _KNOWN_DISPATCH_ERROR_CODES:
+        if f'"detail":"{code}"' in msg or f'"detail": "{code}"' in msg:
+            return code
+    return None
 
 
 def get_psp_customer_bailee_inventory(

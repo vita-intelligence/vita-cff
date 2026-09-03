@@ -9,6 +9,8 @@ import {
   Warehouse,
 } from "lucide-react";
 
+import { DispatchRequestButton } from "./dispatch-request-button";
+
 import {
   Card,
   Eyebrow,
@@ -164,10 +166,12 @@ export default async function PortalWarehousePage() {
           <div className="mt-8 flex items-start gap-3 border-2 border-black bg-neutral-50 p-4">
             <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-neutral-500" />
             <p className="text-xs text-neutral-700">
-              Need us to ship some out? Right now, request a dispatch by pinging us
-              in your project chat — we&rsquo;ll queue it on the warehouse floor.
-              A self-service dispatch button is coming next (Phase 2), and a
-              Shopify / custom-storefront webhook after that (Phase 3).
+              Hit <span className="font-semibold">Request dispatch</span> on any
+              lot to queue a send-out on our warehouse floor. Our team confirms
+              on mobile, snaps a photo of the pack, and you&rsquo;ll see it flip
+              to <span className="font-semibold">completed</span> here. A
+              Shopify / custom-storefront webhook is coming next so your online
+              orders can trigger this automatically.
             </p>
           </div>
         </>
@@ -264,6 +268,16 @@ function LotCard({ lot, currency }: { lot: BaileeLot; currency: string }) {
         />
         <MetaCell label="On our shelf since" value={formatDate(lot.bailee_routed_at)} />
         <MetaCell label="Days held" value={String(daysSince(lot.bailee_routed_at))} />
+      </div>
+
+      <div className="mt-4 flex justify-end border-t border-neutral-200 pt-3">
+        <DispatchRequestButton
+          lotUuid={lot.uuid}
+          lotCode={lot.code || lot.item.code || "Lot"}
+          itemName={lot.item.name || "—"}
+          qtyOnHand={lot.qty_on_hand}
+          unitSymbol={lot.unit_of_measurement.symbol}
+        />
       </div>
     </article>
   );

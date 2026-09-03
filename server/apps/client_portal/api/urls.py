@@ -74,7 +74,10 @@ from .views import (
 )
 from .dashboard_views import PortalDashboardView
 from .activity_views import PortalActivityView
-from .warehouse_views import PortalWarehouseStockView
+from .warehouse_views import (
+    PortalWarehouseDispatchRequestView,
+    PortalWarehouseStockView,
+)
 from .product_detail_views import (
     PortalProductDetailView,
     PortalProductDispatchPhotoView,
@@ -375,6 +378,15 @@ urlpatterns = [
         "warehouse/stock/",
         PortalWarehouseStockView.as_view(),
         name="portal-warehouse-stock",
+    ),
+    # Phase 2 — customer clicks "Request dispatch" on a held lot.
+    # Body: {lot_uuid, qty, notes?, reference?}. Ownership + qty
+    # validation happens on PSP; the vita-cff view is a thin proxy
+    # that resolves the caller's Customer id and forwards.
+    path(
+        "warehouse/dispatch-requests/",
+        PortalWarehouseDispatchRequestView.as_view(),
+        name="portal-warehouse-dispatch-request",
     ),
 
     # Profile / settings.
