@@ -3201,7 +3201,17 @@ def finalize_proposal_kiosk(*, proposal: Proposal) -> dict[str, Any]:
     # replay never spawns duplicates.
     from apps.proposals.models import ProposalTemplateType
 
-    if proposal.template_type == ProposalTemplateType.READY_TO_GO.value:
+    # RTG + Reorder both auto-materialise a PENDING DEPOSIT Payment on
+    # customer sign — the workflow-post-signature is identical to RTG
+    # per product spec ("workflow is absolutely identical to RTG"). A
+    # bespoke Custom proposal still waits for finance to record the
+    # deposit manually (that flow's policy) — the auto-create only
+    # fires for straight-to-production quotes.
+    should_materialise_deposit = (
+        proposal.template_type == ProposalTemplateType.READY_TO_GO.value
+        or bool(getattr(proposal, "is_reorder", False))
+    )
+    if should_materialise_deposit:
         proposal_pk = proposal.pk
 
         def _create_rtg_deposit_payment() -> None:
@@ -3217,8 +3227,8 @@ def finalize_proposal_kiosk(*, proposal: Proposal) -> dict[str, Any]:
                 )
             except Exception:  # noqa: BLE001 — never break sign
                 logger.exception(
-                    "RTG proposal kiosk-finalize: deposit payment "
-                    "auto-create bubbled for proposal %s",
+                    "Straight-to-production proposal kiosk-finalize: "
+                    "deposit payment auto-create bubbled for proposal %s",
                     proposal_pk,
                 )
 

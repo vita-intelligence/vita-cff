@@ -91,6 +91,12 @@ interface ProductDetail {
     readonly code: string;
     readonly name: string;
     readonly project_status: string;
+    //: True when the project was created via the portal Reorder
+    //: flow. Drives a "Reorder · <n>" eyebrow instead of just
+    //: "Project" when ``code`` is empty (reorders don't get a
+    //: scientist-assigned code at creation time).
+    readonly is_reorder?: boolean;
+    readonly reorder_sequence?: number | null;
   };
   readonly cancellation: Cancellation | null;
   readonly pipeline: ReadonlyArray<PipelineStage>;
@@ -218,7 +224,11 @@ export default async function PortalProductDetailPage({
     <PortalShell active="products">
       <RefreshOnFocus />
       <PageHeader
-        eyebrow={data.product.code || "Project"}
+        eyebrow={
+          data.product.is_reorder
+            ? `Reorder${data.product.reorder_sequence ? ` · ${data.product.reorder_sequence}` : ""}`
+            : (data.product.code || "Project")
+        }
         title={data.product.name || "Your project"}
         subtitle={headlineStage?.detail ?? ""}
         back={{ href: "/portal/products", label: "All products" }}

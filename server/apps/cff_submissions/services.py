@@ -24,6 +24,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Iterable
 
 from django.db import transaction
@@ -2082,15 +2083,638 @@ def create_portal_rtg_submission(
     return submission
 
 
+# ---------------------------------------------------------------------------
+# Reorder flow — customer re-buys a Custom formulation they've already
+# signed off. Mirrors the RTG shape (auto-drafted DRAFT proposal, single
+# transaction) but reuses the source's signed FINAL spec sheet by FK so
+# the customer signs only the proposal, not the spec. On PSP the merge
+# routes to ``rtg_fresh_merge`` (fresh CO per proposal, keyed by
+# proposal uuid) so multiple reorders on the same source live as
+# independent kanban cards.
+# ---------------------------------------------------------------------------
+
+
+class CFFReorderSubmissionError(CFFPortalError):
+    """Raised for portal Reorder validation failures.
+
+    Distinct from :class:`CFFRTGSubmissionError` so the API layer can
+    key toast copy on ``code`` without collapsing the two flows'
+    error catalogues. Fields:
+
+    * ``code`` — machine slug (``reorder_source_not_found`` /
+      ``reorder_no_signed_spec`` / ``reorder_no_source_price`` /
+      ``reorder_validation``).
+    * ``field_errors`` — optional ``{field: message}`` dict for FE
+      inline attachment.
+    """
+
+
+@dataclass(frozen=True)
+class PortalReorderSubmissionInput:
+    """Structured input for :func:`create_portal_reorder_submission`."""
+
+    source_formulation_id: str
+    quantity: int
+    delivery_address: str
+    target_ship_date: str | None = None
+    notes: str = ""
+
+
+def _list_reorderable_base_qs(customer):
+    """Base queryset for "formulations this customer can reorder".
+
+    A customer can reorder any Custom formulation of their own that
+    has an approved version AND a signed FINAL specification sheet
+    (``document_kind=FINAL``, ``status=ACCEPTED``,
+    ``customer_signed_at`` populated). RTG rows are excluded — the
+    RTG storefront already handles re-buying published SKUs.
+
+    Returns the queryset (not evaluated) so callers can layer search
+    + cursor pagination on top.
+    """
+
+    from apps.formulations.models import Formulation, ProjectType
+    from apps.specifications.models import (
+        SpecificationDocumentKind,
+        SpecificationSheet,
+        SpecificationStatus,
+    )
+
+    signed_final_sheet_ids = (
+        SpecificationSheet.objects
+        .filter(
+            document_kind=SpecificationDocumentKind.FINAL,
+            status=SpecificationStatus.ACCEPTED,
+            customer_signed_at__isnull=False,
+        )
+        .values_list("formulation_version__formulation_id", flat=True)
+    )
+
+    return (
+        Formulation.objects
+        .filter(
+            organization_id=customer.organization_id,
+            customer_id=customer.pk,
+            project_type=ProjectType.CUSTOM,
+            approved_version_number__isnull=False,
+            id__in=signed_final_sheet_ids,
+        )
+        .select_related("organization")
+    )
+
+
+def list_reorderable_formulations_for_customer(
+    *,
+    customer,
+    search: str = "",
+    cursor: str = "",
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Paginated list of formulations the customer can reorder.
+
+    Cursor-based (order by ``-updated_at`` where possible, fallback
+    to ``-id`` for stable ordering on rows without ``updated_at``).
+    Returns ``{results: [...], next_cursor: str | None}``. Cap at
+    ``limit`` per page; the caller decides the hard cap.
+
+    ``search`` does a case-insensitive ILIKE on ``name`` and ``code``.
+    Never returns more than 100 rows regardless of ``limit`` — a
+    million-row account still needs to filter, not blind-page.
+    """
+
+    from django.utils.dateparse import parse_datetime
+
+    limit = max(1, min(int(limit or 20), 100))
+    qs = _list_reorderable_base_qs(customer)
+    search = (search or "").strip()
+    if search:
+        from django.db.models import Q
+
+        qs = qs.filter(Q(name__icontains=search) | Q(code__icontains=search))
+
+    # Order by creation time descending — a fresh signed formulation
+    # is the one the customer is most likely reordering. UUID as
+    # tiebreaker so cursor pagination is deterministic.
+    qs = qs.order_by("-id")
+
+    # Cursor is the last row's id. Cheap and stable for -id ordering.
+    if cursor:
+        try:
+            cursor_uuid = uuid.UUID(cursor)
+        except (TypeError, ValueError):
+            cursor_uuid = None
+        if cursor_uuid is not None:
+            qs = qs.filter(id__lt=cursor_uuid)
+
+    rows = list(qs[: limit + 1])
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = str(rows[-1].id) if has_more and rows else None
+
+    return {
+        "results": rows,
+        "next_cursor": next_cursor,
+    }
+
+
+def _find_source_signed_spec(source_formulation):
+    """Pick the FINAL signed spec sheet a reorder should re-bundle.
+
+    Returns the sheet (SpecificationSheet) or None. When multiple
+    signed FINAL sheets exist (rare — the ``FinalSpecAlreadyExists``
+    guard prevents it going forward, but legacy rows exist), take
+    the most recently signed one so the customer sees the latest
+    signed doc.
+    """
+
+    from apps.specifications.models import (
+        SpecificationDocumentKind,
+        SpecificationSheet,
+        SpecificationStatus,
+    )
+
+    return (
+        SpecificationSheet.objects
+        .filter(
+            formulation_version__formulation_id=source_formulation.pk,
+            document_kind=SpecificationDocumentKind.FINAL,
+            status=SpecificationStatus.ACCEPTED,
+            customer_signed_at__isnull=False,
+        )
+        .order_by("-customer_signed_at")
+        .select_related("formulation_version")
+        .first()
+    )
+
+
+def _find_source_last_order(source_formulation):
+    """Recover unit price + currency + quantity from the source's last order.
+
+    Reads the source formulation's most recent Proposal that was sent
+    (any ``SENT`` / ``ACCEPTED`` status) and takes the first priced
+    ProposalLine. Returns ``(unit_price, currency, quantity)`` — any
+    field is None when the source has never been priced / ordered.
+
+    The quantity is the **number of finished units the customer
+    bought last time** — e.g. 1000 bottles for a 60-gummy jar. That
+    is the sensible default to prefill on the reorder form (the
+    per-pack count 60 is a container spec, not an order quantity).
+
+    A reorder without a prior price falls into the "no source price"
+    error path — staff should quote the reorder manually via the
+    existing DRAFT proposal editor rather than the flow guessing.
+    """
+
+    from apps.proposals.models import Proposal, ProposalLine, ProposalStatus
+
+    source_proposal = (
+        Proposal.objects
+        .filter(
+            formulation_version__formulation_id=source_formulation.pk,
+            status__in=[ProposalStatus.SENT, ProposalStatus.ACCEPTED],
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if source_proposal is None:
+        return (None, None, None)
+
+    priced_line = (
+        ProposalLine.objects
+        .filter(proposal=source_proposal, unit_price__isnull=False)
+        .order_by("display_order", "id")
+        .first()
+    )
+    if priced_line is None:
+        return (None, source_proposal.currency, None)
+
+    quantity = priced_line.quantity
+    if not quantity or quantity < 1:
+        # Fall back to the proposal header quantity (single-line
+        # proposals sometimes carry the total on the header rather
+        # than the line).
+        quantity = getattr(source_proposal, "quantity", None) or None
+
+    return (priced_line.unit_price, source_proposal.currency, quantity)
+
+
+def _find_source_unit_price(source_formulation):
+    """Backwards-compat wrapper returning ``(unit_price, currency)``.
+
+    Kept as a thin adapter around :func:`_find_source_last_order` so
+    existing callers (the reorder-create service) don't change. New
+    code should call ``_find_source_last_order`` directly.
+    """
+
+    price, currency, _quantity = _find_source_last_order(source_formulation)
+    return (price, currency)
+
+
+def _compose_reorder_display_name(source_formulation, sequence: int) -> str:
+    """Compose the display name a reorder wears on the portal + PSP kanban.
+
+    Format: ``<source name> Reorder <n>``. Falls back to ``code`` and
+    then to a generic label if the source has neither — same defence
+    ``formulation_display_name`` uses so we never emit an empty
+    string.
+    """
+
+    base = (source_formulation.name or "").strip()
+    if not base:
+        base = (source_formulation.code or "").strip()
+    if not base:
+        base = "Reorder"
+    return f"{base} Reorder {sequence}"
+
+
+@transaction.atomic
+def create_portal_reorder_submission(
+    *,
+    client_account: Any,
+    payload: PortalReorderSubmissionInput,
+) -> CFFSubmission:
+    """Create the CFFSubmission + drafted Proposal for one Reorder.
+
+    Steps (all inside one transaction so partial state can't survive):
+
+    1. Resolve the calling customer and tenant-scope the source
+       formulation. Reject rows that aren't Custom, aren't the
+       caller's own, or have no signed FINAL spec sheet.
+    2. Pull the source's last-paid unit price so the DRAFT proposal
+       lands with a real number. Staff can edit inside NPD before
+       hitting Send.
+    3. Mint a new :class:`Formulation` cloned in the minimum shape
+       needed for PSP kanban ("<source> Reorder <n>" name, same
+       ``psp_finished_product_uuid``, ``is_reorder=True``, source
+       + spec provenance FKs) and one new FormulationVersion that
+       carries the source's approved snapshot so the proposal has
+       a version to pin to.
+    4. Auto-draft a DRAFT :class:`Proposal` with the source's unit
+       price × requested quantity. ``is_reorder=True`` drives the
+       PSP merge branch. ``ProposalLine.specification_sheet`` points
+       at the source's already-signed FINAL sheet — no clone. The
+       portal renders it as signed automatically (signature bytes
+       live on the sheet row).
+    5. Insert the :class:`CFFSubmission` with
+       ``submission_kind=REORDER``. ``raw_payload._meta`` carries
+       every provenance id so the triage inbox reads it correctly.
+
+    Failure modes surface as :class:`CFFReorderSubmissionError` with
+    ``code`` set to one of ``reorder_source_not_found``,
+    ``reorder_no_signed_spec``, ``reorder_no_source_price``,
+    ``reorder_validation``, or ``no_staff_actor``.
+    """
+
+    from apps.customers.models import Customer  # noqa: F401  (side-effect import)
+    from apps.formulations.models import (
+        Formulation,
+        FormulationVersion,
+        ProjectStatus,
+        ProjectType,
+    )
+    from apps.proposals.models import (
+        Proposal,
+        ProposalLine,
+        ProposalStatus,
+        ProposalTemplateType,
+    )
+
+    customer = getattr(client_account, "customer", None)
+    if customer is None or customer.organization_id is None:
+        exc = CFFReorderSubmissionError(
+            "This portal account isn't attached to a customer yet — "
+            "reach out to your account manager to get set up.",
+        )
+        exc.code = "no_customer"  # type: ignore[attr-defined]
+        raise exc
+
+    # 1) Resolve + tenant-scope the source formulation.
+    source = (
+        _list_reorderable_base_qs(customer)
+        .filter(pk=payload.source_formulation_id)
+        .first()
+    )
+    if source is None:
+        exc = CFFReorderSubmissionError(
+            "That product isn't available to reorder. Head back and "
+            "pick one of your signed-off custom formulations.",
+        )
+        exc.code = "reorder_source_not_found"  # type: ignore[attr-defined]
+        raise exc
+
+    # Field validation.
+    field_errors: dict[str, str] = {}
+    quantity = int(payload.quantity or 0)
+    if quantity < 1:
+        field_errors["quantity"] = "Quantity must be at least 1."
+    delivery = (payload.delivery_address or "").strip()
+    if not delivery:
+        field_errors["delivery_address"] = "A delivery address is required."
+    if field_errors:
+        exc = CFFReorderSubmissionError(
+            "Please fix the highlighted fields before submitting.",
+        )
+        exc.code = "reorder_validation"  # type: ignore[attr-defined]
+        exc.field_errors = field_errors  # type: ignore[attr-defined]
+        raise exc
+
+    # 2) Resolve source's approved version + signed FINAL spec.
+    approved_number = source.approved_version_number
+    source_approved_version = (
+        FormulationVersion.objects
+        .filter(formulation=source, version_number=approved_number)
+        .first()
+    )
+    if source_approved_version is None:
+        exc = CFFReorderSubmissionError(
+            "The source product has no approved recipe version. "
+            "Reach out to your account manager.",
+        )
+        exc.code = "reorder_source_not_found"  # type: ignore[attr-defined]
+        raise exc
+
+    source_spec = _find_source_signed_spec(source)
+    if source_spec is None:
+        exc = CFFReorderSubmissionError(
+            "The source product doesn't have a signed specification "
+            "sheet — a reorder needs the original signature to reuse. "
+            "Reach out to your account manager.",
+        )
+        exc.code = "reorder_no_signed_spec"  # type: ignore[attr-defined]
+        raise exc
+
+    # 3) Pull last-paid unit price. Currency defaults to GBP when
+    # the source has never been priced (guards a legacy row).
+    unit_price, source_currency = _find_source_unit_price(source)
+    if unit_price is None:
+        exc = CFFReorderSubmissionError(
+            "The source product has no previously paid price on "
+            "record. Reach out to your account manager to place this "
+            "reorder manually.",
+        )
+        exc.code = "reorder_no_source_price"  # type: ignore[attr-defined]
+        raise exc
+    currency = (source_currency or "GBP").upper()[:3]
+
+    # 4) Determine the reorder sequence. A reorder-of-a-reorder
+    # still traces back to the original root so the counter reads
+    # naturally (avoids "Foo Reorder 2 Reorder 1" nesting).
+    root_source = source
+    while root_source.is_reorder and root_source.source_formulation_id:
+        parent = Formulation.objects.filter(
+            pk=root_source.source_formulation_id
+        ).first()
+        if parent is None:
+            break
+        root_source = parent
+
+    prior_reorders = (
+        Formulation.objects
+        .filter(source_formulation_id=root_source.pk, is_reorder=True)
+        .count()
+    )
+    sequence = prior_reorders + 1
+    display_name = _compose_reorder_display_name(root_source, sequence)
+
+    # 5) Resolve the staff actor for created_by / updated_by FKs.
+    # ``created_by`` is PROTECT + required on Formulation / Proposal.
+    # Portal customers aren't staff Users; attribute to the customer's
+    # account manager (falling back to sales_person and then the
+    # oldest active org member) so the FK stays satisfied while the
+    # audit trail records the real portal actor on the CFFSubmission.
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    staff_actor = (
+        getattr(customer, "account_manager", None)
+        or getattr(customer, "sales_person", None)
+    )
+    if staff_actor is None:
+        staff_actor = (
+            User.objects
+            .filter(
+                memberships__organization_id=customer.organization_id,
+                is_active=True,
+            )
+            .order_by("date_joined")
+            .first()
+        )
+    if staff_actor is None:
+        exc = CFFReorderSubmissionError(
+            "No staff member is available to handle this reorder. "
+            "Contact your account manager.",
+        )
+        exc.code = "no_staff_actor"  # type: ignore[attr-defined]
+        raise exc
+
+    # 6) Mint the new Formulation shell. Recipe metadata inherits
+    # defaults on all the columns we don't set — PSP resolves the
+    # actual recipe through the FormulationVersion snapshot below,
+    # not the header. ``psp_finished_product_uuid`` is intentionally
+    # reused so PSP doesn't spawn a duplicate finished-product SKU
+    # (avoids the NPD-FP-<hash> vs NPD-FINISHED-<uuid> footgun).
+    now = django_timezone.now()
+    new_formulation = Formulation.objects.create(
+        organization=source.organization,
+        name=display_name,
+        code="",
+        description=source.description,
+        dosage_form=source.dosage_form,
+        capsule_size=source.capsule_size,
+        tablet_size=source.tablet_size,
+        serving_size=source.serving_size,
+        servings_per_pack=source.servings_per_pack,
+        directions_of_use=source.directions_of_use,
+        suggested_dosage=source.suggested_dosage,
+        appearance=source.appearance,
+        regulatory_category=source.regulatory_category,
+        warnings_text=source.warnings_text,
+        shelf_life_months=source.shelf_life_months,
+        storage_conditions=source.storage_conditions,
+        target_markets=list(source.target_markets or []),
+        net_quantity=source.net_quantity,
+        net_quantity_uom_uuid=source.net_quantity_uom_uuid,
+        serving_size_uom_uuid=source.serving_size_uom_uuid,
+        storage_tags=list(source.storage_tags or []),
+        min_stock_qty=source.min_stock_qty,
+        target_stock_qty=source.target_stock_qty,
+        allergen_uuids=list(source.allergen_uuids or []),
+        may_contain_allergen_keys=list(source.may_contain_allergen_keys or []),
+        may_contain_justification=source.may_contain_justification,
+        disintegration_spec=source.disintegration_spec,
+        target_fill_weight_mg=source.target_fill_weight_mg,
+        powder_type=source.powder_type,
+        water_volume_ml=source.water_volume_ml,
+        excipient_overrides=dict(source.excipient_overrides or {}),
+        project_status=ProjectStatus.APPROVED,
+        project_type=ProjectType.CUSTOM,
+        approved_version_number=1,
+        psp_finished_product_uuid=source.psp_finished_product_uuid,
+        is_reorder=True,
+        source_formulation=source,
+        reorder_original_spec=source_spec,
+        reorder_sequence=sequence,
+        customer=customer,
+        created_by=staff_actor,
+        updated_by=staff_actor,
+        sales_person=source.sales_person,
+        lead_scientist=source.lead_scientist,
+    )
+
+    # Clone the approved recipe snapshot onto the new Formulation as
+    # version 1 so proposal lines have a version to pin against and
+    # PSP's payload builder resolves ``primary_formulation`` back to
+    # the new "<source> Reorder <n>" row.
+    new_version = FormulationVersion.objects.create(
+        formulation=new_formulation,
+        version_number=1,
+        label=(
+            f"Reorder of "
+            f"{(source.name or 'source formulation').strip()} "
+            f"v{source_approved_version.version_number}"
+        )[:150],
+        snapshot_metadata=dict(source_approved_version.snapshot_metadata or {}),
+        snapshot_lines=list(source_approved_version.snapshot_lines or []),
+        snapshot_totals=dict(source_approved_version.snapshot_totals or {}),
+        snapshot_stage_boms=dict(source_approved_version.snapshot_stage_boms or {}),
+        snapshot_stages=list(source_approved_version.snapshot_stages or []),
+        is_auto=False,
+        is_complete=True,
+        created_by=staff_actor,
+    )
+
+    # 7) Auto-draft the DRAFT proposal. Mirrors RTG's shape — same
+    # created_by fallback, same code generator, same customer field
+    # denormalisation. ``template_type`` stays CUSTOM (reorders reuse
+    # the Custom template DOCX; the header shows "Reorder of <source>"
+    # via a small template context tweak that surfaces the source
+    # formulation's name). ``is_reorder`` gates the PSP merge branch.
+    from apps.proposals.services import _generate_unique_code
+
+    proposal_code = _generate_unique_code(source.organization)
+    line_description = display_name
+
+    proposal = Proposal.objects.create(
+        organization=source.organization,
+        formulation_version=new_version,
+        customer=customer,
+        code=proposal_code,
+        template_type=ProposalTemplateType.CUSTOM,
+        is_reorder=True,
+        status=ProposalStatus.DRAFT,
+        customer_name=customer.name or "",
+        customer_email=customer.email or "",
+        customer_phone=getattr(customer, "phone", "") or "",
+        customer_company=customer.company or "",
+        invoice_address=getattr(customer, "invoice_address", "") or "",
+        delivery_address=delivery,
+        dear_name=customer.name or "",
+        reference=proposal_code,
+        currency=currency,
+        quantity=max(1, quantity),
+        unit_price=unit_price,
+        # Reorders bill 100% up-front (workflow-identical-to-RTG per
+        # product spec). Explicit override of the Custom default of
+        # 50% so ``ensure_pending_deposit_payment`` invoices the
+        # whole order and the finance queue reads "full invoice"
+        # instead of "50% deposit + remainder after FINAL spec".
+        deposit_percent=Decimal("100"),
+        cover_notes=(payload.notes or "").strip(),
+        created_by=staff_actor,
+        updated_by=staff_actor,
+    )
+    ProposalLine.objects.create(
+        proposal=proposal,
+        formulation_version=new_version,
+        product_code=source.code or "",
+        description=line_description,
+        quantity=max(1, quantity),
+        unit_price=unit_price,
+        display_order=0,
+        # The signature-reuse mechanism — point at the source's
+        # signed FINAL sheet. The kiosk / portal render walks
+        # ``customer_signature_image`` on this row so the sheet
+        # already displays as signed.
+        specification_sheet=source_spec,
+    )
+
+    # 8) CFFSubmission carrying REORDER discriminator + provenance.
+    submissions_dict: dict[str, Any] = {
+        "first_name": (customer.name or "").split(" ", 1)[0],
+        "last_name": (
+            (customer.name or "").split(" ", 1)[1]
+            if " " in (customer.name or "")
+            else ""
+        ),
+        _PORTAL_SLUG_EMAIL: (customer.email or "").strip().lower(),
+        "company_name": customer.company or "",
+        "reorder_source_id": str(source.pk),
+        "reorder_source_name": source.name or "",
+        "reorder_display_name": display_name,
+        "market_segment": display_name,
+        "quantity_to_be_quoted": str(quantity),
+        "address": delivery,
+        "target_ship_date": payload.target_ship_date or "",
+    }
+
+    submission = CFFSubmission.objects.create(
+        organization=source.organization,
+        provenance="portal",
+        submission_kind=CFFSubmissionKind.REORDER,
+        wix_submission_id=None,
+        wix_form_id=None,
+        wix_namespace="",
+        wix_status="",
+        wix_created_date=now,
+        wix_updated_date=now,
+        raw_payload={
+            "submissions": submissions_dict,
+            "_meta": {
+                "provenance": "portal",
+                "submission_kind": CFFSubmissionKind.REORDER,
+                "submitted_at": now.isoformat(),
+                "submitted_by_client_account_id": str(client_account.pk),
+                "reorder_source_formulation_id": str(source.pk),
+                "reorder_new_formulation_id": str(new_formulation.pk),
+                "reorder_source_spec_id": str(source_spec.pk),
+                "reorder_drafted_proposal_id": str(proposal.pk),
+                "reorder_sequence": sequence,
+                "reorder_display_name": display_name,
+            },
+        },
+        submitter_email=(customer.email or "").strip().lower(),
+        submitter_name=(customer.name or "").strip(),
+        submitted_by_client_account=client_account,
+        drafted_proposal=proposal,
+    )
+
+    # Attach the CFF to the new formulation so the standard "one CFF
+    # per project" constraint holds and the project workspace on NPD
+    # opens with the reorder brief attached.
+    from apps.cff_submissions.models import CFFProjectAssignment
+
+    CFFProjectAssignment.objects.create(
+        submission=submission,
+        project=new_formulation,
+        assigned_by=staff_actor,
+    )
+
+    return submission
+
+
 __all__ = [
     "CFFAssignmentError",
     "ProjectAlreadyHasCFF",
     "CFFPortalError",
     "CFFRTGSubmissionError",
+    "CFFReorderSubmissionError",
     "CFFRejectionError",
     "PortalRTGSubmissionInput",
+    "PortalReorderSubmissionInput",
     "PortalSubmissionInput",
     "create_portal_rtg_submission",
+    "create_portal_reorder_submission",
+    "list_reorderable_formulations_for_customer",
     "create_portal_submission",
     "CreateFromCFFResult",
     "ImportResult",

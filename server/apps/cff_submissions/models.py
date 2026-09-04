@@ -59,7 +59,11 @@ class CFFSubmissionKind(models.TextChoices):
     needs R&D. ``ready_to_go`` is a customer picking an existing
     published SKU off the RTG catalog: the submission service
     auto-drafts a Proposal against the source formulation so
-    triage only needs to sanity-check + send.
+    triage only needs to sanity-check + send. ``reorder`` is a
+    customer re-buying a Custom formulation they've previously
+    signed off — auto-drafts a Proposal that reuses the original
+    signed spec sheet by FK so the customer only signs the
+    proposal, not the spec.
 
     Kept as a discriminator (not a computed property) so the
     inbox list can filter without touching ``raw_payload``.
@@ -67,6 +71,7 @@ class CFFSubmissionKind(models.TextChoices):
 
     CUSTOM = "custom", _("Custom brief")
     READY_TO_GO = "ready_to_go", _("Ready-to-Go order")
+    REORDER = "reorder", _("Reorder of past Custom")
 
 
 class CFFSubmissionStatus(models.TextChoices):

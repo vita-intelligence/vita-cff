@@ -11,6 +11,8 @@ from .cff_views import (
     PortalCFFMessagesReadView,
     PortalCFFMessagesView,
     PortalCFFSalesPeopleView,
+    PortalReorderableListView,
+    PortalReorderCreateView,
     PortalRTGCatalogView,
     PortalRTGCreateView,
 )
@@ -599,6 +601,20 @@ urlpatterns = [
         "cffs/new-rtg/",
         PortalRTGCreateView.as_view(),
         name="cff-create-rtg",
+    ),
+    # Reorder track — customer picks one of their own past signed
+    # Custom formulations and re-buys it. Backend auto-drafts a DRAFT
+    # Proposal that reuses the original signed spec sheet by FK so
+    # the customer only signs the proposal, not the spec.
+    path(
+        "reorderable-formulations/",
+        PortalReorderableListView.as_view(),
+        name="reorderable-formulations",
+    ),
+    path(
+        "reorder/new/",
+        PortalReorderCreateView.as_view(),
+        name="reorder-create",
     ),
     # Customer catalog of published RTG SKUs for the customer's org.
     # Read-only; the publish surface lives on the staff formulation

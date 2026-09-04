@@ -131,6 +131,18 @@ class Proposal(models.Model):
         choices=ProposalTemplateType.choices,
         default=ProposalTemplateType.CUSTOM,
     )
+    is_reorder = models.BooleanField(
+        _("is reorder"),
+        default=False,
+        db_index=True,
+        help_text=_(
+            "True when this proposal was auto-drafted by the portal "
+            "Reorder flow. Drives the fresh-CO-per-proposal branch "
+            "in the PSP merge (mirrors RTG's independence rule) and "
+            "the ``Reorder of <source>`` sub-header on the rendered "
+            "doc. Never mutated after creation."
+        ),
+    )
     brand_key = models.CharField(
         _("brand"),
         max_length=32,

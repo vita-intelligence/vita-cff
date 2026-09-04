@@ -121,80 +121,123 @@ def _build_deposit_notes(
 ) -> str:
     """Rich notes for :func:`ensure_pending_deposit_payment`.
 
-    Custom deposit — X% up-front slice unlocking the trial-batch
-    stage of the R&D workflow. RTG deposit — the storefront checkout
-    forces ``deposit_percent = 100`` so the row IS the full order
-    invoice; approving it authorises production directly.
+    Three modes:
+
+    * **RTG storefront** — ``template_type=ready_to_go``,
+      ``deposit_percent=100`` (forced by storefront checkout). Row
+      IS the full invoice; approving authorises production directly.
+    * **Reorder** — ``is_reorder=True``, ``deposit_percent=100`` (set
+      by the portal Reorder service). Workflow identical to RTG post-
+      signature; renders the same full-invoice copy.
+    * **Custom** — bespoke bill-in-halves, X% up-front unlocking the
+      trial-batch stage. Second half invoiced after FINAL spec sign.
+
+    Quantity + unit price are sourced from the ProposalLine(s) rather
+    than the ``Proposal.quantity`` / ``Proposal.unit_price`` header —
+    the header is a customer-submit snapshot that the commercial team
+    doesn't necessarily update when they edit the line (e.g. MOQ
+    adjustment 500 → 15,000). The lines are the authoritative source
+    the customer actually signed against.
     """
 
     from apps.proposals.models import ProposalTemplateType
 
     is_rtg = proposal.template_type == ProposalTemplateType.READY_TO_GO.value
+    is_reorder = bool(getattr(proposal, "is_reorder", False))
+    is_full_payment = is_rtg or is_reorder
     formulation = None
     version = getattr(proposal, "formulation_version", None)
     if version is not None:
         formulation = getattr(version, "formulation", None)
     customer = getattr(proposal, "customer", None)
-    lines = []
+    lines_out: list[str] = []
     if is_rtg:
-        lines.append(
+        lines_out.append(
             "=== Ready-to-Go storefront order — full invoice (100% deposit) ==="
         )
-        lines.append(
+        lines_out.append(
             "This row is the ENTIRE order invoice. There is no remainder "
             "FINAL invoice on RTG orders — approving this row authorises "
             "label design + production."
         )
+    elif is_reorder:
+        lines_out.append(
+            "=== Reorder — full invoice (100% payment) ==="
+        )
+        lines_out.append(
+            "Reorders bill the full order up-front (no deposit / FINAL "
+            "split — spec sheet was signed on the original order). "
+            "Approving this row authorises label design + production."
+        )
     else:
-        lines.append(
+        lines_out.append(
             f"=== Custom-formulation deposit invoice ({percent}% of order total) ==="
         )
-        lines.append(
+        lines_out.append(
             "Approving this row unlocks the trial-batch cycle for the "
             "R&D team. The remaining balance is invoiced separately "
             "after the customer signs the FINAL specification."
         )
-    lines.append("")
-    lines.append(f"Customer:      {_customer_label(customer)}")
-    lines.append(f"Product:       {_formulation_label(formulation)}")
-    lines.append(f"Proposal:      {proposal.code or proposal.id}")
-    quantity = getattr(proposal, "quantity", None) or 0
-    unit_price = getattr(proposal, "unit_price", None)
-    if quantity and unit_price is not None:
+    lines_out.append("")
+    lines_out.append(f"Customer:      {_customer_label(customer)}")
+    lines_out.append(f"Product:       {_formulation_label(formulation)}")
+    lines_out.append(f"Proposal:      {proposal.code or proposal.id}")
+    # Read quantity + unit price from the ProposalLine(s), which the
+    # commercial team edits and the customer signs against. The
+    # ``Proposal.quantity`` / ``Proposal.unit_price`` header is a
+    # customer-submit snapshot that may diverge post-edit (500 ordered
+    # → 15,000 sent). Sum quantities across lines and, for a single-
+    # line proposal (RTG + Reorder are always single-line), also
+    # surface the per-unit price.
+    line_qty_total = 0
+    single_line_unit_price = None
+    proposal_lines = list(
+        proposal.lines.all().order_by("display_order", "id")
+    )
+    for line in proposal_lines:
         try:
-            lines.append(
-                f"Quantity:      {int(quantity):,} × "
-                f"{_format_money(unit_price, currency)}/unit"
+            line_qty_total += int(line.quantity or 0)
+        except (TypeError, ValueError):
+            pass
+    if len(proposal_lines) == 1:
+        single_line_unit_price = proposal_lines[0].unit_price
+    if line_qty_total and single_line_unit_price is not None:
+        try:
+            lines_out.append(
+                f"Quantity:      {line_qty_total:,} × "
+                f"{_format_money(single_line_unit_price, currency)}/unit"
             )
         except Exception:  # noqa: BLE001
-            lines.append(f"Quantity:      {quantity}")
-    lines.append(
+            lines_out.append(f"Quantity:      {line_qty_total}")
+    elif line_qty_total:
+        lines_out.append(f"Quantity:      {line_qty_total:,} units")
+    lines_out.append(
         f"Order total:   {_format_money(total, currency)} "
         "(subtotal + freight, excl. VAT)"
     )
-    lines.append(
+    lines_out.append(
         f"THIS INVOICE:  {_format_money(amount, currency)} "
         f"({percent}% of order total)"
     )
-    lines.append("")
-    lines.append("Finance next steps:")
-    lines.append(
+    lines_out.append("")
+    lines_out.append("Finance next steps:")
+    lines_out.append(
         "  1. Send the invoice to the customer via your usual channel."
     )
-    lines.append(
+    lines_out.append(
         "  2. Once the bank transfer lands, mark this row Approved."
     )
-    if is_rtg:
-        lines.append(
+    if is_full_payment:
+        lines_out.append(
             "  3. On Approve: the label workflow bootstraps + PSP receives "
             "the production-authorised signal automatically."
         )
     else:
-        lines.append(
+        lines_out.append(
             "  3. On Approve: the R&D team is unblocked to schedule the "
             "first trial batch."
         )
-    return "\n".join(lines)
+    return "\n".join(lines_out)
 
 
 def _build_final_payment_notes(

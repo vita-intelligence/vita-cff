@@ -607,6 +607,65 @@ class Formulation(models.Model):
     )
 
     # ------------------------------------------------------------------
+    # Reorder provenance. Populated only on formulations minted by the
+    # portal Reorder flow — a customer re-buying a Custom formulation
+    # they've already signed off. ``project_type`` stays ``CUSTOM`` so
+    # every downstream branch that inspects it keeps working; the
+    # ``is_reorder`` flag gates the fresh-CO-per-proposal PSP merge
+    # behaviour (mirrors RTG's independence rule) and the display-name
+    # composition ("<source name> Reorder <n>"). ``source_formulation``
+    # is the recipe being re-bought; ``reorder_original_spec`` is the
+    # already-signed FINAL spec that gets re-bundled on the new
+    # proposal (no clone — FK reuse, so the signature renders as-is).
+    # ------------------------------------------------------------------
+    is_reorder = models.BooleanField(
+        _("is reorder"),
+        default=False,
+        db_index=True,
+        help_text=_(
+            "True when this formulation was created by the portal "
+            "Reorder flow. Drives the RTG-style independent-CO merge "
+            "on PSP and the ``<source> Reorder <n>`` naming."
+        ),
+    )
+    source_formulation = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reorders",
+        help_text=_(
+            "The original Custom formulation this row is a reorder of. "
+            "Nullable so deleting the source doesn't cascade the "
+            "reorder away — the reorder is a self-contained order at "
+            "that point."
+        ),
+    )
+    reorder_original_spec = models.ForeignKey(
+        "specifications.SpecificationSheet",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text=_(
+            "Provenance pointer to the source formulation's signed "
+            "FINAL spec. Audit-only — the actual reuse happens via "
+            "``ProposalLine.specification_sheet`` pointing at the "
+            "same row."
+        ),
+    )
+    reorder_sequence = models.PositiveIntegerField(
+        _("reorder sequence"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "1-based counter of reorders on the source formulation. "
+            "Composes into the display name (`<source> Reorder <n>`). "
+            "NULL on non-reorder rows."
+        ),
+    )
+
+    # ------------------------------------------------------------------
     # Ready-to-Go catalog marketing block. Populated only on
     # ``project_type=ready_to_go`` formulations. Once ``is_rtg_published``
     # flips true, the row is discoverable in the customer portal's

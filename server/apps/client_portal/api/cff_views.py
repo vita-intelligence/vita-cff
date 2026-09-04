@@ -47,13 +47,17 @@ from rest_framework.response import Response
 
 from apps.cff_submissions.services import (
     CFFPortalError,
+    CFFReorderSubmissionError,
     CFFRTGSubmissionError,
+    PortalReorderSubmissionInput,
     PortalRTGSubmissionInput,
     PortalSubmissionInput,
+    create_portal_reorder_submission,
     create_portal_rtg_submission,
     create_portal_submission,
     get_customer_cff,
     list_customer_cffs,
+    list_reorderable_formulations_for_customer,
 )
 from apps.client_portal.api.messaging_views import (
     PostMessageSerializer,
@@ -843,3 +847,178 @@ class PortalCFFMessagesReadView(PortalAPIView):
             },
         )
         return Response({"detail": "ok"})
+
+
+# ---------------------------------------------------------------------------
+# Reorder — customer re-buys a signed Custom formulation.
+# ---------------------------------------------------------------------------
+
+
+class PortalReorderableFormulationSerializer(serializers.Serializer):
+    """Wire shape for one row on the Reorder picker.
+
+    Slim: id + display name + code + signed_at + last-paid hints so
+    the customer sees "last time you ordered N units at £X each"
+    before they commit. The heavy detail (packaging, recipe) lives
+    on the detail endpoint the confirm-step calls after the pick.
+    """
+
+    id = serializers.UUIDField(read_only=True)
+    display_name = serializers.SerializerMethodField()
+    code = serializers.CharField(read_only=True)
+    dosage_form = serializers.CharField(read_only=True)
+    servings_per_pack = serializers.IntegerField(read_only=True)
+    last_signed_at = serializers.SerializerMethodField()
+    last_unit_price = serializers.SerializerMethodField()
+    last_currency = serializers.SerializerMethodField()
+    last_quantity = serializers.SerializerMethodField()
+
+    def _last_order(self, obj):
+        """Cache the ``_find_source_last_order`` result per instance
+        so the three ``last_*`` methods share one lookup instead of
+        firing three copies of the same query per row.
+        """
+
+        cache_attr = "_reorderable_last_order_cache"
+        cached = getattr(obj, cache_attr, None)
+        if cached is not None:
+            return cached
+        from apps.cff_submissions.services import _find_source_last_order
+
+        result = _find_source_last_order(obj)
+        try:
+            setattr(obj, cache_attr, result)
+        except Exception:  # pragma: no cover - defensive on frozen models
+            pass
+        return result
+
+    def get_display_name(self, obj) -> str:
+        from apps.client_portal.queries import formulation_display_name
+
+        return formulation_display_name(obj)
+
+    def get_last_signed_at(self, obj) -> str | None:
+        from apps.cff_submissions.services import _find_source_signed_spec
+
+        spec = _find_source_signed_spec(obj)
+        if spec is None or spec.customer_signed_at is None:
+            return None
+        return spec.customer_signed_at.isoformat()
+
+    def get_last_unit_price(self, obj) -> str | None:
+        price, _currency, _quantity = self._last_order(obj)
+        return str(price) if price is not None else None
+
+    def get_last_currency(self, obj) -> str | None:
+        _price, currency, _quantity = self._last_order(obj)
+        return currency
+
+    def get_last_quantity(self, obj) -> int | None:
+        _price, _currency, quantity = self._last_order(obj)
+        return int(quantity) if quantity is not None else None
+
+
+class PortalReorderableListView(PortalAPIView):
+    """``GET /api/portal/reorderable-formulations/``.
+
+    Cursor-paginated list of the customer's own signed Custom
+    formulations. Query params:
+
+    * ``search`` — case-insensitive ILIKE on name + code.
+    * ``cursor`` — opaque string returned in a prior page's
+      ``next_cursor`` field. Missing / empty → first page.
+    * ``limit`` — page size, clamped to 100 on the service side.
+
+    Returns ``{results: [...], next_cursor: str | None}``. Never
+    returns more than 100 rows in one call — the customer must
+    filter or paginate to browse everything.
+    """
+
+    def get(self, request: Request) -> Response:
+        customer = getattr(request.user, "customer", None)
+        if customer is None or customer.organization_id is None:
+            return Response({"results": [], "next_cursor": None})
+
+        search = (request.query_params.get("search") or "").strip()
+        cursor = (request.query_params.get("cursor") or "").strip()
+        try:
+            limit = int(request.query_params.get("limit") or 20)
+        except (TypeError, ValueError):
+            limit = 20
+
+        page = list_reorderable_formulations_for_customer(
+            customer=customer,
+            search=search,
+            cursor=cursor,
+            limit=limit,
+        )
+        payload = {
+            "results": PortalReorderableFormulationSerializer(
+                page["results"], many=True
+            ).data,
+            "next_cursor": page["next_cursor"],
+        }
+        return Response(payload)
+
+
+class PortalReorderCreateSerializer(serializers.Serializer):
+    """Wire shape for POST /api/portal/reorder/new/."""
+
+    source_formulation_id = serializers.UUIDField()
+    quantity = serializers.IntegerField(min_value=1)
+    delivery_address = serializers.CharField(max_length=1000)
+    target_ship_date = serializers.DateField(required=False, allow_null=True)
+    notes = serializers.CharField(
+        required=False, allow_blank=True, max_length=2000,
+    )
+
+
+class PortalReorderCreateView(PortalAPIView):
+    """``POST /api/portal/reorder/new/``.
+
+    Wraps :func:`create_portal_reorder_submission`. Returns the same
+    ``PortalCFFDetail`` shape as the Custom + RTG tracks so the FE
+    reads all three flows with one type. Validation failures return
+    422 with ``{code, detail, fields}``; missing source formulation
+    returns 404.
+    """
+
+    def post(self, request: Request) -> Response:
+        payload = PortalReorderCreateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        data = dict(payload.validated_data)
+
+        typed = PortalReorderSubmissionInput(
+            source_formulation_id=str(data["source_formulation_id"]),
+            quantity=int(data["quantity"]),
+            delivery_address=str(data["delivery_address"]),
+            target_ship_date=(
+                data["target_ship_date"].isoformat()
+                if data.get("target_ship_date")
+                else None
+            ),
+            notes=str(data.get("notes") or ""),
+        )
+
+        try:
+            submission = create_portal_reorder_submission(
+                client_account=request.user,
+                payload=typed,
+            )
+        except CFFReorderSubmissionError as exc:
+            code = getattr(exc, "code", "reorder_validation")
+            field_errors = getattr(exc, "field_errors", None) or {}
+            http_status = (
+                404
+                if code in {"reorder_source_not_found", "no_customer"}
+                else 422
+            )
+            body = {"code": code, "detail": str(exc)}
+            if field_errors:
+                body["fields"] = field_errors
+            return Response(body, status=http_status)
+
+        return Response(
+            PortalCFFDetailSerializer(submission).data,
+            status=status.HTTP_201_CREATED,
+        )

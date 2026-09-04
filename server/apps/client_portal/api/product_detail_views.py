@@ -765,9 +765,45 @@ def _build_pipeline(
     # sign-gate on proposal_stage below: proposal cannot show as
     # "current" while a draft sits unsigned, so the customer never
     # sees two "current" chips at once.
-    draft_specs_all = _draft_specs(sheets)
-    draft_signed = _first_signed(draft_specs_all)
-    draft_sent = _first_sent_unsigned(draft_specs_all)
+    #
+    # Reorder short-circuit: the source formulation's signed FINAL
+    # spec is reused by FK from ``ProposalLine.specification_sheet``.
+    # The customer does NOT re-sign the spec — that's the whole
+    # point of the reorder flow. Skip the drafting / sign-waiting
+    # states entirely and render as ``done`` with the original
+    # signature timestamp.
+    if getattr(formulation, "is_reorder", False):
+        original_spec = getattr(formulation, "reorder_original_spec", None)
+        original_signed_at = (
+            getattr(original_spec, "customer_signed_at", None)
+            if original_spec is not None
+            else None
+        )
+        draft_stage = {
+            "key": "draft_spec",
+            "label": "Specification reused",
+            "state": "done",
+            "completed_at": _iso(original_signed_at),
+            "detail": (
+                "Specification sheet from your original order is being "
+                "reused with your existing signature — no re-signing "
+                "required."
+            ),
+        }
+        # Legacy locals still referenced by later stages — populate
+        # them so the rest of the builder's control flow (proposal
+        # sign gate, etc.) reads as "the spec is signed and settled".
+        draft_specs_all: list[SpecificationSheet] = (
+            [original_spec] if original_spec is not None else []
+        )
+        draft_signed = original_spec
+        draft_sent = None
+        draft_internally_prepared = original_spec
+        draft_stage_done_or_customer_visible = True
+    else:
+        draft_specs_all = _draft_specs(sheets)
+        draft_signed = _first_signed(draft_specs_all)
+        draft_sent = _first_sent_unsigned(draft_specs_all)
     # Any draft whose internal drafting is complete — director has
     # signed off, and it may or may not have been bundled into a
     # sent proposal already. From the customer's perspective the
@@ -778,73 +814,79 @@ def _build_pipeline(
     # the proposal was sent — the pipeline jumped BACKWARDS from
     # "proposal drafted" to "sign the draft", which is confusing to
     # the customer since both actions live on the proposal page now.
-    draft_internally_prepared = next(
-        (
-            s for s in draft_specs_all
-            if s.status in (
-                SpecificationStatus.APPROVED,
-                SpecificationStatus.SENT,
-                SpecificationStatus.ACCEPTED,
-            )
-        ),
-        None,
-    )
-    if draft_signed is not None:
-        draft_stage = {
-            "key": "draft_spec",
-            "label": "Draft specification signed",
-            "state": "done",
-            "completed_at": _iso(draft_signed.customer_signed_at),
-            "detail": "You signed the specification — proposal signature is next.",
-        }
-    elif draft_internally_prepared is not None:
-        draft_stage = {
-            "key": "draft_spec",
-            "label": "Draft specification prepared",
-            "state": "done",
-            "completed_at": _iso(
-                getattr(draft_internally_prepared, "director_signed_at", None)
-                or getattr(draft_internally_prepared, "updated_at", None)
-            ),
-            "detail": (
-                "Our scientists and director signed off on the recipe. "
-                "You'll sign this together with the proposal on the next step."
-            ),
-        }
-    elif (
-        getattr(formulation, "project_type", "")
-        != ProjectType.READY_TO_GO.value
-    ):
-        # Custom projects: once the CFF has been triaged into a
-        # formulation, the scientists are actively drafting the recipe
-        # even before the first ``sent`` spec sheet exists. Without
-        # this branch stage 2 sat at ``future`` (greyed) — no stage
-        # was ``current`` — and the portal headline chip fell back to
-        # the last done stage ("Request submitted"), reading as
-        # "nothing is happening" when the science work is in flight.
-        # RTG orders skip this state entirely (there is no draft spec
-        # on RTG — the FINAL clone is pre-signed at checkout).
-        draft_stage = {
-            "key": "draft_spec",
-            "label": "Draft specification in progress",
-            "state": "current",
-            "completed_at": None,
-            "detail": (
-                "Our scientists are drafting your recipe. "
-                "You'll be notified as soon as it's ready to review and sign."
-            ),
-        }
+    # Reorders already have ``draft_stage`` + related locals set above
+    # (spec is reused pre-signed). Skip the standard drafting-state
+    # branches so we don't overwrite the "Specification reused" chip.
+    if getattr(formulation, "is_reorder", False):
+        pass
     else:
-        draft_stage = {
-            "key": "draft_spec",
-            "label": "Draft specification",
-            "state": "skipped",
-            "completed_at": None,
-            "detail": (
-                "Ready-to-Go orders use a pre-approved specification — no "
-                "customer draft-sign step."
+        draft_internally_prepared = next(
+            (
+                s for s in draft_specs_all
+                if s.status in (
+                    SpecificationStatus.APPROVED,
+                    SpecificationStatus.SENT,
+                    SpecificationStatus.ACCEPTED,
+                )
             ),
-        }
+            None,
+        )
+        if draft_signed is not None:
+            draft_stage = {
+                "key": "draft_spec",
+                "label": "Draft specification signed",
+                "state": "done",
+                "completed_at": _iso(draft_signed.customer_signed_at),
+                "detail": "You signed the specification — proposal signature is next.",
+            }
+        elif draft_internally_prepared is not None:
+            draft_stage = {
+                "key": "draft_spec",
+                "label": "Draft specification prepared",
+                "state": "done",
+                "completed_at": _iso(
+                    getattr(draft_internally_prepared, "director_signed_at", None)
+                    or getattr(draft_internally_prepared, "updated_at", None)
+                ),
+                "detail": (
+                    "Our scientists and director signed off on the recipe. "
+                    "You'll sign this together with the proposal on the next step."
+                ),
+            }
+        elif (
+            getattr(formulation, "project_type", "")
+            != ProjectType.READY_TO_GO.value
+        ):
+            # Custom projects: once the CFF has been triaged into a
+            # formulation, the scientists are actively drafting the recipe
+            # even before the first ``sent`` spec sheet exists. Without
+            # this branch stage 2 sat at ``future`` (greyed) — no stage
+            # was ``current`` — and the portal headline chip fell back to
+            # the last done stage ("Request submitted"), reading as
+            # "nothing is happening" when the science work is in flight.
+            # RTG orders skip this state entirely (there is no draft spec
+            # on RTG — the FINAL clone is pre-signed at checkout).
+            draft_stage = {
+                "key": "draft_spec",
+                "label": "Draft specification in progress",
+                "state": "current",
+                "completed_at": None,
+                "detail": (
+                    "Our scientists are drafting your recipe. "
+                    "You'll be notified as soon as it's ready to review and sign."
+                ),
+            }
+        else:
+            draft_stage = {
+                "key": "draft_spec",
+                "label": "Draft specification",
+                "state": "skipped",
+                "completed_at": None,
+                "detail": (
+                    "Ready-to-Go orders use a pre-approved specification — no "
+                    "customer draft-sign step."
+                ),
+            }
 
     # ---- Stage 3: Proposal drafting (internal) --------------------------
     # Sits between "Draft specification prepared" and "Proposal awaiting
@@ -1659,6 +1701,67 @@ def _build_pipeline(
             production_stage,
         ]
 
+    # Reorder is a Custom formulation re-bought against an already-
+    # signed spec. Post-signature the flow is identical to RTG:
+    # 100% payment (no deposit split, no trial batches, no final-
+    # spec sign, no sample selection) → production + labelling in
+    # parallel. Pre-signature we still show the reorder-specific
+    # intro so the customer sees where they are: request submitted,
+    # spec reused, proposal being prepared, proposal awaiting sign.
+    if getattr(formulation, "is_reorder", False):
+        rtg_payment_stage = _build_rtg_payment_stage(
+            formulation=formulation,
+            proposals=proposals,
+            signed_proposal=signed_proposal,
+            label_design=label_design,
+        )
+        # Mirror the RTG "no proposal sent yet" copy so the customer
+        # gets an actively-working chip during the DRAFT window
+        # between reorder-submit and staff hitting Send.
+        no_proposal_ever_sent = not any(
+            p.status in ("sent", "accepted", "rejected") for p in proposals
+        )
+        if proposal_stage["state"] == "future" and no_proposal_ever_sent:
+            proposal_stage = {
+                "key": "proposal",
+                "label": "Awaiting your quote",
+                "state": "current",
+                "completed_at": None,
+                "detail": (
+                    "We're preparing your reorder quote — you'll be able to "
+                    "review and sign it here as soon as it's ready."
+                ),
+            }
+        payment_done = rtg_payment_stage["state"] == "done"
+        if not payment_done:
+            if label_stage["state"] == "current":
+                label_stage = {
+                    "key": "label",
+                    "label": "Label design",
+                    "state": "future",
+                    "completed_at": None,
+                    "detail": "Label design unlocks the moment your payment is confirmed.",
+                    "parallel_group": "manufacturing",
+                }
+            if production_stage["state"] == "current":
+                production_stage = {
+                    "key": "production",
+                    "label": "Production",
+                    "state": "future",
+                    "completed_at": None,
+                    "detail": "Production planning kicks off alongside label design once payment lands.",
+                    "parallel_group": "manufacturing",
+                }
+        return [
+            request_stage,
+            draft_stage,
+            proposal_drafting_stage,
+            proposal_stage,
+            rtg_payment_stage,
+            label_stage,
+            production_stage,
+        ]
+
     return [
         request_stage,
         draft_stage,
@@ -2245,6 +2348,14 @@ class PortalProductDetailView(PortalAPIView):
                     "project_status": formulation.project_status,
                     "created_at": _iso(formulation.created_at),
                     "updated_at": _iso(formulation.updated_at),
+                    # Reorder provenance — surfaces on the portal
+                    # header so a reorder reads as "Reorder · <n>"
+                    # instead of falling through the empty-``code``
+                    # branch to "Project · unnamed".
+                    "is_reorder": bool(getattr(formulation, "is_reorder", False)),
+                    "reorder_sequence": getattr(
+                        formulation, "reorder_sequence", None,
+                    ),
                 },
                 # Surface the latest customer-side rejection reason
                 # (proposal declined via kiosk) or the void reason on

@@ -4287,6 +4287,26 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         else ""
     ).strip()
 
+    # Reorder provenance — surfaces on PSP so the merge branch fires
+    # the RTG-style fresh-CO-per-proposal path even though the
+    # project_type stays "custom". Source uuid lets PSP link the
+    # reorder card back to its parent for auditing.
+    primary_is_reorder = bool(
+        getattr(primary_formulation, "is_reorder", False)
+        if primary_formulation is not None
+        else False
+    ) or bool(getattr(proposal, "is_reorder", False))
+    primary_source_formulation_uuid = (
+        getattr(primary_formulation, "source_formulation_id", None)
+        if primary_formulation is not None
+        else None
+    )
+    primary_reorder_sequence = (
+        getattr(primary_formulation, "reorder_sequence", None)
+        if primary_formulation is not None
+        else None
+    )
+
     payload = {
         "npd_proposal_uuid": str(proposal.id),
         "npd_proposal_code": (getattr(proposal, "code", "") or "").strip(),
@@ -4300,12 +4320,22 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         # branch — Custom reuses the existing formulation's CO (1:1
         # forever), RTG spawns a brand-new CO per proposal (catalog
         # products get ordered N times). Missing / empty string is
-        # treated as Custom on the PSP side for safety.
+        # treated as Custom on the PSP side for safety. Reorder is a
+        # Custom row with ``npd_is_reorder=true`` — PSP routes those
+        # through the RTG-style fresh-CO branch too so each reorder
+        # lands as its own kanban card.
         "npd_project_type": (
             getattr(primary_formulation, "project_type", "") or ""
             if primary_formulation is not None
             else ""
         ),
+        "npd_is_reorder": primary_is_reorder,
+        "npd_source_formulation_uuid": (
+            str(primary_source_formulation_uuid)
+            if primary_source_formulation_uuid is not None
+            else None
+        ),
+        "npd_reorder_sequence": primary_reorder_sequence,
         # NPD-authoritative status. PSP mirrors it and derives the
         # wizard block from here (Awaiting approval → Ready to send
         # → Awaiting customer signature).

@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowRight, FlaskConical, Package } from "lucide-react";
+import { ArrowRight, FlaskConical, Package, RotateCw } from "lucide-react";
 
 import {
   Card,
@@ -64,17 +64,41 @@ export default async function NewCFFPage({
   const track = typeof params.track === "string" ? params.track : "";
 
   if (track !== "custom") {
-    // Chooser view — read-only, no upstream calls beyond the cookie
-    // check above.
+    // Chooser view — surfaces a third "Reorder" track only when the
+    // customer has at least one eligible signed formulation. Cheap
+    // HEAD-style GET with limit=1 keeps the cost negligible even if
+    // the card is later gated behind a feature flag.
+    const chooserHeaders = { Cookie: `vita_portal_access=${portalCookie.value}` };
+    const reorderableRes = await fetch(
+      `${env.NEXT_PUBLIC_API_URL}/api/portal/reorderable-formulations/?limit=1`,
+      { cache: "no-store", headers: chooserHeaders },
+    ).catch(() => null);
+    const hasReorderable = Boolean(
+      reorderableRes &&
+        reorderableRes.ok &&
+        ((await reorderableRes.clone().json()) as { results?: unknown[] })
+          ?.results?.length,
+    );
+
     return (
       <PortalShell active="products">
         <PageHeader
           eyebrow="New request"
           title="Pick how you want to work with us"
-          subtitle="Choose Custom if you want us to develop a bespoke recipe, or Ready-to-Go if you'd like to order one of our existing validated products."
+          subtitle={
+            hasReorderable
+              ? "Custom develops a bespoke recipe. Ready-to-Go orders a validated catalog product. Reorder re-buys one of your own signed formulations without R&D."
+              : "Choose Custom if you want us to develop a bespoke recipe, or Ready-to-Go if you'd like to order one of our existing validated products."
+          }
           back={{ href: "/portal/products", label: "Back to products" }}
         />
-        <div className="grid gap-4 md:grid-cols-2">
+        <div
+          className={
+            hasReorderable
+              ? "grid gap-4 md:grid-cols-3"
+              : "grid gap-4 md:grid-cols-2"
+          }
+        >
           <TrackCard
             href="/portal/cffs/new?track=custom"
             title="Custom formulation"
@@ -89,6 +113,15 @@ export default async function NewCFFPage({
             headline="Order one of our validated products as-is."
             body="Pick a product from our catalog, choose quantity + packaging, and we prepare a proposal to sign — no development cycle."
           />
+          {hasReorderable ? (
+            <TrackCard
+              href="/portal/cffs/new/reorder"
+              title="Reorder"
+              icon={<RotateCw className="h-6 w-6" />}
+              headline="Re-buy a product you've done before."
+              body="Pick one of your signed custom formulations, tell us the quantity, and we prepare a proposal against the original spec — no re-development, no re-signing the spec sheet."
+            />
+          ) : null}
         </div>
       </PortalShell>
     );
