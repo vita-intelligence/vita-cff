@@ -189,7 +189,11 @@ function RequestRow({ request }: { request: DispatchRequest }) {
   // Customer POD only makes sense while the shipment is in transit
   // — before the truck departed there's nothing to confirm, and
   // after the customer has already confirmed there's nothing to add.
+  // Also gate on the dispatch itself being ``completed`` so a
+  // cancelled request that happens to share a lot with an in-transit
+  // sibling doesn't inherit the button.
   const canMarkDelivered =
+    request.status === "completed" &&
     shipment !== null &&
     shipment.status === "picked_up" &&
     !shipment.delivered_at;
