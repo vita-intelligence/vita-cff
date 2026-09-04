@@ -20,6 +20,7 @@ import { useState } from "react";
 import { AlertTriangle, Check, Loader2, Send, Truck } from "lucide-react";
 
 import { apiClient } from "@/lib/api";
+import { PortalModal } from "@/components/portal/portal-modal";
 
 
 interface Props {
@@ -142,16 +143,12 @@ function DispatchDialog({
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={() => phase !== "sending" && onClose()}
+    <PortalModal
+      onClose={onClose}
+      ariaLabel="Request dispatch"
+      locked={phase === "sending"}
     >
-      <div
-        className="w-full max-w-md border-2 border-black bg-white p-5 shadow-[8px_8px_0_0_black]"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <PortalModal.Header>
         <div className="flex items-start gap-3">
           <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center border-2 border-black bg-orange-500">
             <Truck className="h-5 w-5 text-black" />
@@ -166,8 +163,15 @@ function DispatchDialog({
             </p>
           </div>
         </div>
+      </PortalModal.Header>
 
-        <form onSubmit={submit} className="mt-5 space-y-4">
+      <form
+        onSubmit={submit}
+        id="dispatch-request-form"
+        className="contents"
+      >
+        <PortalModal.Body>
+          <div className="space-y-4">
           <div>
             <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
               Quantity to dispatch
@@ -273,12 +277,15 @@ function DispatchDialog({
           </div>
 
           {phase === "error" ? (
-            <div className="flex items-start gap-2 border-2 border-red-700 bg-red-50 p-3">
+            <div className="mt-4 flex items-start gap-2 border-2 border-red-700 bg-red-50 p-3">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-800" />
               <p className="text-xs text-red-900">{errorMessage}</p>
             </div>
           ) : null}
+          </div>
+        </PortalModal.Body>
 
+        <PortalModal.Footer>
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <button
               type="button"
@@ -290,6 +297,7 @@ function DispatchDialog({
             </button>
             <button
               type="submit"
+              form="dispatch-request-form"
               disabled={!qtyValid || phase === "sending" || phase === "sent"}
               className="inline-flex items-center justify-center gap-2 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-300 disabled:text-neutral-500"
             >
@@ -308,8 +316,8 @@ function DispatchDialog({
               )}
             </button>
           </div>
-        </form>
-      </div>
-    </div>
+        </PortalModal.Footer>
+      </form>
+    </PortalModal>
   );
 }
