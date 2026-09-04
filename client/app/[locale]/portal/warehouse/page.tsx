@@ -6,12 +6,9 @@ import {
   Boxes,
   Calendar,
   History,
-  MapPin,
   Package,
   Warehouse,
 } from "lucide-react";
-
-import { DispatchRequestButton } from "./dispatch-request-button";
 
 import {
   Card,
@@ -21,53 +18,22 @@ import {
 } from "@/components/portal/brutalist";
 import { env } from "@/config/env";
 
+import { LotsList, type BaileeLot, type DefaultShipTo } from "./lots-list";
+
 
 /**
  * /portal/warehouse — customer-facing view of the finished-goods
  * stock we're holding for them in bailee custody + how much storage
  * is accruing.
  *
- * Phase 1 of the 3PL portal integration. Read-only. Data proxied
- * from PSP's ``/api/integration/customer-bailee-inventory/:uuid``
- * via vita-cff's ``PortalWarehouseStockView``. The wire shape is
- * echoed from PSP unchanged so the FE renders whatever the operator
- * sees on the staff-side ``/three-pl`` dashboard.
- *
- * Empty-state posture — the endpoint always returns the envelope
- * (never errors), so we render the "no stock held" surface when
- * ``lots`` is empty rather than an error banner.
+ * Server-renders the summary tiles + the first page of held lots so
+ * the initial paint has data. ``<LotsList>`` takes over on the
+ * client for search + infinite scroll — the payload endpoint at
+ * ``/api/portal/warehouse/stock/`` accepts ``q`` + ``cursor`` +
+ * ``limit`` and returns the paginated slice + a ``next_cursor``.
+ * Summary tiles come from PSP's unpaginated rollup so the totals
+ * stay honest as the customer scrolls.
  */
-
-interface LotLocation {
-  readonly warehouse: string | null;
-  readonly floor: string | null;
-  readonly location: string | null;
-  readonly cell: string | null;
-}
-
-interface ItemSummary {
-  readonly uuid: string | null;
-  readonly name: string | null;
-  readonly code: string | null;
-}
-
-interface BaileeLot {
-  readonly uuid: string;
-  readonly code: string | null;
-  readonly item: ItemSummary;
-  readonly qty_on_hand: string;
-  /** Sum of `pending` dispatch requests already queued against this
-   *  lot — what the customer's already asked for but hasn't been
-   *  picked yet. `qty_available` is `qty_on_hand - qty_pending`. */
-  readonly qty_pending_dispatch: string | null;
-  /** What the customer can freshly request. Clamped ≥ 0. */
-  readonly qty_available: string | null;
-  readonly unit_of_measurement: { readonly symbol: string };
-  readonly bailee_routed_at: string | null;
-  readonly held_volume_m3: string;
-  readonly accrued_charge: string;
-  readonly location: LotLocation | null;
-}
 
 interface Summary {
   readonly lot_count: number;
@@ -78,18 +44,13 @@ interface Summary {
   readonly total_accrued_charge: string;
 }
 
-interface DefaultShipTo {
-  readonly name: string | null;
-  readonly address: string | null;
-  readonly country: string | null;
-}
-
 interface Snapshot {
   readonly customer: { readonly uuid: string | null; readonly name: string | null };
   readonly currency: string;
   readonly rate_per_m3_per_day: string | null;
   readonly summary: Summary;
   readonly lots: readonly BaileeLot[];
+  readonly next_cursor: string | null;
   readonly default_ship_to?: DefaultShipTo;
 }
 
@@ -128,9 +89,10 @@ export default async function PortalWarehousePage() {
           total_accrued_charge: "0",
         },
         lots: [],
+        next_cursor: null,
       };
 
-  const hasStock = data.lots.length > 0;
+  const hasStock = data.summary.lot_count > 0;
 
   return (
     <PortalShell active="warehouse">
@@ -185,16 +147,16 @@ export default async function PortalWarehousePage() {
 
       {hasStock ? (
         <>
-          <Eyebrow>Held lots</Eyebrow>
-          <div className="mt-3 flex flex-col gap-3">
-            {data.lots.map((lot) => (
-              <LotCard
-                key={lot.uuid}
-                lot={lot}
-                currency={data.currency}
-                defaultShipTo={data.default_ship_to}
-              />
-            ))}
+          <div className="mt-6">
+            <Eyebrow>Held lots</Eyebrow>
+          </div>
+          <div className="mt-3">
+            <LotsList
+              initialItems={data.lots}
+              initialNextCursor={data.next_cursor}
+              currency={data.currency}
+              defaultShipTo={data.default_ship_to}
+            />
           </div>
 
           <div className="mt-8 flex items-start gap-3 border-2 border-black bg-neutral-50 p-4">
@@ -203,9 +165,7 @@ export default async function PortalWarehousePage() {
               Hit <span className="font-semibold">Request dispatch</span> on any
               lot to queue a send-out on our warehouse floor. Our team confirms
               on mobile, snaps a photo of the pack, and you&rsquo;ll see it flip
-              to <span className="font-semibold">completed</span> here. A
-              Shopify / custom-storefront webhook is coming next so your online
-              orders can trigger this automatically.
+              to <span className="font-semibold">completed</span> here.
             </p>
           </div>
         </>
@@ -273,108 +233,13 @@ function SummaryTile({
 }
 
 
-function LotCard({
-  lot,
-  currency,
-  defaultShipTo,
-}: {
-  lot: BaileeLot;
-  currency: string;
-  defaultShipTo?: DefaultShipTo;
-}) {
-  const location = lot.location;
-  const locationLine = location
-    ? [location.warehouse, location.floor, location.location, location.cell]
-        .filter(Boolean)
-        .join(" · ")
-    : "Location pending";
-  // Fall back to on-hand when the PSP payload predates the pending /
-  // available fields (defensive — the wire types allow null on both
-  // for backward compat).
-  const availableQty = lot.qty_available ?? lot.qty_on_hand;
-  const pendingNum = Number.parseFloat(lot.qty_pending_dispatch ?? "0");
-  const hasPending = Number.isFinite(pendingNum) && pendingNum > 0;
-  return (
-    <article className="border-2 border-black bg-white p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-neutral-500">
-            {lot.item.code || lot.code || "Lot"}
-          </p>
-          <h3 className="mt-1 text-base font-black uppercase leading-tight sm:text-lg">
-            {lot.item.name || "—"}
-          </h3>
-          <p className="mt-1 flex items-center gap-1.5 text-xs text-neutral-600">
-            <MapPin className="h-3 w-3" />
-            {locationLine}
-          </p>
-        </div>
-        <div className="text-right">
-          <p className="text-2xl font-black tabular-nums">
-            {formatDecimal(availableQty, 0)}
-            <span className="ml-1 text-sm text-neutral-500">
-              {lot.unit_of_measurement.symbol}
-            </span>
-          </p>
-          <p className="mt-0.5 text-[10px] uppercase tracking-widest text-neutral-500">
-            Available to request
-          </p>
-          {hasPending ? (
-            <p className="mt-1 text-[10px] font-semibold text-orange-700">
-              {formatDecimal(lot.qty_pending_dispatch ?? "0", 0)}{" "}
-              {lot.unit_of_measurement.symbol} pending dispatch
-            </p>
-          ) : null}
-          {lot.code ? (
-            <p className="mt-0.5 font-mono text-[10px] text-neutral-500">{lot.code}</p>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="mt-3 grid grid-cols-2 gap-3 border-t border-neutral-200 pt-3 text-xs sm:grid-cols-4">
-        <MetaCell
-          label="On hand"
-          value={`${formatDecimal(lot.qty_on_hand, 0)} ${lot.unit_of_measurement.symbol}`}
-        />
-        <MetaCell label="Volume" value={`${formatDecimal(lot.held_volume_m3, 4)} m³`} />
-        <MetaCell
-          label="Accrued storage"
-          value={formatMoney(lot.accrued_charge, currency)}
-        />
-        <MetaCell label="Days held" value={String(daysSince(lot.bailee_routed_at))} />
-      </div>
-
-      <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-neutral-200 pt-3">
-        <Link
-          href={`/portal/warehouse/requests?lot=${encodeURIComponent(lot.uuid)}`}
-          className="inline-flex items-center gap-1.5 border-2 border-black bg-white px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-black transition-all hover:bg-neutral-100"
-        >
-          <History className="h-3.5 w-3.5" />
-          View requests
-        </Link>
-        <DispatchRequestButton
-          lotUuid={lot.uuid}
-          lotCode={lot.code || lot.item.code || "Lot"}
-          itemName={lot.item.name || "—"}
-          qtyOnHand={availableQty}
-          defaultShipTo={defaultShipTo}
-          unitSymbol={lot.unit_of_measurement.symbol}
-        />
-      </div>
-    </article>
-  );
-}
-
-
-function MetaCell({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-neutral-500">
-        {label}
-      </p>
-      <p className="mt-0.5 font-mono tabular-nums">{value}</p>
-    </div>
-  );
+function formatDecimal(v: string | null, dp: number): string {
+  const n = Number(v ?? "0");
+  if (!Number.isFinite(n)) return v ?? "—";
+  return n.toLocaleString("en-GB", {
+    minimumFractionDigits: dp,
+    maximumFractionDigits: dp,
+  });
 }
 
 
@@ -389,42 +254,5 @@ function formatMoney(amount: string, currency: string): string {
     }).format(n);
   } catch {
     return `£${n.toFixed(2)}`;
-  }
-}
-
-
-function formatDecimal(v: string | null, dp: number): string {
-  const n = Number(v ?? "0");
-  if (!Number.isFinite(n)) return v ?? "—";
-  return n.toLocaleString("en-GB", {
-    minimumFractionDigits: dp,
-    maximumFractionDigits: dp,
-  });
-}
-
-
-function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString("en-GB", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
-  } catch {
-    return iso.slice(0, 10);
-  }
-}
-
-
-function daysSince(iso: string | null): number {
-  if (!iso) return 0;
-  try {
-    const then = new Date(iso).getTime();
-    if (!Number.isFinite(then)) return 0;
-    const diffMs = Date.now() - then;
-    return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
-  } catch {
-    return 0;
   }
 }

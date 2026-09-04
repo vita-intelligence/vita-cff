@@ -90,11 +90,22 @@ class PortalWarehouseStockView(PortalAPIView):
         if organization is None:
             return Response(empty)
 
+        # Pagination + search flow straight through to PSP. Whitelist
+        # keys so a misbehaving caller can't slip arbitrary opts
+        # through the proxy.
+        q = _strip_or_none(request.query_params.get("q"))
+        cursor = _strip_or_none(request.query_params.get("cursor"))
+        limit = _parse_limit(request.query_params.get("limit"))
+
         # ``Customer.id`` IS the UUID (Django uuid-typed PK, no separate
         # ``uuid`` field), so this is the identity PSP knows the customer
         # by via the ``resolve_customer`` helper on the CO sync path.
         snapshot = get_psp_customer_bailee_inventory(
-            organization=organization, customer_uuid=str(customer.id)
+            organization=organization,
+            customer_uuid=str(customer.id),
+            q=q,
+            cursor=cursor,
+            limit=limit,
         )
         # Guard against a malformed payload — the FE expects the
         # summary + lots keys unconditionally so an empty envelope
@@ -127,10 +138,13 @@ def _empty_envelope() -> dict[str, Any]:
         "summary": {
             "lot_count": 0,
             "total_qty_on_hand": "0",
+            "total_qty_pending_dispatch": "0",
+            "total_qty_available": "0",
             "total_held_volume_m3": "0",
             "total_accrued_charge": "0",
         },
         "lots": [],
+        "next_cursor": None,
         "default_ship_to": {"name": None, "address": None, "country": None},
     }
 
@@ -152,13 +166,30 @@ def _normalise(snapshot: dict[str, Any]) -> dict[str, Any]:
         envelope["summary"] = {
             "lot_count": summary.get("lot_count", 0) or 0,
             "total_qty_on_hand": summary.get("total_qty_on_hand", "0"),
+            "total_qty_pending_dispatch": summary.get(
+                "total_qty_pending_dispatch", "0"
+            ),
+            "total_qty_available": summary.get("total_qty_available", "0"),
             "total_held_volume_m3": summary.get("total_held_volume_m3", "0"),
             "total_accrued_charge": summary.get("total_accrued_charge", "0"),
         }
     lots = snapshot.get("lots")
     if isinstance(lots, list):
         envelope["lots"] = lots
+    envelope["next_cursor"] = snapshot.get("next_cursor")
     return envelope
+
+
+def _parse_limit(raw: Any) -> int | None:
+    if raw is None:
+        return None
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    return min(n, 100)
 
 
 def _org_from_id(organization_id: Any) -> Any | None:
@@ -393,13 +424,9 @@ def _list_dispatch_requests(request: Request) -> Response:
 
     status_param = _strip_or_none(request.query_params.get("status"))
     lot_uuid_param = _strip_or_none(request.query_params.get("lot_uuid"))
-    limit_param_raw = request.query_params.get("limit")
-    limit_param: int | None = None
-    if limit_param_raw:
-        try:
-            limit_param = max(1, int(limit_param_raw))
-        except (TypeError, ValueError):
-            limit_param = None
+    q_param = _strip_or_none(request.query_params.get("q"))
+    cursor_param = _strip_or_none(request.query_params.get("cursor"))
+    limit_param = _parse_limit(request.query_params.get("limit"))
 
     snapshot = list_psp_customer_dispatch_requests(
         organization=organization,
@@ -407,6 +434,8 @@ def _list_dispatch_requests(request: Request) -> Response:
         status=status_param,
         lot_uuid=lot_uuid_param,
         limit=limit_param,
+        q=q_param,
+        cursor=cursor_param,
     )
     if not isinstance(snapshot, dict):
         return Response(empty)
@@ -417,8 +446,15 @@ def _list_dispatch_requests(request: Request) -> Response:
 def _empty_dispatch_request_envelope() -> dict[str, Any]:
     return {
         "customer": {"uuid": None, "name": None},
-        "summary": {"total": 0, "pending": 0, "completed": 0, "cancelled": 0},
+        "summary": {
+            "total": 0,
+            "pending": 0,
+            "completed": 0,
+            "cancelled": 0,
+            "return_pending": 0,
+        },
         "requests": [],
+        "next_cursor": None,
     }
 
 
@@ -437,10 +473,12 @@ def _normalise_dispatch_request_envelope(snapshot: dict[str, Any]) -> dict[str, 
             "pending": summary.get("pending", 0) or 0,
             "completed": summary.get("completed", 0) or 0,
             "cancelled": summary.get("cancelled", 0) or 0,
+            "return_pending": summary.get("return_pending", 0) or 0,
         }
     requests_list = snapshot.get("requests")
     if isinstance(requests_list, list):
         envelope["requests"] = requests_list
+    envelope["next_cursor"] = snapshot.get("next_cursor")
     return envelope
 
 
@@ -452,6 +490,92 @@ def _dispatch_error(code: str, status_code: int) -> Response:
         },
         status=status_code,
     )
+
+
+class PortalDispatchRequestPickupPhotoView(PortalAPIView):
+    """``GET /api/portal/warehouse/dispatch-requests/:request_uuid/pickup-photos/:file_uuid``.
+
+    Streams a pickup loading-photo attached to the outbound shipment
+    linked to the dispatch request. Portal-session-authed (via
+    :class:`PortalAPIView`); we then verify the caller owns the
+    dispatch by matching their account's customer ids against PSP's
+    view of the request (PSP already enforces company scope, so a
+    correctly-owned request is guaranteed to be the caller's).
+
+    Silent-degrade posture — unknown request / file, PSP unreachable,
+    or integration off all collapse to a 404 so a probing customer
+    can't distinguish "not yours" from "doesn't exist".
+    """
+
+    def get(self, request: Request, request_uuid: str, file_uuid: str) -> Response:
+        from django.http import HttpResponse
+        from apps.psp.services import (
+            list_psp_customer_dispatch_requests,
+            stream_psp_customer_dispatch_photo,
+        )
+
+        customer_ids = customer_ids_for_account(request.user)
+        if not customer_ids:
+            return _photo_not_found()
+
+        canonical_id = (
+            getattr(request.user, "customer_id", None) or customer_ids[0]
+        )
+        customer = (
+            Customer.objects
+            .filter(pk=canonical_id)
+            .only("id", "organization_id")
+            .first()
+        )
+        if customer is None:
+            return _photo_not_found()
+
+        organization = getattr(customer, "organization", None) or _org_from_id(
+            customer.organization_id
+        )
+        if organization is None:
+            return _photo_not_found()
+
+        # Verify the request belongs to this customer BEFORE streaming
+        # the bytes — otherwise a leaked request+file uuid pair could
+        # exfiltrate a peer customer's photo. Look up the request by
+        # its uuid on PSP, restricted to the caller's customer scope.
+        snapshot = list_psp_customer_dispatch_requests(
+            organization=organization,
+            customer_uuid=str(customer.id),
+            limit=100,
+        )
+        if not isinstance(snapshot, dict):
+            return _photo_not_found()
+        requests_list = snapshot.get("requests") or []
+        owns = any(
+            isinstance(r, dict) and r.get("uuid") == request_uuid
+            for r in requests_list
+        )
+        if not owns:
+            return _photo_not_found()
+
+        raw = stream_psp_customer_dispatch_photo(
+            organization=organization,
+            request_uuid=request_uuid,
+            file_uuid=file_uuid,
+        )
+        if raw is None:
+            return _photo_not_found()
+        body, content_type, disposition = raw
+        resp = HttpResponse(body, content_type=content_type)
+        if disposition:
+            resp["Content-Disposition"] = disposition
+        # Short cache — photos never change once captured, but
+        # keep cache brief so a cancelled request can't linger.
+        resp["Cache-Control"] = "private, max-age=60"
+        return resp
+
+
+def _photo_not_found():
+    from django.http import HttpResponse
+
+    return HttpResponse(status=404, content=b"", content_type="text/plain")
 
 
 def _strip_or_none(value: Any) -> str | None:

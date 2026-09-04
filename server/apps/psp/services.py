@@ -432,6 +432,57 @@ class PspClient:
                 "PSP returned a non-JSON response body."
             ) from exc
 
+    def _request_raw(
+        self,
+        path: str,
+        query: dict[str, str] | None = None,
+        *,
+        method: str = "GET",
+    ) -> tuple[bytes, str, str | None] | None:
+        """Same transport as :meth:`_request` but returns raw bytes +
+        the ``Content-Type`` / ``Content-Disposition`` headers. Used
+        for binary streams (pickup photos, PDFs) that the portal
+        proxies straight through to the customer's browser.
+
+        Returns ``None`` on 404 / non-2xx / breaker-open so callers
+        can render an empty-state instead of a stack trace.
+        """
+
+        base = self._config.base_url.rstrip("/")
+        url = f"{base}/{path.lstrip('/')}"
+        if query:
+            cleaned = {k: v for k, v in query.items() if v not in (None, "")}
+            if cleaned:
+                url = f"{url}?{urllib.parse.urlencode(cleaned)}"
+        headers = {
+            "Accept": "*/*",
+            "X-Integration-Token": self._auth_header,
+            "User-Agent": "VitaNPD/1.0",
+        }
+        if _PSP_BREAKER.is_open():
+            return None
+        try:
+            req = Request(url, method=method, headers=headers)
+            with urlopen(req, timeout=_PSP_TIMEOUT_SECONDS) as resp:
+                body = resp.read()
+                content_type = resp.headers.get("Content-Type") or ""
+                disposition = resp.headers.get("Content-Disposition")
+        except HTTPError as exc:
+            if exc.code == 404:
+                _PSP_BREAKER.record_success()
+                return None
+            if exc.code in (401, 403):
+                # Auth failures shouldn't retry — surface as 502 upstream.
+                return None
+            _PSP_BREAKER.record_failure()
+            return None
+        except (URLError, TimeoutError, OSError):
+            _PSP_BREAKER.record_failure()
+            return None
+
+        _PSP_BREAKER.record_success()
+        return body, content_type, disposition
+
     def test_connection(self) -> None:
         """Round-trip against the health endpoint. Any success
         response confirms auth. Any typed exception bubbles."""
@@ -1264,7 +1315,14 @@ class PspClient:
             return None
         return response
 
-    def get_customer_bailee_inventory(self, customer_uuid: Any) -> dict | None:
+    def get_customer_bailee_inventory(
+        self,
+        customer_uuid: Any,
+        *,
+        q: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict | None:
         """GET ``/api/integration/customer-bailee-inventory/:customer_uuid``.
 
         Returns PSP's snapshot of the finished-goods stock we hold in
@@ -1273,6 +1331,13 @@ class PspClient:
         total accrued storage charge. Powers the portal warehouse-
         visibility page.
 
+        Now paginated: portal passes ``q`` / ``cursor`` / ``limit``
+        so the warehouse page can search + infinite-scroll instead
+        of rendering the whole customer's history in one payload.
+        Summary tiles stay unpaginated (rolled up server-side on
+        every request) so the "total held" numbers don't drift as
+        the customer scrolls.
+
         Shape (mirrored from
         :mod:`BackendWeb.IntegrationCustomerBaileeInventoryController`):
 
@@ -1280,11 +1345,9 @@ class PspClient:
               "customer": {"uuid": "…", "name": "…"},
               "currency": "GBP",
               "rate_per_m3_per_day": "1.5000",
-              "summary": {
-                "lot_count": …, "total_qty_on_hand": "…",
-                "total_held_volume_m3": "…", "total_accrued_charge": "…"
-              },
-              "lots": [ {lot payload} … ]
+              "summary": {"lot_count": …, "total_qty_on_hand": "…", …},
+              "lots": [ {lot payload} … ],
+              "next_cursor": "…" | null
             }
 
         Returns ``None`` on 404 (unknown customer uuid on PSP) or on
@@ -1295,8 +1358,16 @@ class PspClient:
         cleaned = str(customer_uuid or "").strip()
         if not cleaned:
             return None
+        query: dict[str, str] = {}
+        if q:
+            query["q"] = q
+        if cursor:
+            query["cursor"] = cursor
+        if isinstance(limit, int) and limit > 0:
+            query["limit"] = str(limit)
         response = self._request(
-            f"api/integration/customer-bailee-inventory/{cleaned}"
+            f"api/integration/customer-bailee-inventory/{cleaned}",
+            query=query or None,
         )
         if not isinstance(response, dict):
             return None
@@ -1309,6 +1380,8 @@ class PspClient:
         status: str | None = None,
         lot_uuid: str | None = None,
         limit: int | None = None,
+        q: str | None = None,
+        cursor: str | None = None,
     ) -> dict | None:
         """GET ``/api/integration/customer-dispatch-requests/:customer_uuid``.
 
@@ -1338,6 +1411,10 @@ class PspClient:
             query["lot_uuid"] = lot_uuid
         if isinstance(limit, int) and limit > 0:
             query["limit"] = str(limit)
+        if q:
+            query["q"] = q
+        if cursor:
+            query["cursor"] = cursor
         response = self._request(
             f"api/integration/customer-dispatch-requests/{cleaned}",
             query=query or None,
@@ -1345,6 +1422,35 @@ class PspClient:
         if not isinstance(response, dict):
             return None
         return response
+
+    def stream_customer_dispatch_photo(
+        self,
+        request_uuid: Any,
+        file_uuid: Any,
+    ) -> tuple[bytes, str, str | None] | None:
+        """GET
+        ``/api/integration/customer-dispatch-requests/:request_uuid/pickup-photos/:file_uuid``.
+
+        Returns ``(body, content_type, disposition)`` on success or
+        ``None`` on 404 / transport failure. Used by the portal's
+        photo-proxy view to serve pickup loading-photos to the
+        customer without leaking the integration token to the browser.
+        """
+
+        req = str(request_uuid or "").strip()
+        fid = str(file_uuid or "").strip()
+        if not req or not fid:
+            return None
+        raw = self._request_raw(
+            f"api/integration/customer-dispatch-requests/{req}/pickup-photos/{fid}",
+            method="GET",
+        )
+        if raw is None:
+            return None
+        body, content_type, disposition = raw
+        if not isinstance(body, (bytes, bytearray)):
+            return None
+        return bytes(body), content_type or "application/octet-stream", disposition
 
     def sync_sample_customer_order(self, payload: dict) -> dict | None:
         """Push a sample-fulfilment payload to PSP so a CO is created
@@ -7954,12 +8060,19 @@ def get_psp_customer_bailee_inventory(
     *,
     organization: Any,
     customer_uuid: Any,
+    q: str | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
 ) -> dict | None:
     """Fetch the customer's bailee-custody inventory snapshot from PSP.
 
     Powers Phase 1 of the 3PL portal integration — the customer's
     warehouse-visibility page reads this to render the "here's what
     we're holding for you + how much storage is accruing" surface.
+
+    Paginated: ``q`` / ``cursor`` / ``limit`` flow through to PSP.
+    Summary tiles come back unpaginated so they don't drift as the
+    customer scrolls.
 
     Silent-degrade posture — returns ``None`` when the integration
     isn't live, the token can't be decrypted, PSP is unreachable, or
@@ -7976,7 +8089,9 @@ def get_psp_customer_bailee_inventory(
         return None
     client = _client_factory(config)
     try:
-        return client.get_customer_bailee_inventory(customer_uuid)
+        return client.get_customer_bailee_inventory(
+            customer_uuid, q=q, cursor=cursor, limit=limit
+        )
     except PspError:
         return None
 
@@ -7988,6 +8103,8 @@ def list_psp_customer_dispatch_requests(
     status: str | None = None,
     lot_uuid: str | None = None,
     limit: int | None = None,
+    q: str | None = None,
+    cursor: str | None = None,
 ) -> dict | None:
     """Fetch the customer's dispatch-request history from PSP.
 
@@ -8006,8 +8123,39 @@ def list_psp_customer_dispatch_requests(
     client = _client_factory(config)
     try:
         return client.list_customer_dispatch_requests(
-            customer_uuid, status=status, lot_uuid=lot_uuid, limit=limit
+            customer_uuid,
+            status=status,
+            lot_uuid=lot_uuid,
+            limit=limit,
+            q=q,
+            cursor=cursor,
         )
+    except PspError:
+        return None
+
+
+def stream_psp_customer_dispatch_photo(
+    *,
+    organization: Any,
+    request_uuid: Any,
+    file_uuid: Any,
+) -> tuple[bytes, str, str | None] | None:
+    """Fetch a pickup-loading photo attached to a customer's dispatch
+    request. Returns ``(body, content_type, disposition)`` on success
+    or ``None`` on 404 / transport failure / integration off. Used
+    by the portal photo-proxy view so the customer can see evidence
+    photos without exposing PSP's integration token.
+    """
+
+    if not is_psp_live(organization):
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.stream_customer_dispatch_photo(request_uuid, file_uuid)
     except PspError:
         return None
 

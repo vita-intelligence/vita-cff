@@ -1,22 +1,16 @@
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import {
-  ArrowLeft,
-  CheckCircle2,
-  Clock,
-  History,
-  Package,
-  XCircle,
-} from "lucide-react";
+import { ArrowLeft, History, Package } from "lucide-react";
 
 import {
   Card,
-  Eyebrow,
   PageHeader,
   PortalShell,
 } from "@/components/portal/brutalist";
 import { env } from "@/config/env";
+
+import { RequestList, type DispatchRequest } from "./request-list";
 
 
 /**
@@ -24,40 +18,18 @@ import { env } from "@/config/env";
  * dispatch requests they've queued (any status). Sibling to
  * /portal/warehouse; the two share the same PSP integration.
  *
+ * SSR seeds the summary pills + first page of requests. Search +
+ * infinite scroll take over on the client via ``<RequestList>``.
+ *
  * Query params:
  *   * ``lot`` — pre-filter to a single lot (deep-linked from the
  *     "View requests" button on the warehouse lot cards).
  *   * ``status`` — pending | completed | cancelled (server-driven
- *     tab filter).
+ *     tab filter). Cursor is per-status so a switch resets scroll.
  */
 
 
 type StatusFilter = "pending" | "completed" | "cancelled" | "all";
-
-
-interface LotSummary {
-  readonly uuid: string;
-  readonly code: string | null;
-  readonly item: {
-    readonly name: string | null;
-    readonly code: string | null;
-  };
-  readonly unit_of_measurement: { readonly symbol: string };
-}
-
-
-interface DispatchRequest {
-  readonly uuid: string;
-  readonly status: "pending" | "completed" | "cancelled";
-  readonly qty: string;
-  readonly reference: string | null;
-  readonly notes: string | null;
-  readonly source: string;
-  readonly external_reference: string | null;
-  readonly requested_at: string | null;
-  readonly dispatched_at: string | null;
-  readonly lot: LotSummary | null;
-}
 
 
 interface Envelope {
@@ -69,6 +41,7 @@ interface Envelope {
     readonly cancelled: number;
   };
   readonly requests: readonly DispatchRequest[];
+  readonly next_cursor: string | null;
 }
 
 
@@ -106,9 +79,9 @@ export default async function PortalDispatchRequestsPage({
         customer: { uuid: null, name: null },
         summary: { total: 0, pending: 0, completed: 0, cancelled: 0 },
         requests: [],
+        next_cursor: null,
       };
 
-  const requests = data.requests;
   const hasAny = data.summary.total > 0;
 
   return (
@@ -132,7 +105,11 @@ export default async function PortalDispatchRequestsPage({
           Back to warehouse
         </Link>
 
-        <div className="flex items-center gap-1.5" role="tablist" aria-label="Filter by status">
+        <div
+          className="flex items-center gap-1.5"
+          role="tablist"
+          aria-label="Filter by status"
+        >
           <StatusPill
             label="All"
             count={data.summary.total}
@@ -179,7 +156,7 @@ export default async function PortalDispatchRequestsPage({
       ) : null}
 
       <div className="mt-6">
-        {requests.length === 0 ? (
+        {data.requests.length === 0 && !hasAny ? (
           <Card>
             <div className="flex items-start gap-3">
               <History className="mt-0.5 h-6 w-6 shrink-0 text-neutral-500" />
@@ -188,24 +165,19 @@ export default async function PortalDispatchRequestsPage({
                   Nothing to show
                 </p>
                 <p className="mt-1 text-sm">
-                  {statusFilter === "all"
-                    ? "You haven't queued any dispatches yet. Head over to Warehouse to request one."
-                    : `No ${statusFilter} requests match this filter.`}
+                  You haven&rsquo;t queued any dispatches yet. Head over to
+                  Warehouse to request one.
                 </p>
               </div>
             </div>
           </Card>
         ) : (
-          <>
-            <Eyebrow>Requests</Eyebrow>
-            <ul className="mt-3 flex flex-col gap-3">
-              {requests.map((r) => (
-                <li key={r.uuid}>
-                  <RequestRow request={r} />
-                </li>
-              ))}
-            </ul>
-          </>
+          <RequestList
+            initialItems={data.requests}
+            initialNextCursor={data.next_cursor}
+            statusFilter={statusFilter}
+            lotFilter={lot ?? null}
+          />
         )}
       </div>
     </PortalShell>
@@ -263,149 +235,13 @@ function StatusPill({
       }`}
     >
       {label}
-      <span className={`inline-flex min-w-[1.25rem] justify-center rounded-sm border border-black px-1 tabular-nums ${
-        active ? "bg-black text-white" : "bg-neutral-200 text-black"
-      }`}>
+      <span
+        className={`inline-flex min-w-[1.25rem] justify-center rounded-sm border border-black px-1 tabular-nums ${
+          active ? "bg-black text-white" : "bg-neutral-200 text-black"
+        }`}
+      >
         {count}
       </span>
     </Link>
   );
-}
-
-
-function RequestRow({ request }: { request: DispatchRequest }) {
-  const lot = request.lot;
-  const symbol = lot?.unit_of_measurement.symbol ?? "";
-  return (
-    <article className="border-2 border-black bg-white p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <StatusBadge status={request.status} />
-            {request.reference ? (
-              <span className="font-mono text-[11px] text-neutral-600">
-                Ref: {request.reference}
-              </span>
-            ) : null}
-          </div>
-          <h3 className="mt-2 text-base font-black uppercase leading-tight">
-            {lot?.item.name ?? "—"}
-          </h3>
-          <p className="mt-0.5 text-[11px] text-neutral-600">
-            {lot?.item.code ?? "—"}
-            {lot?.code ? ` · ${lot.code}` : ""}
-          </p>
-        </div>
-        <div className="text-right">
-          <p className="text-2xl font-black tabular-nums">
-            {formatDecimal(request.qty, 0)}
-            <span className="ml-1 text-sm text-neutral-500">{symbol}</span>
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-3 grid grid-cols-1 gap-3 border-t border-neutral-200 pt-3 text-xs sm:grid-cols-3">
-        <MetaCell label="Requested" value={formatDateTime(request.requested_at)} />
-        <MetaCell
-          label="Dispatched"
-          value={
-            request.status === "completed"
-              ? formatDateTime(request.dispatched_at)
-              : request.status === "cancelled"
-                ? "Cancelled"
-                : "Awaiting pickup"
-          }
-        />
-        <MetaCell label="Source" value={humaniseSource(request.source)} />
-      </div>
-
-      {request.notes ? (
-        <p className="mt-3 border-t border-neutral-200 pt-3 text-xs italic text-neutral-700">
-          &ldquo;{request.notes}&rdquo;
-        </p>
-      ) : null}
-    </article>
-  );
-}
-
-
-function StatusBadge({ status }: { status: DispatchRequest["status"] }) {
-  const shared =
-    "inline-flex items-center gap-1 border-2 border-black px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em]";
-  if (status === "completed") {
-    return (
-      <span className={`${shared} bg-emerald-500 text-black`}>
-        <CheckCircle2 className="h-3 w-3" />
-        Completed
-      </span>
-    );
-  }
-  if (status === "cancelled") {
-    return (
-      <span className={`${shared} bg-red-500 text-white`}>
-        <XCircle className="h-3 w-3" />
-        Cancelled
-      </span>
-    );
-  }
-  return (
-    <span className={`${shared} bg-orange-500 text-black`}>
-      <Clock className="h-3 w-3" />
-      Pending
-    </span>
-  );
-}
-
-
-function MetaCell({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-neutral-500">
-        {label}
-      </p>
-      <p className="mt-0.5 font-mono tabular-nums">{value}</p>
-    </div>
-  );
-}
-
-
-function humaniseSource(source: string): string {
-  switch (source) {
-    case "portal":
-      return "This portal";
-    case "shopify_webhook":
-      return "Shopify webhook";
-    case "custom_api":
-      return "Custom API";
-    case "staff":
-      return "Our team (on your behalf)";
-    default:
-      return source;
-  }
-}
-
-
-function formatDecimal(v: string | null, dp: number): string {
-  const n = Number(v ?? "0");
-  if (!Number.isFinite(n)) return v ?? "—";
-  return n.toLocaleString("en-GB", {
-    minimumFractionDigits: dp,
-    maximumFractionDigits: dp,
-  });
-}
-
-
-function formatDateTime(iso: string | null): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString("en-GB", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso.slice(0, 16).replace("T", " ");
-  }
 }

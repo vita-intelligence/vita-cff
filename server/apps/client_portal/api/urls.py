@@ -75,6 +75,7 @@ from .views import (
 from .dashboard_views import PortalDashboardView
 from .activity_views import PortalActivityView
 from .warehouse_views import (
+    PortalDispatchRequestPickupPhotoView,
     PortalWarehouseDispatchRequestView,
     PortalWarehouseStockView,
 )
@@ -387,6 +388,14 @@ urlpatterns = [
         "warehouse/dispatch-requests/",
         PortalWarehouseDispatchRequestView.as_view(),
         name="portal-warehouse-dispatch-request",
+    ),
+    # Streams a pickup loading-photo attached to the outbound
+    # shipment linked to a dispatch request. Portal-authed proxy in
+    # front of PSP's integration endpoint.
+    path(
+        "warehouse/dispatch-requests/<uuid:request_uuid>/pickup-photos/<uuid:file_uuid>/",
+        PortalDispatchRequestPickupPhotoView.as_view(),
+        name="portal-warehouse-dispatch-request-photo",
     ),
 
     # Profile / settings.
