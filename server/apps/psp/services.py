@@ -1427,22 +1427,30 @@ class PspClient:
         self,
         request_uuid: Any,
         file_uuid: Any,
+        *,
+        customer_uuid: Any = None,
     ) -> tuple[bytes, str, str | None] | None:
-        """GET
-        ``/api/integration/customer-dispatch-requests/:request_uuid/pickup-photos/:file_uuid``.
+        """GET ``/api/integration/customer-dispatch-requests/:request_uuid/pickup-photos/:file_uuid?customer_uuid=…``.
 
         Returns ``(body, content_type, disposition)`` on success or
-        ``None`` on 404 / transport failure. Used by the portal's
-        photo-proxy view to serve pickup loading-photos to the
-        customer without leaking the integration token to the browser.
+        ``None`` on 404 / transport failure. ``customer_uuid`` is
+        required by PSP to enforce customer ownership within the
+        company scope — passing it as a query param avoids the
+        earlier paginated-list check that broke for customers with
+        >100 requests.
         """
 
         req = str(request_uuid or "").strip()
         fid = str(file_uuid or "").strip()
         if not req or not fid:
             return None
+        query: dict[str, str] = {}
+        cust = str(customer_uuid or "").strip()
+        if cust:
+            query["customer_uuid"] = cust
         raw = self._request_raw(
             f"api/integration/customer-dispatch-requests/{req}/pickup-photos/{fid}",
+            query=query or None,
             method="GET",
         )
         if raw is None:
@@ -1451,6 +1459,44 @@ class PspClient:
         if not isinstance(body, (bytes, bytearray)):
             return None
         return bytes(body), content_type or "application/octet-stream", disposition
+
+    def confirm_customer_dispatch_delivery(
+        self,
+        request_uuid: Any,
+        *,
+        customer_uuid: Any,
+        recipient_signatory: str,
+        delivery_notes: str | None = None,
+    ) -> dict | None:
+        """POST ``/api/integration/customer-dispatch-requests/:request_uuid/confirm-delivery``.
+
+        Customer POD confirmation for a 3PL bailee shipment. PSP
+        validates customer ownership + delegates to
+        ``Backend.Shipments.confirm_delivery_from_portal``. Idempotent
+        — a replay against an already-delivered shipment echoes the
+        current shape back. Returns the refreshed dispatch-request
+        payload or ``None`` on transport failure.
+        """
+
+        req = str(request_uuid or "").strip()
+        cust = str(customer_uuid or "").strip()
+        signatory = (recipient_signatory or "").strip()
+        if not req or not cust or not signatory:
+            return None
+        body = {
+            "customer_uuid": cust,
+            "recipient_signatory": signatory,
+        }
+        if delivery_notes:
+            body["delivery_notes"] = delivery_notes
+        response = self._request(
+            f"api/integration/customer-dispatch-requests/{req}/confirm-delivery",
+            method="POST",
+            body=body,
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
 
     def sync_sample_customer_order(self, payload: dict) -> dict | None:
         """Push a sample-fulfilment payload to PSP so a CO is created
@@ -8139,6 +8185,7 @@ def stream_psp_customer_dispatch_photo(
     organization: Any,
     request_uuid: Any,
     file_uuid: Any,
+    customer_uuid: Any = None,
 ) -> tuple[bytes, str, str | None] | None:
     """Fetch a pickup-loading photo attached to a customer's dispatch
     request. Returns ``(body, content_type, disposition)`` on success
@@ -8155,7 +8202,42 @@ def stream_psp_customer_dispatch_photo(
         return None
     client = _client_factory(config)
     try:
-        return client.stream_customer_dispatch_photo(request_uuid, file_uuid)
+        return client.stream_customer_dispatch_photo(
+            request_uuid, file_uuid, customer_uuid=customer_uuid
+        )
+    except PspError:
+        return None
+
+
+def confirm_psp_customer_dispatch_delivery(
+    *,
+    organization: Any,
+    request_uuid: Any,
+    customer_uuid: Any,
+    recipient_signatory: str,
+    delivery_notes: str | None = None,
+) -> dict | None:
+    """Customer POD for a 3PL bailee shipment. Portal proxies this
+    when the customer taps "Mark as delivered" on the dispatch
+    request. Silent-degrade posture — returns ``None`` on integration
+    off / decrypt failure / PSP unreachable so the portal shows a
+    clear error banner instead of a stack trace.
+    """
+
+    if not is_psp_live(organization):
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.confirm_customer_dispatch_delivery(
+            request_uuid,
+            customer_uuid=customer_uuid,
+            recipient_signatory=recipient_signatory,
+            delivery_notes=delivery_notes,
+        )
     except PspError:
         return None
 

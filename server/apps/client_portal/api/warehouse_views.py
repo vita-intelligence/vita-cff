@@ -509,10 +509,7 @@ class PortalDispatchRequestPickupPhotoView(PortalAPIView):
 
     def get(self, request: Request, request_uuid: str, file_uuid: str) -> Response:
         from django.http import HttpResponse
-        from apps.psp.services import (
-            list_psp_customer_dispatch_requests,
-            stream_psp_customer_dispatch_photo,
-        )
+        from apps.psp.services import stream_psp_customer_dispatch_photo
 
         customer_ids = customer_ids_for_account(request.user)
         if not customer_ids:
@@ -536,29 +533,15 @@ class PortalDispatchRequestPickupPhotoView(PortalAPIView):
         if organization is None:
             return _photo_not_found()
 
-        # Verify the request belongs to this customer BEFORE streaming
-        # the bytes — otherwise a leaked request+file uuid pair could
-        # exfiltrate a peer customer's photo. Look up the request by
-        # its uuid on PSP, restricted to the caller's customer scope.
-        snapshot = list_psp_customer_dispatch_requests(
-            organization=organization,
-            customer_uuid=str(customer.id),
-            limit=100,
-        )
-        if not isinstance(snapshot, dict):
-            return _photo_not_found()
-        requests_list = snapshot.get("requests") or []
-        owns = any(
-            isinstance(r, dict) and r.get("uuid") == request_uuid
-            for r in requests_list
-        )
-        if not owns:
-            return _photo_not_found()
-
+        # PSP now enforces customer ownership via the ``customer_uuid``
+        # query param — the paginated ownership check we did on this
+        # side used to 404 for customers with >100 requests. Just
+        # forward the customer id and let PSP say yes/no atomically.
         raw = stream_psp_customer_dispatch_photo(
             organization=organization,
             request_uuid=request_uuid,
             file_uuid=file_uuid,
+            customer_uuid=str(customer.id),
         )
         if raw is None:
             return _photo_not_found()
@@ -572,10 +555,95 @@ class PortalDispatchRequestPickupPhotoView(PortalAPIView):
         return resp
 
 
+class PortalDispatchRequestConfirmDeliveryView(PortalAPIView):
+    """``POST /api/portal/warehouse/dispatch-requests/:request_uuid/confirm-delivery/``.
+
+    Customer POD confirmation for a bailee-flow shipment. Body:
+
+        {
+          "recipient_signatory": "…",    # required
+          "delivery_notes": "…"          # optional
+        }
+
+    Verifies the caller's Customer id owns the request via PSP's
+    ownership check (same ``customer_uuid`` query pattern as the
+    photo endpoint) and flips the linked shipment to ``delivered``.
+    Idempotent — a portal double-tap or a stale refresh after the
+    customer already confirmed returns the current snapshot.
+    """
+
+    def post(
+        self,
+        request: Request,
+        request_uuid: str,
+    ) -> Response:
+        from apps.psp.services import confirm_psp_customer_dispatch_delivery
+
+        signatory = _strip_or_none(request.data.get("recipient_signatory"))
+        if not signatory:
+            return Response(
+                {
+                    "detail": "missing_signatory",
+                    "message": "Please enter who received the parcel.",
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        delivery_notes = _strip_or_none(request.data.get("delivery_notes"))
+
+        customer_ids = customer_ids_for_account(request.user)
+        if not customer_ids:
+            return _confirm_not_found()
+
+        canonical_id = (
+            getattr(request.user, "customer_id", None) or customer_ids[0]
+        )
+        customer = (
+            Customer.objects
+            .filter(pk=canonical_id)
+            .only("id", "organization_id")
+            .first()
+        )
+        if customer is None:
+            return _confirm_not_found()
+
+        organization = getattr(customer, "organization", None) or _org_from_id(
+            customer.organization_id
+        )
+        if organization is None:
+            return _confirm_not_found()
+
+        payload = confirm_psp_customer_dispatch_delivery(
+            organization=organization,
+            request_uuid=str(request_uuid),
+            customer_uuid=str(customer.id),
+            recipient_signatory=signatory,
+            delivery_notes=delivery_notes,
+        )
+        if not isinstance(payload, dict):
+            return Response(
+                {
+                    "detail": "confirm_failed",
+                    "message": "Couldn't confirm delivery right now. Please try again.",
+                },
+                status=http_status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(payload)
+
+
 def _photo_not_found():
     from django.http import HttpResponse
 
     return HttpResponse(status=404, content=b"", content_type="text/plain")
+
+
+def _confirm_not_found():
+    return Response(
+        {
+            "detail": "not_found",
+            "message": "Dispatch request not found.",
+        },
+        status=http_status.HTTP_404_NOT_FOUND,
+    )
 
 
 def _strip_or_none(value: Any) -> str | None:

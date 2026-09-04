@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
+  AlertTriangle,
   Camera,
   Check,
   CheckCircle2,
@@ -15,6 +17,8 @@ import {
   XCircle,
 } from "lucide-react";
 
+import { apiClient } from "@/lib/api";
+import { PortalModal } from "@/components/portal/portal-modal";
 import {
   PortalInfiniteList,
   type PortalPage,
@@ -177,10 +181,18 @@ export function RequestList({
 
 function RequestRow({ request }: { request: DispatchRequest }) {
   const [expanded, setExpanded] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const lot = request.lot;
   const symbol = lot?.unit_of_measurement.symbol ?? "";
   const shipment = request.shipment;
   const hasEvidence = shipment !== null;
+  // Customer POD only makes sense while the shipment is in transit
+  // — before the truck departed there's nothing to confirm, and
+  // after the customer has already confirmed there's nothing to add.
+  const canMarkDelivered =
+    shipment !== null &&
+    shipment.status === "picked_up" &&
+    !shipment.delivered_at;
   return (
     <article className="border-2 border-black bg-white">
       <div className="p-4">
@@ -244,7 +256,16 @@ function RequestRow({ request }: { request: DispatchRequest }) {
         ) : null}
 
         {hasEvidence || request.ship_to ? (
-          <div className="mt-3 flex justify-end border-t border-neutral-200 pt-3">
+          <div className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-neutral-200 pt-3">
+            {canMarkDelivered ? (
+              <button
+                type="button"
+                onClick={() => setConfirmOpen(true)}
+                className="inline-flex items-center gap-1.5 border-2 border-emerald-600 bg-emerald-500 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-black transition-all hover:bg-emerald-400"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" /> Mark as delivered
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => setExpanded((x) => !x)}
@@ -271,7 +292,161 @@ function RequestRow({ request }: { request: DispatchRequest }) {
           {shipment ? <ShipmentPanel shipment={shipment} /> : null}
         </div>
       ) : null}
+
+      {confirmOpen ? (
+        <MarkDeliveredDialog
+          request={request}
+          onClose={() => setConfirmOpen(false)}
+        />
+      ) : null}
     </article>
+  );
+}
+
+function MarkDeliveredDialog({
+  request,
+  onClose,
+}: {
+  request: DispatchRequest;
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const [signatory, setSignatory] = useState("");
+  const [notes, setNotes] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startPending] = useTransition();
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = signatory.trim();
+    if (!trimmed) {
+      setError("Please enter who signed for the parcel.");
+      return;
+    }
+    setError(null);
+    startPending(async () => {
+      try {
+        await apiClient.post(
+          `/api/portal/warehouse/dispatch-requests/${encodeURIComponent(request.uuid)}/confirm-delivery/`,
+          {
+            recipient_signatory: trimmed,
+            delivery_notes: notes.trim() || undefined,
+          },
+        );
+        // Full server refresh — the request row updates status +
+        // delivered_at + the pill turns green.
+        router.refresh();
+        onClose();
+      } catch (err: unknown) {
+        const detail =
+          (err as { response?: { data?: { message?: string; detail?: string } } })
+            ?.response?.data?.message ||
+          "Couldn't record the delivery. Try again in a moment.";
+        setError(detail);
+      }
+    });
+  }
+
+  return (
+    <PortalModal
+      onClose={onClose}
+      ariaLabel="Mark shipment as delivered"
+      locked={pending}
+    >
+      <PortalModal.Header>
+        <div className="flex items-start gap-3">
+          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center border-2 border-black bg-emerald-500">
+            <CheckCircle2 className="h-5 w-5 text-black" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-neutral-700">
+              Confirm delivery
+            </p>
+            <h2 className="mt-1 truncate text-lg font-black uppercase">
+              {request.lot?.item.name ?? "Shipment"}
+            </h2>
+            <p className="mt-0.5 font-mono text-[11px] text-neutral-500">
+              {request.qty} {request.lot?.unit_of_measurement.symbol ?? ""}
+            </p>
+          </div>
+        </div>
+      </PortalModal.Header>
+      <form onSubmit={submit} id="mark-delivered-form" className="contents">
+        <PortalModal.Body>
+          <p className="text-sm text-neutral-700">
+            This tells us the parcel arrived. Enter who signed for it — that
+            name lands on our delivery log. Once confirmed, our team stops
+            tracking this request.
+          </p>
+          <div className="mt-4 space-y-4">
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
+                Signed by <span className="text-red-700">*</span>
+              </label>
+              <input
+                type="text"
+                value={signatory}
+                onChange={(e) => setSignatory(e.target.value)}
+                maxLength={200}
+                required
+                disabled={pending}
+                placeholder="e.g. Anna Kowalski"
+                className="mt-1.5 block w-full border-2 border-black bg-white px-3 py-2 text-sm outline-none"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
+                Notes (optional)
+              </label>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={2}
+                maxLength={500}
+                disabled={pending}
+                placeholder="Anything worth recording — damage on arrival, partial receipt, etc."
+                className="mt-1.5 block w-full resize-none border-2 border-black bg-white px-3 py-2 text-sm outline-none"
+              />
+            </div>
+            {error ? (
+              <div className="flex items-start gap-2 border-2 border-red-700 bg-red-50 p-3">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-800" />
+                <p className="text-xs text-red-900">{error}</p>
+              </div>
+            ) : null}
+          </div>
+        </PortalModal.Body>
+        <PortalModal.Footer>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={pending}
+              className="inline-flex items-center justify-center border-2 border-black bg-white px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-black transition-colors hover:bg-neutral-100 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="mark-delivered-form"
+              disabled={pending}
+              className="inline-flex items-center justify-center gap-2 border-2 border-black bg-emerald-500 px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-black transition-colors hover:bg-emerald-400 disabled:opacity-50"
+            >
+              {pending ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Confirming…
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="h-4 w-4" /> Confirm delivery
+                </>
+              )}
+            </button>
+          </div>
+        </PortalModal.Footer>
+      </form>
+    </PortalModal>
   );
 }
 

@@ -75,6 +75,7 @@ from .views import (
 from .dashboard_views import PortalDashboardView
 from .activity_views import PortalActivityView
 from .warehouse_views import (
+    PortalDispatchRequestConfirmDeliveryView,
     PortalDispatchRequestPickupPhotoView,
     PortalWarehouseDispatchRequestView,
     PortalWarehouseStockView,
@@ -396,6 +397,14 @@ urlpatterns = [
         "warehouse/dispatch-requests/<uuid:request_uuid>/pickup-photos/<uuid:file_uuid>/",
         PortalDispatchRequestPickupPhotoView.as_view(),
         name="portal-warehouse-dispatch-request-photo",
+    ),
+    # Customer POD confirmation for a bailee-flow shipment. Body
+    # carries `recipient_signatory` + optional `delivery_notes`.
+    # Flips the linked shipment to `delivered` on PSP.
+    path(
+        "warehouse/dispatch-requests/<uuid:request_uuid>/confirm-delivery/",
+        PortalDispatchRequestConfirmDeliveryView.as_view(),
+        name="portal-warehouse-dispatch-request-confirm-delivery",
     ),
 
     # Profile / settings.
