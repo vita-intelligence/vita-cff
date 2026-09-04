@@ -65,6 +65,31 @@ export function PortalInfiniteList<T extends { uuid: string }>({
   const [items, setItems] = useState<readonly T[]>(initialItems);
   const [cursor, setCursor] = useState<string | null>(initialNextCursor);
   const [phase, setPhase] = useState<"idle" | "loading" | "error">("idle");
+  // Adopt fresh seed data when the parent re-fetches (dispatch
+  // request submitted → warehouse snapshot refreshed → new
+  // ``initialItems`` reference lands here). Without this, the
+  // ``useState(initialItems)`` initialiser latches the first paint
+  // and the list keeps showing stale qty_available even after
+  // the backend has correctly decremented it. Skipped when the
+  // operator is actively searching — otherwise their typed query
+  // would silently wipe the filtered results.
+  //
+  // React-blessed "adjust state during render" pattern —
+  // https://react.dev/reference/react/useState#storing-information-from-previous-renders.
+  const [prevInitialItems, setPrevInitialItems] = useState(initialItems);
+  const [prevInitialCursor, setPrevInitialCursor] = useState(initialNextCursor);
+  if (
+    initialItems !== prevInitialItems ||
+    initialNextCursor !== prevInitialCursor
+  ) {
+    setPrevInitialItems(initialItems);
+    setPrevInitialCursor(initialNextCursor);
+    if (q.trim() === "") {
+      setItems(initialItems);
+      setCursor(initialNextCursor);
+      setPhase("idle");
+    }
+  }
   const [initialised, setInitialised] = useState<boolean>(q === "");
   const requestSeqRef = useRef(0);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
