@@ -28,6 +28,15 @@ interface Props {
   readonly itemName: string;
   readonly qtyOnHand: string;
   readonly unitSymbol: string;
+  /** Customer's saved default ship-to. Populated once from the
+   *  warehouse endpoint so the dispatch dialog opens pre-filled;
+   *  the customer can still edit every field before submit. Null
+   *  fields fall through to empty inputs. */
+  readonly defaultShipTo?: {
+    readonly name: string | null;
+    readonly address: string | null;
+    readonly country: string | null;
+  };
 }
 
 
@@ -37,6 +46,7 @@ export function DispatchRequestButton({
   itemName,
   qtyOnHand,
   unitSymbol,
+  defaultShipTo,
 }: Props) {
   const [open, setOpen] = useState(false);
 
@@ -57,6 +67,7 @@ export function DispatchRequestButton({
           itemName={itemName}
           qtyOnHand={qtyOnHand}
           unitSymbol={unitSymbol}
+          defaultShipTo={defaultShipTo}
           onClose={() => setOpen(false)}
         />
       ) : null}
@@ -71,12 +82,22 @@ function DispatchDialog({
   itemName,
   qtyOnHand,
   unitSymbol,
+  defaultShipTo,
   onClose,
 }: Props & { onClose: () => void }) {
   const router = useRouter();
   const [qty, setQty] = useState<string>(qtyOnHand);
   const [reference, setReference] = useState<string>("");
   const [notes, setNotes] = useState<string>("");
+  const [shipToName, setShipToName] = useState<string>(
+    defaultShipTo?.name ?? "",
+  );
+  const [shipToAddress, setShipToAddress] = useState<string>(
+    defaultShipTo?.address ?? "",
+  );
+  const [shipToCountry, setShipToCountry] = useState<string>(
+    defaultShipTo?.country ?? "",
+  );
   const [phase, setPhase] = useState<"idle" | "sending" | "sent" | "error">(
     "idle",
   );
@@ -98,6 +119,9 @@ function DispatchDialog({
         qty,
         reference: reference || undefined,
         notes: notes || undefined,
+        ship_to_name: shipToName.trim() || undefined,
+        ship_to_address: shipToAddress.trim() || undefined,
+        ship_to_country: shipToCountry.trim().toUpperCase() || undefined,
       });
       setPhase("sent");
       // Give the success state a beat of visibility, then close and
@@ -175,6 +199,51 @@ function DispatchDialog({
 
           <div>
             <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
+              Ship to · Recipient name
+            </label>
+            <input
+              type="text"
+              value={shipToName}
+              onChange={(e) => setShipToName(e.target.value)}
+              maxLength={200}
+              disabled={phase === "sending" || phase === "sent"}
+              placeholder="Who signs for it?"
+              className="mt-1.5 block w-full border-2 border-black bg-white px-3 py-2 text-sm outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
+              Ship to · Address
+            </label>
+            <textarea
+              value={shipToAddress}
+              onChange={(e) => setShipToAddress(e.target.value)}
+              rows={2}
+              maxLength={500}
+              disabled={phase === "sending" || phase === "sent"}
+              placeholder="Street, city, postcode…"
+              className="mt-1.5 block w-full resize-none border-2 border-black bg-white px-3 py-2 text-sm outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
+              Ship to · Country (2-letter ISO)
+            </label>
+            <input
+              type="text"
+              value={shipToCountry}
+              onChange={(e) => setShipToCountry(e.target.value.toUpperCase())}
+              maxLength={2}
+              disabled={phase === "sending" || phase === "sent"}
+              placeholder="GB"
+              className="mt-1.5 block w-24 border-2 border-black bg-white px-3 py-2 text-sm font-mono uppercase outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
               Your reference (optional)
             </label>
             <input
@@ -198,7 +267,7 @@ function DispatchDialog({
               rows={2}
               maxLength={500}
               disabled={phase === "sending" || phase === "sent"}
-              placeholder="Ship to a different address, delivery window, anything else…"
+              placeholder="Delivery window, special handling, anything else…"
               className="mt-1.5 block w-full resize-none border-2 border-black bg-white px-3 py-2 text-sm outline-none"
             />
           </div>

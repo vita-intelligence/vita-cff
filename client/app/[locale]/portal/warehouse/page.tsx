@@ -78,12 +78,19 @@ interface Summary {
   readonly total_accrued_charge: string;
 }
 
+interface DefaultShipTo {
+  readonly name: string | null;
+  readonly address: string | null;
+  readonly country: string | null;
+}
+
 interface Snapshot {
   readonly customer: { readonly uuid: string | null; readonly name: string | null };
   readonly currency: string;
   readonly rate_per_m3_per_day: string | null;
   readonly summary: Summary;
   readonly lots: readonly BaileeLot[];
+  readonly default_ship_to?: DefaultShipTo;
 }
 
 
@@ -181,7 +188,12 @@ export default async function PortalWarehousePage() {
           <Eyebrow>Held lots</Eyebrow>
           <div className="mt-3 flex flex-col gap-3">
             {data.lots.map((lot) => (
-              <LotCard key={lot.uuid} lot={lot} currency={data.currency} />
+              <LotCard
+                key={lot.uuid}
+                lot={lot}
+                currency={data.currency}
+                defaultShipTo={data.default_ship_to}
+              />
             ))}
           </div>
 
@@ -261,7 +273,15 @@ function SummaryTile({
 }
 
 
-function LotCard({ lot, currency }: { lot: BaileeLot; currency: string }) {
+function LotCard({
+  lot,
+  currency,
+  defaultShipTo,
+}: {
+  lot: BaileeLot;
+  currency: string;
+  defaultShipTo?: DefaultShipTo;
+}) {
   const location = lot.location;
   const locationLine = location
     ? [location.warehouse, location.floor, location.location, location.cell]
@@ -337,6 +357,7 @@ function LotCard({ lot, currency }: { lot: BaileeLot; currency: string }) {
           lotCode={lot.code || lot.item.code || "Lot"}
           itemName={lot.item.name || "—"}
           qtyOnHand={availableQty}
+          defaultShipTo={defaultShipTo}
           unitSymbol={lot.unit_of_measurement.symbol}
         />
       </div>

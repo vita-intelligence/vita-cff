@@ -77,7 +77,7 @@ class PortalWarehouseStockView(PortalAPIView):
         customer = (
             Customer.objects
             .filter(pk=canonical_id)
-            .only("id", "organization_id")
+            .only("id", "organization_id", "name", "delivery_address")
             .first()
         )
         if customer is None:
@@ -95,14 +95,22 @@ class PortalWarehouseStockView(PortalAPIView):
         snapshot = get_psp_customer_bailee_inventory(
             organization=organization, customer_uuid=str(customer.id)
         )
-        if not isinstance(snapshot, dict):
-            return Response(empty)
-
         # Guard against a malformed payload — the FE expects the
         # summary + lots keys unconditionally so an empty envelope
         # with the missing pieces filled in is safer than trusting
         # PSP to send a complete shape.
-        return Response(_normalise(snapshot))
+        envelope = _normalise(snapshot) if isinstance(snapshot, dict) else empty
+        # Stamp the customer's default ship-to snapshot so the
+        # portal ``Request dispatch`` dialog can prefill without a
+        # second round-trip. Free-text ``delivery_address`` from
+        # the Customer record covers most cases; the FE lets the
+        # customer amend before submit.
+        envelope["default_ship_to"] = {
+            "name": (customer.name or "").strip() or None,
+            "address": (customer.delivery_address or "").strip() or None,
+            "country": None,
+        }
+        return Response(envelope)
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +130,7 @@ def _empty_envelope() -> dict[str, Any]:
             "total_accrued_charge": "0",
         },
         "lots": [],
+        "default_ship_to": {"name": None, "address": None, "country": None},
     }
 
 
@@ -223,6 +232,17 @@ class PortalWarehouseDispatchRequestView(PortalAPIView):
         qty_raw = request.data.get("qty")
         notes = _strip_or_none(request.data.get("notes"))
         reference = _strip_or_none(request.data.get("reference"))
+        # Customer's ship-to snapshot from the portal dialog. All
+        # three are optional — a customer can leave them blank and
+        # the CO / customer defaults on PSP take over. When set,
+        # they land on the outbound Shipment as its initial
+        # recipient / address / country.
+        ship_to_name = _strip_or_none(request.data.get("ship_to_name"))
+        ship_to_address = _strip_or_none(request.data.get("ship_to_address"))
+        ship_to_country_raw = _strip_or_none(request.data.get("ship_to_country"))
+        ship_to_country = (
+            ship_to_country_raw.upper() if isinstance(ship_to_country_raw, str) else None
+        )
 
         if not lot_uuid:
             return _dispatch_error("missing_key", http_status.HTTP_400_BAD_REQUEST)
@@ -257,6 +277,9 @@ class PortalWarehouseDispatchRequestView(PortalAPIView):
             reference=reference,
             notes=notes,
             source="portal",
+            ship_to_name=ship_to_name,
+            ship_to_address=ship_to_address,
+            ship_to_country=ship_to_country,
         )
         if err is not None:
             # Preserve PSP's HTTP semantics: transport / config errors
