@@ -21,7 +21,7 @@ import { AlertTriangle, Check, Loader2, Send, Truck } from "lucide-react";
 
 import { apiClient } from "@/lib/api";
 import { PortalModal } from "@/components/portal/portal-modal";
-import { COUNTRIES } from "@/lib/iso/countries";
+import { CountryField } from "@/components/portal/country-field";
 
 
 interface Props {
@@ -240,19 +240,12 @@ function DispatchDialog({
             <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
               Ship to · Country
             </label>
-            <select
+            <CountryField
               value={shipToCountry}
-              onChange={(e) => setShipToCountry(e.target.value)}
+              onChange={setShipToCountry}
               disabled={phase === "sending" || phase === "sent"}
-              className="mt-1.5 block w-full border-2 border-black bg-white px-3 py-2 text-sm outline-none"
-            >
-              <option value="">— select a country —</option>
-              {COUNTRIES.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {c.flag} {c.name} ({c.code})
-                </option>
-              ))}
-            </select>
+              className="mt-1.5"
+            />
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
