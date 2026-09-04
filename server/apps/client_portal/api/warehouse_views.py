@@ -28,6 +28,7 @@ gets the empty envelope — the FE reads "no held stock" and
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from rest_framework import status as http_status
@@ -182,10 +183,24 @@ _DISPATCH_ERROR_COPY: dict[str, str] = {
     "no_bailee_placement": "That lot has no stock on our shelves right now.",
     "insufficient_qty": "That's more than we currently have on our shelves for this lot (net of any pending requests).",
     "missing_key": "Missing required field — refresh and try again.",
+    "missing_ship_to_name": "Add a recipient name — the courier needs to know who signs for it.",
+    "missing_ship_to_address": "Add a delivery address — the courier needs somewhere to take it.",
+    "missing_ship_to_country": "Pick a destination country.",
+    "missing_ship_to_email": "Add a recipient email — the post office refuses parcels without one.",
+    "missing_ship_to_phone": "Add a recipient phone — the post office refuses parcels without one.",
+    "bad_ship_to_email": "That doesn't look like a valid email address.",
+    "bad_ship_to_country": "Country must be a 2-letter code like GB or US.",
     "validation_error": "Couldn't queue that request — please check the values and try again.",
     "psp_unavailable": "Our warehouse system is temporarily unreachable. Please try again in a moment.",
     "psp_error": "Couldn't queue that dispatch request. Please try again or ping us in the project chat.",
 }
+
+
+# Very light email format check — the authoritative validation lives
+# on PSP's ``Dispatch.request_changeset``. This proxy guard just
+# catches the obvious "no @" typo so the customer gets an inline
+# error instead of a round trip to PSP for an "invalid email".
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class PortalWarehouseDispatchRequestView(PortalAPIView):
@@ -253,6 +268,41 @@ class PortalWarehouseDispatchRequestView(PortalAPIView):
             return _dispatch_error("missing_key", http_status.HTTP_400_BAD_REQUEST)
         if qty_raw in (None, ""):
             return _dispatch_error("bad_qty", http_status.HTTP_400_BAD_REQUEST)
+
+        # Ship-to snapshot is required at the portal boundary — the
+        # courier hand-off refuses parcels without email + phone, and
+        # a shipment with no recipient / address / country is useless
+        # downstream. Return a per-field error code so the FE can
+        # highlight the offending input (kept in a stable priority
+        # order: name → address → country → email → phone).
+        if not ship_to_name:
+            return _dispatch_error(
+                "missing_ship_to_name", http_status.HTTP_400_BAD_REQUEST
+            )
+        if not ship_to_address:
+            return _dispatch_error(
+                "missing_ship_to_address", http_status.HTTP_400_BAD_REQUEST
+            )
+        if not ship_to_country:
+            return _dispatch_error(
+                "missing_ship_to_country", http_status.HTTP_400_BAD_REQUEST
+            )
+        if len(ship_to_country) != 2:
+            return _dispatch_error(
+                "bad_ship_to_country", http_status.HTTP_400_BAD_REQUEST
+            )
+        if not ship_to_email:
+            return _dispatch_error(
+                "missing_ship_to_email", http_status.HTTP_400_BAD_REQUEST
+            )
+        if not _EMAIL_RE.match(ship_to_email):
+            return _dispatch_error(
+                "bad_ship_to_email", http_status.HTTP_400_BAD_REQUEST
+            )
+        if not ship_to_phone:
+            return _dispatch_error(
+                "missing_ship_to_phone", http_status.HTTP_400_BAD_REQUEST
+            )
 
         customer_ids = customer_ids_for_account(request.user)
         if not customer_ids:

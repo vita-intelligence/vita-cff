@@ -115,6 +115,14 @@ function DispatchDialog({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!qtyValid || phase === "sending") return;
+    // Country lives behind a button-triggered bottom sheet on mobile
+    // so HTML5 required doesn't cover it — pre-flight here so the
+    // customer sees the error inline instead of a proxy round trip.
+    if (!shipToCountry.trim()) {
+      setErrorMessage("Please pick a destination country before sending.");
+      setPhase("error");
+      return;
+    }
     setPhase("sending");
     setErrorMessage("");
     try {
@@ -208,13 +216,14 @@ function DispatchDialog({
 
           <div>
             <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
-              Ship to · Recipient name
+              Ship to · Recipient name <span className="text-red-700">*</span>
             </label>
             <input
               type="text"
               value={shipToName}
               onChange={(e) => setShipToName(e.target.value)}
               maxLength={200}
+              required
               disabled={phase === "sending" || phase === "sent"}
               placeholder="Who signs for it?"
               className="mt-1.5 block w-full border-2 border-black bg-white px-3 py-2 text-sm outline-none"
@@ -223,13 +232,14 @@ function DispatchDialog({
 
           <div>
             <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
-              Ship to · Address
+              Ship to · Address <span className="text-red-700">*</span>
             </label>
             <textarea
               value={shipToAddress}
               onChange={(e) => setShipToAddress(e.target.value)}
               rows={2}
               maxLength={500}
+              required
               disabled={phase === "sending" || phase === "sent"}
               placeholder="Street, city, postcode…"
               className="mt-1.5 block w-full resize-none border-2 border-black bg-white px-3 py-2 text-sm outline-none"
@@ -238,12 +248,13 @@ function DispatchDialog({
 
           <div>
             <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
-              Ship to · Country
+              Ship to · Country <span className="text-red-700">*</span>
             </label>
             <CountryField
               value={shipToCountry}
               onChange={setShipToCountry}
               disabled={phase === "sending" || phase === "sent"}
+              required
               className="mt-1.5"
             />
           </div>
@@ -251,7 +262,7 @@ function DispatchDialog({
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
-                Recipient email
+                Recipient email <span className="text-red-700">*</span>
               </label>
               <input
                 type="email"
@@ -260,6 +271,7 @@ function DispatchDialog({
                 value={shipToEmail}
                 onChange={(e) => setShipToEmail(e.target.value)}
                 maxLength={200}
+                required
                 disabled={phase === "sending" || phase === "sent"}
                 placeholder="name@example.com"
                 className="mt-1.5 block w-full border-2 border-black bg-white px-3 py-2 text-sm outline-none"
@@ -267,7 +279,7 @@ function DispatchDialog({
             </div>
             <div>
               <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
-                Recipient phone
+                Recipient phone <span className="text-red-700">*</span>
               </label>
               <input
                 type="tel"
@@ -276,6 +288,8 @@ function DispatchDialog({
                 value={shipToPhone}
                 onChange={(e) => setShipToPhone(e.target.value)}
                 maxLength={60}
+                minLength={6}
+                required
                 disabled={phase === "sending" || phase === "sent"}
                 placeholder="+44 7700 900123"
                 className="mt-1.5 block w-full border-2 border-black bg-white px-3 py-2 text-sm outline-none"
@@ -284,7 +298,8 @@ function DispatchDialog({
           </div>
           <p className="text-[11px] text-neutral-500">
             Couriers need both email and phone at drop-off — post offices
-            refuse the parcel without them.
+            refuse the parcel without them. All fields marked{" "}
+            <span className="text-red-700">*</span> are required.
           </p>
 
           <div>

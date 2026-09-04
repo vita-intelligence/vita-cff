@@ -26,13 +26,21 @@ interface Props {
   readonly value: string;
   readonly onChange: (code: string) => void;
   readonly disabled?: boolean;
+  readonly required?: boolean;
   readonly id?: string;
   /** Extra classes applied to the wrapper so the parent controls
    *  spacing (`mt-1.5` etc) without the component owning layout. */
   readonly className?: string;
 }
 
-export function CountryField({ value, onChange, disabled, id, className }: Props) {
+export function CountryField({
+  value,
+  onChange,
+  disabled,
+  required,
+  id,
+  className,
+}: Props) {
   return (
     <div className={className}>
       <select
@@ -40,6 +48,7 @@ export function CountryField({ value, onChange, disabled, id, className }: Props
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
+        required={required}
         className="hidden w-full border-2 border-black bg-white px-3 py-2 text-sm outline-none sm:block"
       >
         <option value="">— select a country —</option>
