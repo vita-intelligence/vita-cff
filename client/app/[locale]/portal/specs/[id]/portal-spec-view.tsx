@@ -3,7 +3,6 @@
 import { AlertTriangle, CheckCircle2, PenLine, ShieldCheck, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 
 import {
   Card,
@@ -14,6 +13,7 @@ import {
   SignedChip,
   StatusPill,
 } from "@/components/portal/brutalist";
+import { PortalModal } from "@/components/portal/portal-modal";
 import { PortalSignatureDialog } from "@/components/portal/portal-signature-dialog";
 import { SpecChatPanel } from "@/components/portal/spec-chat-panel";
 import { apiClient } from "@/lib/api";
@@ -452,37 +452,21 @@ function RejectDialog({
   errorMessage: string | null;
 }) {
   const [reason, setReason] = useState("");
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isOpen, onClose, busy]);
   if (!isOpen) return null;
-  if (typeof document === "undefined") return null;
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="reject-title"
-      className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-4"
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !busy) onClose();
-      }}
+  return (
+    <PortalModal
+      onClose={onClose}
+      ariaLabel="Reject final specification"
+      locked={busy}
+      widthClassName="max-w-lg"
     >
-      <div
-        className="relative w-full max-w-lg border-2 border-black bg-white p-5 shadow-[6px_6px_0_0_black]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <p
-          id="reject-title"
-          className="text-[10px] font-bold uppercase tracking-[0.3em] text-red-800"
-        >
+      <PortalModal.Header>
+        <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-red-800">
           Reject this final specification?
         </p>
-        <div className="mt-3 border-2 border-amber-500 bg-amber-50 p-3 text-xs text-amber-900">
+      </PortalModal.Header>
+      <PortalModal.Body>
+        <div className="border-2 border-amber-500 bg-amber-50 p-3 text-xs text-amber-900">
           <p className="font-bold uppercase tracking-widest">
             What happens next
           </p>
@@ -518,7 +502,9 @@ function RejectDialog({
             {errorMessage}
           </p>
         ) : null}
-        <div className="mt-5 flex justify-end gap-2">
+      </PortalModal.Body>
+      <PortalModal.Footer>
+        <div className="flex justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
@@ -537,9 +523,8 @@ function RejectDialog({
             Reject &amp; restart trial batches
           </button>
         </div>
-      </div>
-    </div>,
-    document.body,
+      </PortalModal.Footer>
+    </PortalModal>
   );
 }
 

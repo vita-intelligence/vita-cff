@@ -7,6 +7,7 @@ import {
   PageHeader,
   PortalShell,
 } from "@/components/portal/brutalist";
+import { PortalModal } from "@/components/portal/portal-modal";
 import { useRouter } from "@/i18n/navigation";
 import {
   usePortalChoosePath,
@@ -254,36 +255,35 @@ function ConfirmDialog({
   onConfirm: () => void;
 }) {
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onCancel}
+    <PortalModal
+      onClose={onCancel}
+      ariaLabel="Confirm label design path"
+      locked={isPending}
     >
-      <div
-        className="w-full max-w-md border-2 border-black bg-white p-5 shadow-[8px_8px_0_0_black]"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <PortalModal.Header>
         <div className="flex items-start gap-3">
           <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center border-2 border-black bg-amber-300">
             <AlertTriangle className="h-5 w-5 text-black" />
           </span>
-          <div>
+          <div className="min-w-0 flex-1">
             <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-neutral-700">
               Final choice
             </p>
-            <h2 className="mt-1 text-lg font-bold">
-              Lock in “{choice}”?
+            <h2 className="mt-1 truncate text-lg font-bold">
+              Lock in &ldquo;{choice}&rdquo;?
             </h2>
-            <p className="mt-2 text-sm text-neutral-700">
-              Once confirmed you can&apos;t switch design paths for this
-              product. If you need to change later, our team will have to
-              reopen the workflow manually.
-            </p>
           </div>
         </div>
-
-        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      </PortalModal.Header>
+      <PortalModal.Body>
+        <p className="text-sm text-neutral-700">
+          Once confirmed you can&apos;t switch design paths for this
+          product. If you need to change later, our team will have to
+          reopen the workflow manually.
+        </p>
+      </PortalModal.Body>
+      <PortalModal.Footer>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button
             type="button"
             onClick={onCancel}
@@ -302,7 +302,7 @@ function ConfirmDialog({
             {isPending ? "Saving…" : "Confirm choice"}
           </button>
         </div>
-      </div>
-    </div>
+      </PortalModal.Footer>
+    </PortalModal>
   );
 }

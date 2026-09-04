@@ -35,12 +35,12 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiClient } from "@/lib/api";
 import { portalErrorMessage } from "@/services/portal/errors";
 import { DispatchPhotoLightbox } from "@/components/portal/dispatch-photo-lightbox";
+import { PortalModal } from "@/components/portal/portal-modal";
 
 
 type SlotStatus =
@@ -1830,14 +1830,12 @@ function SlotPickupEventBlock({
           ) : null}
 
           {confirmOpen && !delivered ? (
-            <div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-              onClick={() => !pending && setConfirmOpen(false)}
+            <PortalModal
+              onClose={() => setConfirmOpen(false)}
+              ariaLabel="Confirm receipt of visit"
+              locked={pending}
             >
-              <div
-                className="w-full max-w-md border-2 border-black bg-white p-5"
-                onClick={(e) => e.stopPropagation()}
-              >
+              <PortalModal.Header>
                 <p className="text-sm font-bold text-black">
                   Confirm receipt of {event.qty} units
                 </p>
@@ -1845,7 +1843,9 @@ function SlotPickupEventBlock({
                   Picked up on {pickedAt}. Enter the name of whoever signed
                   for this delivery on your side.
                 </p>
-                <div className="mt-3 space-y-2 text-xs">
+              </PortalModal.Header>
+              <PortalModal.Body>
+                <div className="space-y-2 text-xs">
                   <div>
                     <label className="font-bold text-neutral-800">
                       Recipient name
@@ -1877,7 +1877,9 @@ function SlotPickupEventBlock({
                     <p className="text-xs text-red-700">{confirmError}</p>
                   ) : null}
                 </div>
-                <div className="mt-4 flex items-center justify-end gap-2">
+              </PortalModal.Body>
+              <PortalModal.Footer>
+                <div className="flex items-center justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setConfirmOpen(false)}
@@ -1900,8 +1902,8 @@ function SlotPickupEventBlock({
                     Record delivery
                   </button>
                 </div>
-              </div>
-            </div>
+              </PortalModal.Footer>
+            </PortalModal>
           ) : null}
 
           {lightboxIndex !== null && lightboxPhotos.length > 0 ? (
@@ -2091,60 +2093,6 @@ function TerminalChoicePanel({
 }
 
 
-// Modal shell reused by RequestMoreModal + ConfirmDoneModal. Portal
-// to document.body so the overlay escapes the enclosing card's
-// stacking context. Escape closes (unless mid-submit); backdrop
-// click closes; body scroll is locked while open. Kept local to
-// this file — the shared /components ecosystem doesn't have a
-// dialog primitive that matches the portal card's monochrome style.
-function PortalModal({
-  open,
-  onClose,
-  labelId,
-  children,
-}: {
-  open: boolean;
-  onClose: () => void;
-  labelId: string;
-  children: React.ReactNode;
-}) {
-  useEffect(() => {
-    if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      document.body.style.overflow = prev;
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open, onClose]);
-  if (!open) return null;
-  if (typeof document === "undefined") return null;
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={labelId}
-      className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-4"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="relative w-full max-w-md border-2 border-black bg-white p-5 shadow-[6px_6px_0_0_black]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {children}
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
-
 function RequestMoreModal({
   open,
   currency,
@@ -2165,70 +2113,80 @@ function RequestMoreModal({
   useEffect(() => {
     if (open) setQuantity(1);
   }, [open]);
+  if (!open) return null;
   return (
-    <PortalModal open={open} onClose={onClose} labelId="request-more-title">
-      <button
-        type="button"
-        onClick={onClose}
-        disabled={busy}
-        aria-label="Close"
-        className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center text-neutral-500 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <X className="h-4 w-4" />
-      </button>
-      <p
-        id="request-more-title"
-        className="text-[10px] font-bold uppercase tracking-[0.3em] text-black"
-      >
-        Request additional samples
-      </p>
-      <p className="mt-2 text-sm text-neutral-800">
-        How many extra samples would you like us to produce?
-      </p>
-      <p className="mt-1 text-xs text-neutral-600">
-        {currency} per extra sample. Finance approves the invoice; we
-        produce as soon as it lands.
-      </p>
-      <div className="mt-4 flex items-center gap-3">
-        <label className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
-          Quantity
-        </label>
-        <input
-          type="number"
-          min={1}
-          max={100}
-          value={quantity}
-          onChange={(e) => {
-            const v = Number.parseInt(e.target.value, 10);
-            if (Number.isFinite(v)) setQuantity(Math.max(1, Math.min(100, v)));
-          }}
-          disabled={busy}
-          className="w-20 border-2 border-black bg-white px-3 py-1.5 text-center text-lg font-black focus:outline-none disabled:opacity-60"
-        />
-      </div>
-      <div className="mt-6 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          disabled={busy}
-          className="border-2 border-black bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest text-black transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onConfirm(quantity)}
-          className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-xs font-bold uppercase tracking-widest text-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {busy ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Plus className="h-3.5 w-3.5" />
-          )}
-          Confirm — request {quantity}
-        </button>
-      </div>
+    <PortalModal
+      onClose={onClose}
+      ariaLabel="Request additional samples"
+      locked={busy}
+    >
+      <PortalModal.Header>
+        <div className="flex items-start justify-between gap-3">
+          <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+            Request additional samples
+          </p>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            aria-label="Close"
+            className="text-neutral-500 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      </PortalModal.Header>
+      <PortalModal.Body>
+        <p className="text-sm text-neutral-800">
+          How many extra samples would you like us to produce?
+        </p>
+        <p className="mt-1 text-xs text-neutral-600">
+          {currency} per extra sample. Finance approves the invoice; we
+          produce as soon as it lands.
+        </p>
+        <div className="mt-4 flex items-center gap-3">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+            Quantity
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={quantity}
+            onChange={(e) => {
+              const v = Number.parseInt(e.target.value, 10);
+              if (Number.isFinite(v)) setQuantity(Math.max(1, Math.min(100, v)));
+            }}
+            disabled={busy}
+            className="w-20 border-2 border-black bg-white px-3 py-1.5 text-center text-lg font-black focus:outline-none disabled:opacity-60"
+          />
+        </div>
+      </PortalModal.Body>
+      <PortalModal.Footer>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="border-2 border-black bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest text-black transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onConfirm(quantity)}
+            className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-xs font-bold uppercase tracking-widest text-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Plus className="h-3.5 w-3.5" />
+            )}
+            Confirm — request {quantity}
+          </button>
+        </div>
+      </PortalModal.Footer>
     </PortalModal>
   );
 }
@@ -2247,59 +2205,69 @@ function ConfirmDoneModal({
   onClose: () => void;
   onConfirm: () => Promise<void>;
 }) {
+  if (!open) return null;
   return (
-    <PortalModal open={open} onClose={onClose} labelId="confirm-done-title">
-      <button
-        type="button"
-        onClick={onClose}
-        disabled={busy}
-        aria-label="Close"
-        className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center text-neutral-500 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <X className="h-4 w-4" />
-      </button>
-      <p
-        id="confirm-done-title"
-        className="text-[10px] font-bold uppercase tracking-[0.3em] text-black"
-      >
-        Sure you don&rsquo;t want more samples?
-      </p>
-      <p className="mt-2 text-sm text-neutral-800">
-        You&rsquo;ve had <strong>{totalSlots}</strong> sample
-        {totalSlots === 1 ? "" : "s"}. If you say we&rsquo;re done, we&rsquo;ll
-        take the last approved recipe as final and start preparing your final
-        specification for sign-off.
-      </p>
-      <p className="mt-2 border-2 border-amber-500 bg-amber-50 p-3 text-xs text-amber-900">
-        <strong>Heads up:</strong> if you don&rsquo;t approve the final
-        specification once we send it, changing the recipe means starting a
-        fresh round of samples — which has to be paid for again before we
-        can revise the spec. So make sure you&rsquo;re happy before locking
-        it in.
-      </p>
-      <div className="mt-6 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          disabled={busy}
-          className="border-2 border-black bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest text-black transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Not yet
-        </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onConfirm}
-          className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-xs font-bold uppercase tracking-widest text-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {busy ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Check className="h-3.5 w-3.5" />
-          )}
-          Yes, we&rsquo;re done
-        </button>
-      </div>
+    <PortalModal
+      onClose={onClose}
+      ariaLabel="Confirm samples complete"
+      locked={busy}
+    >
+      <PortalModal.Header>
+        <div className="flex items-start justify-between gap-3">
+          <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+            Sure you don&rsquo;t want more samples?
+          </p>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            aria-label="Close"
+            className="text-neutral-500 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      </PortalModal.Header>
+      <PortalModal.Body>
+        <p className="text-sm text-neutral-800">
+          You&rsquo;ve had <strong>{totalSlots}</strong> sample
+          {totalSlots === 1 ? "" : "s"}. If you say we&rsquo;re done, we&rsquo;ll
+          take the last approved recipe as final and start preparing your final
+          specification for sign-off.
+        </p>
+        <p className="mt-2 border-2 border-amber-500 bg-amber-50 p-3 text-xs text-amber-900">
+          <strong>Heads up:</strong> if you don&rsquo;t approve the final
+          specification once we send it, changing the recipe means starting a
+          fresh round of samples — which has to be paid for again before we
+          can revise the spec. So make sure you&rsquo;re happy before locking
+          it in.
+        </p>
+      </PortalModal.Body>
+      <PortalModal.Footer>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="border-2 border-black bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest text-black transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Not yet
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onConfirm}
+            className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-xs font-bold uppercase tracking-widest text-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Check className="h-3.5 w-3.5" />
+            )}
+            Yes, we&rsquo;re done
+          </button>
+        </div>
+      </PortalModal.Footer>
     </PortalModal>
   );
 }
