@@ -21,6 +21,7 @@ import { AlertTriangle, Check, Loader2, Send, Truck } from "lucide-react";
 
 import { apiClient } from "@/lib/api";
 import { PortalModal } from "@/components/portal/portal-modal";
+import { COUNTRIES } from "@/lib/iso/countries";
 
 
 interface Props {
@@ -99,6 +100,8 @@ function DispatchDialog({
   const [shipToCountry, setShipToCountry] = useState<string>(
     defaultShipTo?.country ?? "",
   );
+  const [shipToEmail, setShipToEmail] = useState<string>("");
+  const [shipToPhone, setShipToPhone] = useState<string>("");
   const [phase, setPhase] = useState<"idle" | "sending" | "sent" | "error">(
     "idle",
   );
@@ -123,6 +126,8 @@ function DispatchDialog({
         ship_to_name: shipToName.trim() || undefined,
         ship_to_address: shipToAddress.trim() || undefined,
         ship_to_country: shipToCountry.trim().toUpperCase() || undefined,
+        ship_to_email: shipToEmail.trim() || undefined,
+        ship_to_phone: shipToPhone.trim() || undefined,
       });
       setPhase("sent");
       // Give the success state a beat of visibility, then close and
@@ -233,18 +238,61 @@ function DispatchDialog({
 
           <div>
             <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
-              Ship to · Country (2-letter ISO)
+              Ship to · Country
             </label>
-            <input
-              type="text"
+            <select
               value={shipToCountry}
-              onChange={(e) => setShipToCountry(e.target.value.toUpperCase())}
-              maxLength={2}
+              onChange={(e) => setShipToCountry(e.target.value)}
               disabled={phase === "sending" || phase === "sent"}
-              placeholder="GB"
-              className="mt-1.5 block w-24 border-2 border-black bg-white px-3 py-2 text-sm font-mono uppercase outline-none"
-            />
+              className="mt-1.5 block w-full border-2 border-black bg-white px-3 py-2 text-sm outline-none"
+            >
+              <option value="">— select a country —</option>
+              {COUNTRIES.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.flag} {c.name} ({c.code})
+                </option>
+              ))}
+            </select>
           </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
+                Recipient email
+              </label>
+              <input
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                value={shipToEmail}
+                onChange={(e) => setShipToEmail(e.target.value)}
+                maxLength={200}
+                disabled={phase === "sending" || phase === "sent"}
+                placeholder="name@example.com"
+                className="mt-1.5 block w-full border-2 border-black bg-white px-3 py-2 text-sm outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">
+                Recipient phone
+              </label>
+              <input
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                value={shipToPhone}
+                onChange={(e) => setShipToPhone(e.target.value)}
+                maxLength={60}
+                disabled={phase === "sending" || phase === "sent"}
+                placeholder="+44 7700 900123"
+                className="mt-1.5 block w-full border-2 border-black bg-white px-3 py-2 text-sm outline-none"
+              />
+            </div>
+          </div>
+          <p className="text-[11px] text-neutral-500">
+            Couriers need both email and phone at drop-off — post offices
+            refuse the parcel without them.
+          </p>
 
           <div>
             <label className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">

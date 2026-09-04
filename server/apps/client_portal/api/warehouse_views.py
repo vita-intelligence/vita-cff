@@ -243,6 +243,11 @@ class PortalWarehouseDispatchRequestView(PortalAPIView):
         ship_to_country = (
             ship_to_country_raw.upper() if isinstance(ship_to_country_raw, str) else None
         )
+        # Courier hand-off contact — post offices refuse the drop
+        # without both. Passed through to PSP untouched (schema
+        # validation on the Dispatch side caps length).
+        ship_to_email = _strip_or_none(request.data.get("ship_to_email"))
+        ship_to_phone = _strip_or_none(request.data.get("ship_to_phone"))
 
         if not lot_uuid:
             return _dispatch_error("missing_key", http_status.HTTP_400_BAD_REQUEST)
@@ -280,6 +285,8 @@ class PortalWarehouseDispatchRequestView(PortalAPIView):
             ship_to_name=ship_to_name,
             ship_to_address=ship_to_address,
             ship_to_country=ship_to_country,
+            ship_to_email=ship_to_email,
+            ship_to_phone=ship_to_phone,
         )
         if err is not None:
             # Preserve PSP's HTTP semantics: transport / config errors

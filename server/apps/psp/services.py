@@ -7865,6 +7865,8 @@ def create_psp_customer_fulfilment_request(
     ship_to_name: str | None = None,
     ship_to_address: str | None = None,
     ship_to_country: str | None = None,
+    ship_to_email: str | None = None,
+    ship_to_phone: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """Push a portal-triggered dispatch request into PSP.
 
@@ -7904,6 +7906,8 @@ def create_psp_customer_fulfilment_request(
         "ship_to_name": ship_to_name,
         "ship_to_address": ship_to_address,
         "ship_to_country": ship_to_country,
+        "ship_to_email": ship_to_email,
+        "ship_to_phone": ship_to_phone,
     }
 
     client = _client_factory(config)
