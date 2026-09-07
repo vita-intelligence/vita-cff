@@ -9,7 +9,6 @@ import {
   FileText,
   MinusCircle,
   ShieldCheck,
-  Truck,
 } from "lucide-react";
 
 import {
@@ -18,6 +17,8 @@ import {
   PortalShell,
 } from "@/components/portal/brutalist";
 import { env } from "@/config/env";
+
+import { DispatchBlock, type DispatchSnapshot } from "./dispatch-block";
 
 
 /**
@@ -29,11 +30,12 @@ import { env } from "@/config/env";
  * (payment id is the URL segment — same ownership + shape the
  * web-site portal reads).
  *
- * MVP scope: read-only. Dispatch photo lightbox + per-visit
- * confirm-delivery button aren't ported yet (customer can still see
- * the pickup timeline, driver name, tracking number etc.); Release
- * documents render as an inline list with download links straight
- * off the portal proxy.
+ * Dispatch block (carrier + checklist + loading photos + per-visit
+ * "Confirm receipt" flow) lives in ``./dispatch-block.tsx`` — a
+ * client component that mounts on the "Dispatch" section and hits
+ * the same ``/api/portal/samples/<id>/dispatch/...`` proxy endpoints
+ * the web-site portal uses. Release documents render inline with
+ * download links straight off the portal proxy.
  */
 
 
@@ -63,43 +65,6 @@ interface ReleaseDocument {
   readonly mime: string;
   readonly byte_size: number;
   readonly uploaded_at: string;
-}
-
-
-interface DispatchPickupEventPhoto {
-  readonly uuid: string;
-  readonly filename: string;
-  readonly mime: string;
-}
-
-
-interface DispatchPickupEvent {
-  readonly uuid: string;
-  readonly qty: string;
-  readonly picked_up_at: string;
-  readonly driver_name: string | null;
-  readonly vehicle_registration: string | null;
-  readonly consignment_note_ref: string | null;
-  readonly tracking_number: string | null;
-  readonly seal_number: string | null;
-  readonly temperature_c: string | null;
-  readonly delivered_at: string | null;
-  readonly recipient_signatory: string | null;
-  readonly delivery_notes: string | null;
-  readonly photos: readonly DispatchPickupEventPhoto[];
-}
-
-
-interface DispatchSnapshot {
-  readonly status: "partially_picked" | "picked_up" | "delivered";
-  readonly qty: string | null;
-  readonly picked_up_qty: string | null;
-  readonly remaining_qty: string | null;
-  readonly ready_at: string | null;
-  readonly picked_up_at: string | null;
-  readonly delivered_at: string | null;
-  readonly carrier: string | null;
-  readonly pickup_events: readonly DispatchPickupEvent[];
 }
 
 
@@ -221,12 +186,7 @@ export default async function PortalSampleDetailPage({
       </section>
 
       {data.dispatch ? (
-        <section className="mt-8 mb-8">
-          <Eyebrow>Dispatch</Eyebrow>
-          <div className="mt-3">
-            <DispatchCard dispatch={data.dispatch} />
-          </div>
-        </section>
+        <DispatchBlock dispatch={data.dispatch} sampleId={id} />
       ) : null}
 
       {data.release_documents.length > 0 ? (
@@ -382,98 +342,6 @@ function StageDot({ state }: { state: StageState }) {
 }
 
 
-function DispatchCard({ dispatch }: { dispatch: DispatchSnapshot }) {
-  const statusCopy = dispatch.status === "delivered"
-    ? "Delivered"
-    : dispatch.status === "picked_up"
-      ? "In transit"
-      : "Partial pickup";
-  return (
-    <div className="border-2 border-black bg-white">
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b-2 border-black bg-black px-4 py-3 text-white">
-        <div className="flex items-center gap-2">
-          <Truck className="h-4 w-4" />
-          <p className="text-[10px] font-bold uppercase tracking-[0.25em]">{statusCopy}</p>
-        </div>
-        {dispatch.qty ? (
-          <p className="text-xs">
-            <span className="opacity-70">Total qty · </span>
-            <span className="font-bold tabular-nums">{dispatch.qty}</span>
-            {dispatch.picked_up_qty ? (
-              <>
-                <span className="ml-3 opacity-70">Picked up · </span>
-                <span className="font-bold tabular-nums">{dispatch.picked_up_qty}</span>
-              </>
-            ) : null}
-          </p>
-        ) : null}
-      </header>
-      <div className="p-4">
-        {dispatch.pickup_events.length === 0 ? (
-          <p className="text-sm text-neutral-600">
-            No pickup events yet. We&rsquo;ll update this the moment the carrier collects your kit.
-          </p>
-        ) : (
-          <ol className="space-y-4">
-            {dispatch.pickup_events.map((event) => (
-              <li key={event.uuid} className="border-l-2 border-black pl-4">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <p className="text-sm font-bold uppercase tracking-tight">
-                    Pickup · qty {event.qty}
-                  </p>
-                  <p className="text-[10px] uppercase tracking-widest text-neutral-500">
-                    {formatDateTime(event.picked_up_at)}
-                  </p>
-                </div>
-                <div className="mt-2 grid gap-x-6 gap-y-1 text-xs text-neutral-700 sm:grid-cols-2">
-                  {event.driver_name ? (
-                    <span>
-                      <span className="font-semibold">Driver:</span> {event.driver_name}
-                    </span>
-                  ) : null}
-                  {event.vehicle_registration ? (
-                    <span>
-                      <span className="font-semibold">Vehicle:</span> {event.vehicle_registration}
-                    </span>
-                  ) : null}
-                  {event.tracking_number ? (
-                    <span>
-                      <span className="font-semibold">Tracking:</span> {event.tracking_number}
-                    </span>
-                  ) : null}
-                  {event.consignment_note_ref ? (
-                    <span>
-                      <span className="font-semibold">Consignment:</span> {event.consignment_note_ref}
-                    </span>
-                  ) : null}
-                  {event.seal_number ? (
-                    <span>
-                      <span className="font-semibold">Seal:</span> {event.seal_number}
-                    </span>
-                  ) : null}
-                  {event.temperature_c ? (
-                    <span>
-                      <span className="font-semibold">Temperature:</span> {event.temperature_c}°C
-                    </span>
-                  ) : null}
-                </div>
-                {event.delivered_at ? (
-                  <p className="mt-2 text-xs text-emerald-700">
-                    <Check className="mr-1 inline h-3 w-3" />
-                    Delivered {formatDateTime(event.delivered_at)}
-                    {event.recipient_signatory ? ` · signed by ${event.recipient_signatory}` : ""}
-                  </p>
-                ) : null}
-              </li>
-            ))}
-          </ol>
-        )}
-      </div>
-    </div>
-  );
-}
-
-
 function ReleaseDocumentsCard({
   documents,
   sampleId,
@@ -553,21 +421,6 @@ function formatDate(iso: string): string {
     });
   } catch {
     return iso.slice(0, 10);
-  }
-}
-
-
-function formatDateTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString("en-GB", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
   }
 }
 
