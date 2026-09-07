@@ -218,25 +218,38 @@ def _build_actions(customer_ids, request=None) -> list[dict]:
             if first_line and first_line.formulation_version
             else None
         )
-        percent = (
-            f"{proposal.deposit_percent}% "
-            if proposal.deposit_percent
-            else ""
-        )
         product_label = (
             (formulation.name or formulation.code)
             if formulation
             else "your project"
         )
+        # Reorder proposals bill 100% up-front (no deposit / final split
+        # — they reuse a signed spec so there's no R&D milestone to
+        # gate on). Swap the deposit-language copy for a full-invoice
+        # framing that matches what the RTG track already conveys.
+        if getattr(proposal, "is_reorder", False):
+            title = "Pay your invoice"
+            subtitle = (
+                f"Full invoice for {proposal.code} — label design & "
+                "production start the moment payment lands."
+            )
+        else:
+            percent = (
+                f"{proposal.deposit_percent}% "
+                if proposal.deposit_percent
+                else ""
+            )
+            title = "Pay your deposit"
+            subtitle = (
+                f"{percent}deposit on {proposal.code} — "
+                "trial production starts the moment we confirm the payment."
+            )
         actions.append(
             {
                 "kind": "pay_deposit",
                 "urgency": URGENCY_HIGH,
-                "title": "Pay your deposit",
-                "subtitle": (
-                    f"{percent}deposit on {proposal.code} — "
-                    "trial production starts the moment we confirm the payment."
-                ),
+                "title": title,
+                "subtitle": subtitle,
                 "url": (
                     f"/portal/products/{formulation.id}"
                     if formulation

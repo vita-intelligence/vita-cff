@@ -325,24 +325,74 @@ class TrialBatchCreatePspMoView(APIView):
         batch = self._load(batch_id)
         body = request.data if isinstance(request.data, dict) else {}
 
-        # Run-identity fields — kind + packaging_combo — used to be
-        # captured on Plan-Batch. They're now picked here at Create-MO
-        # time so scientists don't answer the same question twice. When
-        # present in the request we update the trial batch's stored
-        # values BEFORE firing the MO so downstream reads (BOM math,
-        # audit trail, spec-sheet visibility) stay consistent with what
-        # actually ran. Absent → keep the batch's current values
+        # Normalise size_mode up-front — used both to reshape the batch
+        # identity below AND passed through to the PSP MO create.
+        raw_size_mode = str(body.get("size_mode") or "packs").strip().lower()
+        size_mode = raw_size_mode if raw_size_mode in ("packs", "units") else "packs"
+
+        # The scientist's originally-picked kind from the modal. When
+        # size_mode=units we silently rewrite the batch's stored kind
+        # to "trial" so the trial-batch page's scale equation renders
+        # as raw individual units ("20 capsules") instead of the stale
+        # planned pack math ("1 pack × 60 = 60 capsules"). The
+        # original pick still drives the PSP MO's project_type via
+        # ``project_type_override`` below — commercial release stays
+        # commercial-release, we're only fixing the display.
+        requested_kind: str | None = None
+        if "kind" in body:
+            requested_kind = str(body.get("kind") or "").strip() or None
+
+        # Run-identity fields — kind + packaging_combo + batch_size_units
+        # used to be captured on Plan-Batch. They're now picked here at
+        # Create-MO time so scientists don't answer the same question
+        # twice. When present in the request we update the trial batch's
+        # stored values BEFORE firing the MO so downstream reads (BOM
+        # math, audit trail, spec-sheet visibility) stay consistent with
+        # what actually ran. Absent → keep the batch's current values
         # (backwards compat for legacy callers).
         identity_changes: dict = {}
-        if "kind" in body:
-            identity_changes["kind"] = body.get("kind")
-        if "packaging_combo_id" in body:
-            identity_changes["packaging_combo_id"] = body.get(
-                "packaging_combo_id"
+        if requested_kind is not None:
+            # size_mode=units → force kind=trial so the batch stores a
+            # raw individual-units scale. Sample-kind + units on a
+            # PositiveIntegerField ``batch_size_units`` can't represent
+            # the 0.333 fractional-pack equivalent cleanly.
+            identity_changes["kind"] = (
+                "trial" if size_mode == "units" else requested_kind
             )
+        if "packaging_combo_id" in body:
+            # Trial-kind can't carry a packaging combo (server-side
+            # validation raises PackagingComboNotAllowedForTrial). If
+            # we just flipped kind to trial for units-mode, drop the
+            # combo silently — the scientist's "no packaging" pick from
+            # the modal already lands the empty-overlay behaviour on PSP
+            # via ``_build_packaging_overlay``.
+            if identity_changes.get("kind") == "trial":
+                identity_changes["packaging_combo_id"] = None
+            else:
+                identity_changes["packaging_combo_id"] = body.get(
+                    "packaging_combo_id"
+                )
+        # Save the committed quantity as the batch's own scale so the
+        # header reflects the actual run. Only applied when the modal
+        # sent a concrete quantity — legacy callers that omit it keep
+        # the planned batch_size_units untouched.
+        raw_qty = body.get("quantity")
+        if raw_qty not in (None, ""):
+            try:
+                qty_int = int(str(raw_qty).strip())
+            except (TypeError, ValueError):
+                qty_int = None
+            if qty_int is not None and qty_int > 0:
+                if size_mode == "units":
+                    # Raw individual units (batch is now trial-kind).
+                    identity_changes["batch_size_units"] = qty_int
+                elif identity_changes.get("kind") != "trial":
+                    # Whole packs on a sample-kind run.
+                    identity_changes["batch_size_units"] = qty_int
         if identity_changes:
             from apps.trial_batches.services import (
                 InvalidBatchKind,
+                InvalidBatchSize,
                 PackagingComboNotAllowedForTrial,
                 PackagingComboNotFound,
                 update_batch,
@@ -355,6 +405,11 @@ class TrialBatchCreatePspMoView(APIView):
             except InvalidBatchKind:
                 return Response(
                     {"kind": ["invalid_kind"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            except InvalidBatchSize:
+                return Response(
+                    {"quantity": ["invalid_batch_size"]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             except PackagingComboNotAllowedForTrial:
@@ -372,9 +427,21 @@ class TrialBatchCreatePspMoView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        # PSP MO's project_type: when the scientist picked
+        # ``kind=sample`` in the modal AND we flipped the stored kind
+        # to ``trial`` for size_mode=units, override the PSP call so
+        # the MO still lands on the commercial release path. Preserves
+        # user intent (commercial release for their loose-cap sample)
+        # while the display fix lives locally on the batch row.
+        project_type_override: str | None = None
+        if (
+            size_mode == "units"
+            and requested_kind == "sample"
+            and identity_changes.get("kind") == "trial"
+        ):
+            project_type_override = "sample"
+
         try:
-            raw_size_mode = str(body.get("size_mode") or "packs").strip().lower()
-            size_mode = raw_size_mode if raw_size_mode in ("packs", "units") else "packs"
             mo = create_psp_manufacturing_order_for_trial_batch(
                 organization=batch.organization,
                 actor=request.user,
@@ -385,6 +452,7 @@ class TrialBatchCreatePspMoView(APIView):
                 due_date=body.get("due_date"),
                 notes=str(body.get("notes") or ""),
                 size_mode=size_mode,
+                project_type_override=project_type_override,
             )
         except PspNotConfigured as exc:
             return Response(

@@ -116,7 +116,7 @@
   {# ---------- PAGE 1 : Acceptance Form ---------- #}
   <header>
     <span class="tag">
-      {% if proposal.template_type == "custom" %}Custom Formulation{% else %}Ready to Go{% endif %}
+      {% if proposal.is_reorder %}Reorder{% elif proposal.template_type == "custom" %}Custom Formulation{% else %}Ready to Go{% endif %}
     </span>
     <h1>Acceptance Form</h1>
     <p>

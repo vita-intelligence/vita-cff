@@ -135,7 +135,7 @@ def transition_status(
     return label_design
 
 
-def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
+def bootstrap_for_spec(spec_sheet, *, formulation_override=None) -> LabelDesign | None:
     """Create-or-return the :class:`LabelDesign` for the
     ``(formulation, proposal)`` this ``spec_sheet`` belongs to.
 
@@ -153,6 +153,15 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
     workflow. Signed drafts are the customer accepting the proposal,
     not the finished-product spec.
 
+    ``formulation_override`` — used by the reorder path in
+    :func:`bootstrap_for_formulation`. Reorder proposals reuse the
+    source's signed spec by FK, so ``spec_sheet.formulation_version``
+    points at the SOURCE formulation — but the LabelDesign belongs
+    on the REORDER formulation. Pass the reorder formulation as the
+    override to pin the FK correctly. Also flips the proposal
+    resolution to filter by the override formulation instead of the
+    spec's own formulation.
+
     Returns the row (new or existing) so the signal can log
     helpfully, or ``None`` if the spec is not eligible (draft kind,
     project not yet approved, or no formulation attached).
@@ -161,7 +170,7 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
     from apps.formulations.models import ProjectStatus
     from apps.specifications.models import SpecificationDocumentKind
 
-    formulation = getattr(
+    formulation = formulation_override or getattr(
         getattr(spec_sheet, "formulation_version", None), "formulation", None
     )
     if formulation is None:
@@ -185,8 +194,17 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
     from apps.proposals.models import ProposalLine, ProposalStatus
     from django.db.models import Q
 
+    # Scope the ProposalLine lookup to THIS formulation. Reorder
+    # proposals reuse a source-formulation spec by FK, so
+    # ``ProposalLine.filter(specification_sheet=spec_sheet)`` matches
+    # both the source's original line AND the reorder's line. Without
+    # this scope the wrong-formulation line can win and the LabelDesign
+    # gets pinned to the source's proposal.
     proposal_line = (
-        ProposalLine.objects.filter(specification_sheet=spec_sheet)
+        ProposalLine.objects.filter(
+            specification_sheet=spec_sheet,
+            formulation_version__formulation=formulation,
+        )
         .select_related("proposal")
         .order_by("-proposal__updated_at")
         .first()
@@ -228,16 +246,27 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
     # no final payment owed, so the label workflow starts directly
     # at LABEL_PATH_PENDING. Same logic as the deposit-side skip:
     # a 0% edge means no gate applies.
+    #
+    # Reorder proposals ALWAYS skip the payment gate regardless of
+    # the stored ``deposit_percent`` value: reorder's DEPOSIT payment
+    # IS the full invoice by design (no half-and-half, no final). Legacy
+    # reorder rows created before commit 96c06ec still carry the old
+    # 50% default, so the ``deposit_percent >= 100`` check alone would
+    # trap them at PAYMENT_PENDING waiting for a FINAL payment that
+    # will never come.
     from decimal import Decimal
 
     skip_payment_stage = False
-    if proposal is not None and proposal.deposit_percent is not None:
-        try:
-            skip_payment_stage = (
-                Decimal(proposal.deposit_percent) >= Decimal("100")
-            )
-        except Exception:  # noqa: BLE001
-            skip_payment_stage = False
+    if proposal is not None:
+        if getattr(proposal, "is_reorder", False):
+            skip_payment_stage = True
+        elif proposal.deposit_percent is not None:
+            try:
+                skip_payment_stage = (
+                    Decimal(proposal.deposit_percent) >= Decimal("100")
+                )
+            except Exception:  # noqa: BLE001
+                skip_payment_stage = False
 
     initial_status = (
         LabelDesignStatus.LABEL_PATH_PENDING
@@ -410,13 +439,31 @@ def bootstrap_for_formulation(
     When no spec is known, locate the latest customer-signed
     spec for the project — that mirrors the original behaviour
     where the formulation signal hunted for it itself.
+
+    Reorder path: the customer-signed spec lives on the SOURCE
+    formulation (reorder reuses the original spec by FK — see
+    ``Formulation.reorder_original_spec``). ``_find_signed_spec_sheet``
+    scoped to ``formulation`` would return ``None`` and silently no-op
+    the bootstrap. Instead pull the source spec and pin the LabelDesign's
+    ``formulation`` FK to the reorder — the label artwork belongs to
+    THIS order, not the source.
     """
 
+    formulation_override = None
     if spec_sheet is None:
-        spec_sheet = _find_signed_spec_sheet(formulation)
+        if getattr(formulation, "is_reorder", False):
+            spec_sheet = getattr(formulation, "reorder_original_spec", None)
+            # Pin the LabelDesign's ``formulation`` to the reorder even
+            # though the spec's ``formulation_version.formulation`` is
+            # the source. Without this the label workflow attaches to
+            # the source project and the reorder's roadmap never gets
+            # its own label stage.
+            formulation_override = formulation
+        else:
+            spec_sheet = _find_signed_spec_sheet(formulation)
     if spec_sheet is None:
         return None
-    return bootstrap_for_spec(spec_sheet)
+    return bootstrap_for_spec(spec_sheet, formulation_override=formulation_override)
 
 
 def _find_signed_spec_sheet(formulation):

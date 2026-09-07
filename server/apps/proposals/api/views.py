@@ -1915,6 +1915,22 @@ def _render_public_proposal_payload(proposal) -> dict:
         # a refresh after signing keeps the rendered HTML's ☑ in sync.
         "ack_rd_terms": bool(proposal.ack_rd_terms),
         "attached_specs": specs_payload,
+        # Reorder metadata — both portals branch their eyebrow / TYPE
+        # label / dashboard "Pay your invoice" copy on this. Sequence
+        # comes from the linked formulation (per-source counter that
+        # powers the "Foo Reorder N" display name); may be null on
+        # legacy rows that predate the field.
+        "is_reorder": bool(getattr(proposal, "is_reorder", False)),
+        "reorder_sequence": (
+            getattr(
+                proposal.formulation_version.formulation,
+                "reorder_sequence",
+                None,
+            )
+            if proposal.formulation_version_id
+            and getattr(proposal, "is_reorder", False)
+            else None
+        ),
     }
 
 

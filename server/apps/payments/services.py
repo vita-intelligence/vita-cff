@@ -526,31 +526,39 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
 
     transaction.on_commit(_fire_scientist_notification)
 
-    # DEPOSIT approval routes on ``proposal.template_type`` because
-    # the same PaymentKind serves two conceptually different flows:
+    # DEPOSIT approval routes on the proposal's shape because the same
+    # PaymentKind serves three conceptually different flows:
     #
-    # * Custom deposit — the ~30% up-front slice that unlocks trial
-    #   batches. Seeds the trial-batch cycle + pushes deposit_paid_at
-    #   to PSP so the kanban advances into "Trial batches".
-    # * RTG deposit — the storefront checkout forces
+    # * Custom (fresh) deposit — the ~30% up-front slice that unlocks
+    #   trial batches. Seeds the trial-batch cycle + pushes
+    #   deposit_paid_at to PSP so the kanban advances into "Trial
+    #   batches".
+    # * RTG deposit — storefront checkout forces
     #   ``deposit_percent = 100``, so the "deposit" is really the full
     #   order invoice. RTG has no trial batches, no final-spec sign,
-    #   and no remainder FINAL invoice. Approval must therefore
-    #   trigger the SAME "production authorised" cascade Custom fires
-    #   on FINAL-payment approval: advance project_status → APPROVED,
-    #   bootstrap the LabelDesign row (spec-sign was blocked from
-    #   creating one pre-payment), and push the formulation-mirror to
-    #   PSP so the CO advances into production planning.
-    proposal_template_rtg = False
+    #   and no remainder FINAL invoice. Approval triggers the
+    #   "production authorised" cascade: advance project_status →
+    #   APPROVED, bootstrap the LabelDesign row (spec-sign was blocked
+    #   from creating one pre-payment), and push the formulation-mirror
+    #   to PSP so the CO advances into production planning.
+    # * Reorder deposit — CUSTOM template_type but ``is_reorder=True``.
+    #   Same commercial shape as RTG (``deposit_percent = 100``, no
+    #   trials, no final spec — the source's spec is reused) so the
+    #   approval must also trigger the production-authorised cascade.
+    #   Without this the reorder gets stuck at "Payment received" with
+    #   no LabelDesign row + no PSP push — the customer sees a signed
+    #   proposal and paid invoice but the roadmap never advances.
+    proposal_is_production_authorised = False
     if payment.kind == PaymentKind.DEPOSIT and payment.proposal_id is not None:
         from apps.proposals.models import ProposalTemplateType
 
-        proposal_template_rtg = (
-            payment.proposal.template_type
-            == ProposalTemplateType.READY_TO_GO.value
+        proposal = payment.proposal
+        proposal_is_production_authorised = (
+            proposal.template_type == ProposalTemplateType.READY_TO_GO.value
+            or bool(getattr(proposal, "is_reorder", False))
         )
 
-    if payment.kind == PaymentKind.DEPOSIT and not proposal_template_rtg:
+    if payment.kind == PaymentKind.DEPOSIT and not proposal_is_production_authorised:
         def _seed_trial_batch_cycle() -> None:
             from apps.trial_batches.cycle_services import create_cycle_for_deposit
 
@@ -600,7 +608,7 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
                 )
 
         transaction.on_commit(_push_deposit_to_psp)
-    elif payment.kind == PaymentKind.DEPOSIT and proposal_template_rtg:
+    elif payment.kind == PaymentKind.DEPOSIT and proposal_is_production_authorised:
         # RTG deposit approval = production-authorised cascade.
         # Same three effects as Custom FINAL approval:
         #   1. Advance project_status → APPROVED so the label

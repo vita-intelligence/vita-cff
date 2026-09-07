@@ -83,6 +83,11 @@ interface PortalProposalDto {
   readonly ack_terms: boolean;
   readonly ack_rd_terms: boolean;
   readonly attached_specs: ReadonlyArray<SpecRecord>;
+  //: Reorder proposals ride the CUSTOM template_type but skip R&D
+  //: entirely (spec reused from the source). Header eyebrow reads
+  //: "Reorder PROP-XXXX" instead of "Proposal PROP-XXXX" when true.
+  readonly is_reorder?: boolean;
+  readonly reorder_sequence?: number | null;
 }
 
 
@@ -250,7 +255,13 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
-        eyebrow={`Proposal ${proposal.code}`}
+        eyebrow={
+          proposal.is_reorder
+            ? proposal.reorder_sequence
+              ? `Reorder · ${proposal.reorder_sequence} · ${proposal.code}`
+              : `Reorder ${proposal.code}`
+            : `Proposal ${proposal.code}`
+        }
         title={proposal.code}
         subtitle="Read the proposal, sign it, then sign each specification on its own page."
         back={{

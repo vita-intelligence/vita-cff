@@ -135,6 +135,129 @@ def _first_sent_proposal(proposals: list[Proposal]) -> Proposal | None:
     return next((p for p in proposals if p.status == "sent"), None)
 
 
+def _first_declined_proposal(proposals: list[Proposal]) -> Proposal | None:
+    """Newest customer-declined proposal in the list.
+
+    Returns the row with the most recent ``customer_rejected_at`` so
+    stale early declines don't outrank a fresher decline on the same
+    formulation. Callers should still guard with ``no signed proposal
+    exists`` before treating the whole roadmap as cancelled — a
+    superseding signed proposal after the decline means the project
+    is alive again.
+    """
+
+    rejected = [
+        p for p in proposals
+        if getattr(p, "customer_rejected_at", None) is not None
+    ]
+    if not rejected:
+        return None
+    return max(rejected, key=lambda p: p.customer_rejected_at)
+
+
+def _apply_declined_cancellation(
+    stages: list[dict],
+    proposals: list[Proposal],
+    formulation_id: Any | None = None,
+) -> list[dict]:
+    """Freeze a pipeline when the deal has stopped moving.
+
+    Two triggers, in priority order:
+
+    1. Customer declined the proposal on the kiosk
+       (``customer_rejected_at`` set) — the proposal_stage takes a
+       "Proposal declined" label and downstream stages downgrade to
+       ``state=cancelled``.
+    2. Finance voided a DEPOSIT / FINAL invoice on this formulation —
+       proposal_stage stays as-is (it was signed), but every
+       non-``done`` downstream stage flips to ``cancelled`` because
+       none of them will ever run without the invoice.
+
+    Called on the fully-built stage list. Both paths are guarded on
+    "no signed proposal survives" for path (1) so a re-quote-and-sign
+    cycle correctly moves past the earlier decline. Stages already at
+    ``done`` keep their state — a customer who completed early steps
+    still sees those chips ticked. The FE distinguishes ``cancelled``
+    from ``skipped`` visually so cancelled roadmaps don't read as
+    "these steps didn't apply".
+    """
+
+    signed = _first_signed_proposal(proposals)
+    declined = None
+    if signed is None:
+        declined = _first_declined_proposal(proposals)
+
+    voided_payment = None
+    if declined is None and formulation_id is not None:
+        # Lazy import — payments graph would create a boot-time cycle
+        # if pulled in at module load on the portal side.
+        from django.db.models import Q
+
+        from apps.payments.constants import PaymentKind, PaymentStatus
+        from apps.payments.models import Payment
+
+        # Newest-wins: only treat the project as cancelled when the
+        # newest DEPOSIT / FINAL payment is voided. A re-recorded
+        # payment (via the finance "Awaiting deposits" queue) makes
+        # a newer row that supersedes the void, reviving the project.
+        #
+        # Scope note: DEPOSIT payments have formulation_id=None
+        # (only proposal is linked; see ``record_payment``). The
+        # query must reach the formulation via BOTH the direct FK
+        # and the proposal linkage.
+        proposal_ids = [p.id for p in proposals]
+        scope = Q(formulation_id=formulation_id)
+        if proposal_ids:
+            scope |= Q(proposal_id__in=proposal_ids)
+        newest = (
+            Payment.objects.filter(scope)
+            .filter(kind__in=(PaymentKind.DEPOSIT, PaymentKind.FINAL))
+            .order_by("-updated_at")
+            .first()
+        )
+        if newest is not None and newest.status == PaymentStatus.VOIDED:
+            voided_payment = newest
+
+    if declined is None and voided_payment is None:
+        return stages
+
+    out: list[dict] = []
+    seen_proposal = False
+    for stage in stages:
+        if stage.get("key") == "proposal":
+            seen_proposal = True
+            if declined is not None:
+                out.append({
+                    **stage,
+                    "state": "cancelled",
+                    "label": "Proposal declined",
+                    "completed_at": _iso(declined.customer_rejected_at),
+                    "detail": (
+                        f"You declined proposal {declined.code}. Reach out "
+                        "in chat if you'd like to restart this project."
+                    ),
+                })
+            else:
+                # Voided-payment path — the proposal itself was signed,
+                # so keep its stage intact and only freeze downstream.
+                out.append(stage)
+            continue
+        if seen_proposal and stage.get("state") != "done":
+            reason_detail = (
+                "This step won't run — the proposal that gates it was declined."
+                if declined is not None
+                else "This step won't run — the invoice for this project was voided."
+            )
+            out.append({
+                **stage,
+                "state": "cancelled",
+                "detail": reason_detail,
+            })
+            continue
+        out.append(stage)
+    return out
+
+
 def _draft_specs(sheets: list[SpecificationSheet]) -> list[SpecificationSheet]:
     return [s for s in sheets if s.document_kind == SpecificationDocumentKind.DRAFT]
 
@@ -1694,6 +1817,32 @@ def _build_pipeline(
                     "detail": "Production planning kicks off alongside label design once payment lands.",
                     "parallel_group": "manufacturing",
                 }
+        else:
+            # Payment landed → production and label run in parallel by
+            # design. Label naturally becomes ``current`` as soon as
+            # the LabelDesign row leaves ``PAYMENT_PENDING``, but
+            # ``production_stage`` only lights up once PSP mirrors a
+            # phase mapping into ``_PSP_PHASE_TO_STAGE`` — and the
+            # PSP push is async, so there's a real window where the
+            # customer sees label as "current" and production as
+            # "future" side by side. Reads as "wait for label first,
+            # then production" — the opposite of the parallel intent.
+            # Promote production to ``current`` when it's still
+            # ``future`` so the roadmap correctly reads "these two run
+            # together right now". PSP's live phase label overwrites
+            # this once it lands, so the promoted copy is transient.
+            if production_stage["state"] == "future":
+                production_stage = {
+                    "key": "production",
+                    "label": "Production planning",
+                    "state": "current",
+                    "completed_at": None,
+                    "detail": (
+                        "Your batch is on the shop-floor schedule, "
+                        "running in parallel with label design."
+                    ),
+                    "parallel_group": "manufacturing",
+                }
         return [
             proposal_stage,
             rtg_payment_stage,
@@ -1752,6 +1901,25 @@ def _build_pipeline(
                     "detail": "Production planning kicks off alongside label design once payment lands.",
                     "parallel_group": "manufacturing",
                 }
+        else:
+            # Same parallel-promotion rule as the RTG branch above:
+            # once payment lands, production runs alongside label
+            # design by design. PSP's phase mirror is async, so the
+            # promotion covers the window before PSP reports a phase
+            # that ``_PSP_PHASE_TO_STAGE`` maps to a real stage_key.
+            # See the RTG block for the full rationale.
+            if production_stage["state"] == "future":
+                production_stage = {
+                    "key": "production",
+                    "label": "Production planning",
+                    "state": "current",
+                    "completed_at": None,
+                    "detail": (
+                        "Your batch is on the shop-floor schedule, "
+                        "running in parallel with label design."
+                    ),
+                    "parallel_group": "manufacturing",
+                }
         return [
             request_stage,
             draft_stage,
@@ -1761,6 +1929,24 @@ def _build_pipeline(
             label_stage,
             production_stage,
         ]
+
+    # Custom path: once FINAL payment lands, label + production run
+    # in parallel — same design rule as RTG / reorder. Promote
+    # production to ``current`` when it's still ``future`` so the
+    # roadmap reads correctly during the PSP-mirror lag window.
+    # See the RTG / reorder branches above for the full rationale.
+    if payment_stage.get("state") == "done" and production_stage.get("state") == "future":
+        production_stage = {
+            "key": "production",
+            "label": "Production planning",
+            "state": "current",
+            "completed_at": None,
+            "detail": (
+                "Your batch is on the shop-floor schedule, running in "
+                "parallel with label design."
+            ),
+            "parallel_group": "manufacturing",
+        }
 
     return [
         request_stage,
@@ -2369,16 +2555,20 @@ class PortalProductDetailView(PortalAPIView):
                     formulation_id=formulation_id,
                     proposal_uuid=proposal_uuid,
                 ),
-                "pipeline": _build_pipeline(
-                    formulation=formulation,
-                    proposals=proposals,
-                    sheets=sheets,
-                    validations=validations,
-                    label_design=label_design,
-                    payment=payment,
-                    cff=cff,
-                    proposal_uuid=proposal_uuid,
-                    request=request,
+                "pipeline": _apply_declined_cancellation(
+                    _build_pipeline(
+                        formulation=formulation,
+                        proposals=proposals,
+                        sheets=sheets,
+                        validations=validations,
+                        label_design=label_design,
+                        payment=payment,
+                        cff=cff,
+                        proposal_uuid=proposal_uuid,
+                        request=request,
+                    ),
+                    proposals,
+                    formulation_id=formulation_id,
                 ),
                 "next_action": _build_next_action(
                     formulation=formulation,
@@ -2483,17 +2673,43 @@ def _build_cancellation(
     # back into its terminal-choice prompt (see
     # ``reject_additional_samples_on_payment_voided``) and mustn't
     # nuke the whole project card with a fatal red banner.
-    voided_filter = {
-        "formulation_id": formulation_id,
-        "status": PaymentStatus.VOIDED,
-        "kind__in": (PaymentKind.DEPOSIT, PaymentKind.FINAL),
-    }
+    #
+    # Newest-wins: after a void, the proposal falls back onto the
+    # finance "Awaiting deposits" queue where a fresh payment can be
+    # recorded. That new PENDING / APPROVED row supersedes the void
+    # (which remains for audit). If the newest DEPOSIT / FINAL
+    # payment is NOT voided, the project is alive again and we skip
+    # the banner. Matches
+    # :func:`apps.client_portal.api.project_stage._has_project_voiding_payment`
+    # so chip + banner + roadmap all agree on "did the void survive?".
+    #
+    # Scope note: ``record_payment`` sets ``formulation=None`` for
+    # ``kind=DEPOSIT`` rows (only the proposal is linked). So the
+    # query MUST reach the formulation via the proposal FK too —
+    # filtering on ``formulation_id`` alone misses every deposit ever
+    # recorded via the finance queue.
+    from django.db.models import Q
+
+    proposal_ids_for_formulation = [p.id for p in proposals]
+    payment_scope = Q(formulation_id=formulation_id)
+    if proposal_ids_for_formulation:
+        payment_scope |= Q(proposal_id__in=proposal_ids_for_formulation)
+    payment_qs = Payment.objects.filter(payment_scope).filter(
+        kind__in=(PaymentKind.DEPOSIT, PaymentKind.FINAL),
+    )
     if proposal_uuid is not None:
-        voided_filter["proposal_id"] = proposal_uuid
+        # Multi-order RTG scoping — narrow the void lookup to this
+        # specific order's payments. Formulation-linked FINAL rows
+        # (proposal=None) still count when they share the anchor.
+        payment_qs = payment_qs.filter(
+            Q(proposal_id=proposal_uuid) | Q(proposal__isnull=True)
+        )
+    newest_payment = payment_qs.order_by("-updated_at").first()
     voided = (
-        Payment.objects.filter(**voided_filter)
-        .order_by("-updated_at")
-        .first()
+        newest_payment
+        if newest_payment is not None
+        and newest_payment.status == PaymentStatus.VOIDED
+        else None
     )
     if voided is not None:
         # Notes on a voided payment carry the void reason appended

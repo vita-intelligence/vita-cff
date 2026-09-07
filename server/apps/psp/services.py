@@ -6897,16 +6897,26 @@ def _build_packaging_overlay(
     scientist doesn't have to re-key each packaging item on PSP
     before a sample MO can run.
     """
-    if kind == "trial":
-        return None
-
     # Individual-units mode ships loose finished units (5 capsules /
     # 5 scoops of powder in a Ziploc / 5 gummies in a paper sleeve).
     # No commercial packaging — force empty overlay so PSP doesn't
     # book bottles + caps + labels for a scientist's evaluation
     # sample. Toggle on the Create-MO modal drives this.
+    #
+    # Order matters: the ``size_mode == "units"`` check MUST come
+    # before the ``kind == "trial"`` check. When the view flips the
+    # batch's kind from sample → trial on a units-mode commit (so
+    # the trial-batch header renders as raw units instead of the
+    # stale pack math), we still need the empty-overlay behaviour
+    # from the original sample-kind intent. A kind-first check
+    # would fall to ``return None`` (default packaging BOM) and
+    # PSP would silently book bottles + caps against a scientist's
+    # "no packaging" pick.
     if size_mode == "units":
         return []
+
+    if kind == "trial":
+        return None
 
     combo = getattr(trial_batch, "packaging_combo", None)
     if combo is None:
@@ -7062,6 +7072,7 @@ def create_psp_manufacturing_order_for_trial_batch(
     due_date: Any = None,
     notes: str = "",
     size_mode: str = "packs",
+    project_type_override: str | None = None,
 ) -> dict:
     """Create a PSP Manufacturing Order for a trial batch + pin the
     returned uuid on ``TrialBatch.psp_manufacturing_order_uuid``.
@@ -7178,8 +7189,19 @@ def create_psp_manufacturing_order_for_trial_batch(
     # every downstream leg (BOM, MO, release flow) reads from it.
     # Falls back to ``sample`` on legacy rows that were created
     # before ``kind`` existed.
+    #
+    # ``project_type_override`` — used by ``TrialBatchCreatePspMoView``
+    # when the modal flipped the batch's kind from sample → trial
+    # to store a size_mode=units run as raw individual units (so the
+    # trial-batch header shows "20 capsules" instead of the stale
+    # planned pack math). The override preserves the scientist's
+    # original sample-kind pick on PSP, so the commercial release
+    # path still applies to the physical output.
     kind = getattr(trial_batch, "kind", None) or "sample"
-    project_type = "trial" if kind == "trial" else "sample"
+    if project_type_override in ("trial", "sample"):
+        project_type = project_type_override
+    else:
+        project_type = "trial" if kind == "trial" else "sample"
 
     # Customer-paid sample fulfilment override: when the batch came
     # from the /samples fulfilment queue (``source_payment_id`` set

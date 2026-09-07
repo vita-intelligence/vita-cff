@@ -33,6 +33,57 @@ from apps.specifications.models import (
 )
 
 
+def _has_project_voiding_payment(formulation_id: Any) -> bool:
+    """True when the NEWEST DEPOSIT or FINAL payment on this
+    formulation is voided — the project-cancelling void classes,
+    with no later payment reviving the project.
+
+    ADDITIONAL_SAMPLES and other voids don't kill the project (they
+    just drop the trial cycle back to its terminal-choice prompt),
+    so they're excluded here.
+
+    Newest-wins matters because the finance queue explicitly supports
+    re-recording after a void — a voided invoice sends the proposal
+    back onto the "Awaiting deposits" list where finance records the
+    corrected payment. That fresh PENDING / APPROVED row supersedes
+    the void row (which stays for audit).
+
+    Scope note: ``record_payment`` sets ``formulation=None`` for
+    ``kind=DEPOSIT`` rows and ``proposal=None`` for ``kind=FINAL``
+    rows (see ``apps.payments.services.record_payment``). So the
+    query must reach the formulation via BOTH the direct FK and via
+    the proposal linkage — filtering on ``formulation_id`` alone
+    would miss every deposit ever recorded through the finance
+    queue.
+
+    Lazy import — the payments app pulls the proposals + specifications
+    graph and would otherwise create a boot-time cycle here.
+    """
+
+    from django.db.models import Q
+
+    from apps.payments.constants import PaymentKind, PaymentStatus
+    from apps.payments.models import Payment
+    from apps.proposals.models import Proposal
+
+    proposal_ids = list(
+        Proposal.objects.filter(
+            formulation_version__formulation_id=formulation_id
+        ).values_list("id", flat=True)
+    )
+    scope = Q(formulation_id=formulation_id)
+    if proposal_ids:
+        scope |= Q(proposal_id__in=proposal_ids)
+    newest = (
+        Payment.objects.filter(scope)
+        .filter(kind__in=(PaymentKind.DEPOSIT, PaymentKind.FINAL))
+        .order_by("-updated_at")
+        .values_list("status", flat=True)
+        .first()
+    )
+    return newest == PaymentStatus.VOIDED
+
+
 def _rtg_payment_approved(
     formulation: Formulation, proposals: list[Proposal] | None = None
 ) -> bool:
@@ -120,6 +171,16 @@ STAGE_LABELS: dict[str, str] = {
     "dispatched": "On the way",
     "delivered": "Delivered",
     "on_hold": "On hold",
+    # Terminal: customer declined the proposal on the kiosk and no
+    # superseding signed proposal exists. Shown on both portals' project
+    # lists so the card doesn't keep advertising "In progress" after
+    # the project has effectively stopped.
+    "proposal_declined": "Declined",
+    # Terminal: finance voided a DEPOSIT or FINAL invoice on this
+    # formulation. Kills the project the same way a declined proposal
+    # does — surfaces as "Cancelled" on the list card. See
+    # :func:`_has_project_voiding_payment` for the exact filter.
+    "project_cancelled": "Cancelled",
     "unknown": "In progress",
     # Pre-project stages for un-converted CFFs — used by the
     # dashboard's CFF-card path, and by the activity feed's
@@ -167,6 +228,8 @@ STAGE_TONES: dict[str, tuple[str, bool]] = {
     "dispatched": ("in_progress", False),
     "delivered": ("success", False),
     "on_hold": ("danger", False),
+    "proposal_declined": ("danger", False),
+    "project_cancelled": ("danger", False),
     "unknown": ("in_progress", False),
     "cff_under_review": ("in_progress", False),
     "cff_rejected": ("danger", False),
@@ -248,6 +311,36 @@ def resolve_stage(
     proposal AND a sent final spec reads as "final spec pending",
     not "proposal pending".
     """
+
+    # Priority 0: the project stopped moving because either
+    #   (a) the customer declined the proposal on the kiosk, or
+    #   (b) finance voided a DEPOSIT / FINAL invoice on this
+    #       formulation (a project-cancelling void class — happens
+    #       AFTER the customer already signed).
+    #
+    # Terminal state — trumps every downstream signal so the project
+    # card doesn't keep saying "In progress" after the deal has died.
+    #
+    # The declined branch is guarded on "no signed proposal survives"
+    # so a re-quote-and-sign cycle correctly advances past the earlier
+    # decline. The voided-payment branch is NOT guarded on signed —
+    # by definition the customer already signed before finance could
+    # invoice, so a signed proposal doesn't rescue the project. This
+    # matches the trigger
+    # :func:`apps.client_portal.api.product_detail_views._build_cancellation`
+    # uses for its ``payment_voided`` branch, keeping the chip + banner
+    # + roadmap in agreement.
+    #
+    # Declined wins over voided when both apply (the customer's own
+    # action is the more meaningful signal to them).
+    has_signed = any(p.customer_signed_at is not None for p in proposals)
+    if not has_signed and any(
+        getattr(p, "customer_rejected_at", None) is not None
+        for p in proposals
+    ):
+        return ("proposal_declined", None)
+    if _has_project_voiding_payment(formulation.id):
+        return ("project_cancelled", None)
 
     # Priority 1: label design states that BLOCK the customer (they
     # need to click something on their side). Attention-tone stages

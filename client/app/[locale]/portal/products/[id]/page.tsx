@@ -8,6 +8,7 @@ import {
   FileText,
   Loader2,
   MinusCircle,
+  X,
 } from "lucide-react";
 
 import {
@@ -28,7 +29,7 @@ import { RefreshOnFocus } from "./refresh-on-focus";
 import { ReleaseDocumentsSection } from "./release-documents-section";
 
 
-type StageState = "done" | "current" | "future" | "skipped";
+type StageState = "done" | "current" | "future" | "skipped" | "cancelled";
 
 
 interface PipelineStage {
@@ -253,8 +254,14 @@ export default async function PortalProductDetailPage({
           the same thing reads as broken. BE ``_build_next_action``
           also suppresses the sample entry; this is the render-side
           guard for the NoActionBanner "you're up to date" fallback
-          that would otherwise fire falsely. */}
-      {currentStage?.key === "sample_selection" || currentStage?.key === "trial" ? null : data.next_action ? (
+          that would otherwise fire falsely.
+
+          Also suppressed when the project is cancelled — the
+          CancellationBanner above already tells the customer what
+          happened, and any "waiting for X" copy under it would
+          contradict the banner. */}
+      {data.cancellation ? null : currentStage?.key === "sample_selection" ||
+        currentStage?.key === "trial" ? null : data.next_action ? (
         <NextActionBanner action={data.next_action} />
       ) : (
         <NoActionBanner
@@ -295,8 +302,11 @@ export default async function PortalProductDetailPage({
           the customer sees exactly which shop-floor stage each of
           their batches is on. Renders nothing when the PSP push
           hasn't landed manufacturing_orders yet (project still in
-          an earlier phase). */}
-      {data.production_status &&
+          an earlier phase). Also hidden entirely once the project
+          is cancelled — showing "In progress" copy for MOs that no
+          longer apply contradicts the cancellation banner above. */}
+      {!data.cancellation &&
+      data.production_status &&
       data.production_status.manufacturing_orders.length > 0 ? (
         <section className="mb-10">
           <Eyebrow>Production</Eyebrow>
@@ -313,8 +323,8 @@ export default async function PortalProductDetailPage({
           sitting on our 3PL shelf. Points the customer at the
           Warehouse tab where the qty-on-hand + Request-dispatch flow
           lives; keeps the product page as a "journey complete"
-          surface. */}
-      {(data.production_status as ExtendedProductionStatus | null)?.bailee_custody ? (
+          surface. Both hidden on a cancelled project. */}
+      {data.cancellation ? null : (data.production_status as ExtendedProductionStatus | null)?.bailee_custody ? (
         <BailleeCustodyPanel
           panel={
             (data.production_status as ExtendedProductionStatus).bailee_custody!
@@ -569,9 +579,11 @@ function Stepper({ stages }: { stages: ReadonlyArray<PipelineStage> }) {
                   ? "border-orange-500 bg-orange-500 text-black"
                   : stage.state === "done"
                     ? "border-black bg-white text-black"
-                    : stage.state === "skipped"
-                      ? "border-dashed border-neutral-400 bg-neutral-50 text-neutral-500"
-                      : "border-neutral-300 bg-neutral-50 text-neutral-500"
+                    : stage.state === "cancelled"
+                      ? "border-red-600 bg-red-50 text-red-700"
+                      : stage.state === "skipped"
+                        ? "border-dashed border-neutral-400 bg-neutral-50 text-neutral-500"
+                        : "border-neutral-300 bg-neutral-50 text-neutral-500"
               }`}
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -607,6 +619,8 @@ function stateBadge(state: StageState): string {
       return "You are here";
     case "skipped":
       return "Not applicable";
+    case "cancelled":
+      return "Cancelled";
     case "future":
     default:
       return "Coming up";
@@ -635,6 +649,13 @@ function StageDot({ state }: { state: StageState }) {
     return (
       <span className={`${base} border-dashed bg-white text-neutral-400`}>
         <MinusCircle className="h-3 w-3" />
+      </span>
+    );
+  }
+  if (state === "cancelled") {
+    return (
+      <span className={`${base} border-red-600 bg-red-50 text-red-600`}>
+        <X className="h-4 w-4" />
       </span>
     );
   }
