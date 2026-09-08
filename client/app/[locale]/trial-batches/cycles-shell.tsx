@@ -568,33 +568,20 @@ function CycleDetailsModal({
     onSettled: () => setBusySlotId(null),
   });
 
-  // Ask the scientist for the batch size before firing the create.
-  // Previously the FE sent an empty body and the API silently
-  // defaulted to 20 packs — that number then rode all the way to
-  // the sample CO line on PSP as ``qty_ordered``, and if the
-  // scientist later picked "loose gummies" mode on the Create-MO
-  // modal (producing say 0.05 packs) the wizard falsely surfaced
-  // a shortfall. Prompt makes the decision explicit at the source.
-  // Native ``window.prompt`` for now — internal R&D surface,
-  // low-frequency action; upgrade to a proper dialog later if needed.
-  function promptAndCreate(slotId: string) {
-    const raw = window.prompt(
-      "How many packs to produce for this trial slot?\n\n" +
-        "This is the planned batch size in whole packs. The " +
-        "Create-MO modal can still narrow this down at MO time " +
-        "(e.g. loose-gummies mode for a 3-gummy taster).",
-      "20",
-    );
-    if (raw === null) return; // scientist cancelled
-    const trimmed = raw.trim();
-    const size = Number(trimmed);
-    if (!Number.isInteger(size) || size <= 0) {
-      setError(
-        "Batch size must be a positive whole number (packs). Try again.",
-      );
-      return;
-    }
-    createAndLink.mutate({ slotId, batchSize: size });
+  // Create-and-link with a planning-only placeholder batch size.
+  // Matches the ``trial-batches-panel.tsx`` modal in the
+  // formulation-scoped view: the actual run quantity is captured
+  // on the Create-MO modal (which offers packs vs loose-units and
+  // the packaging-combo pick), so scientists shouldn't have to
+  // answer the same question twice. Historically this call sent an
+  // empty body, the API silently defaulted to 20 packs, and that
+  // number rode all the way through to PSP's sample CO line as
+  // ``qty_ordered`` — a later loose-gummies Create-MO would then
+  // falsely surface a shortfall. Sending ``batch_size_units: 1``
+  // pins the placeholder to the smallest valid value; Create-MO
+  // still overwrites it per-run.
+  function createBatchForSlot(slotId: string) {
+    createAndLink.mutate({ slotId, batchSize: 1 });
   }
 
   // Esc closes.
@@ -672,7 +659,7 @@ function CycleDetailsModal({
                 key={slot.id}
                 slot={slot}
                 busy={busySlotId === slot.id}
-                onCreateBatch={() => promptAndCreate(slot.id)}
+                onCreateBatch={() => createBatchForSlot(slot.id)}
                 expanded={expandedSlotId === slot.id}
                 onToggle={() =>
                   setExpandedSlotId((cur) => (cur === slot.id ? null : slot.id))
@@ -851,7 +838,17 @@ function SlotDetailRow({
           ) : null}
 
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {slot.status === "awaiting_scientist" ? (
+            {/* Only offer create-and-link when the slot is truly empty
+                (AWAITING_SCIENTIST *and* no trial batch linked yet).
+                A slot with a linked batch stays at AWAITING_SCIENTIST
+                until the PSP MO create fires (see
+                ``link_batch_to_slot`` docstring on the backend) — a
+                second click here would spawn an orphan TrialBatch
+                row. The "Open batch" link below covers the follow-up
+                action once a batch exists. Server-side guard in
+                ``TrialBatchCycleCreateAndLinkBatchView`` catches
+                anyone who bypasses this and returns 409. */}
+            {slot.status === "awaiting_scientist" && !slot.trial_batch_id ? (
               <button
                 type="button"
                 disabled={busy}

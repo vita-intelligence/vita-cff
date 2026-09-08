@@ -170,7 +170,20 @@ def _serialise_cycle_for_scientist(cycle: TrialBatchCycle) -> dict[str, Any]:
         and len(slots) < cycle.total_slots
         and cycle.status == TrialBatchCycleStatus.IN_PROGRESS
     )
-    action_needed = active is not None and active.status == TrialBatchSlotStatus.AWAITING_SCIENTIST
+    # ``action_needed`` drives the amber "Create sample batch" badge
+    # on the /trial-batches kanban card. Once a batch is linked to the
+    # slot the scientist's next step is on the batch detail page
+    # ("Create MO on PSP"), not another create-and-link click, so the
+    # badge stops firing. Without the ``trial_batch_id`` guard the
+    # slot lingers at AWAITING_SCIENTIST (see ``link_batch_to_slot``
+    # in cycle_services — status only advances on PSP MO create) and
+    # the badge kept nudging the operator, tempting a second click
+    # that would have spawned an orphan batch.
+    action_needed = (
+        active is not None
+        and active.status == TrialBatchSlotStatus.AWAITING_SCIENTIST
+        and active.trial_batch_id is None
+    )
     # "Worked" = slots that have actually been produced (or are being
     # produced) — anything past the AWAITING_SCIENTIST seed row, and
     # excluding CLOSED_CANCELLED so an auto-cancelled slot from a
@@ -612,6 +625,28 @@ class TrialBatchCycleCreateAndLinkBatchView(APIView):
                 {
                     "code": "slot_not_awaiting_scientist",
                     "detail": f"Slot is {slot.status}, expected AWAITING_SCIENTIST",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        # Refuse a second batch on the same slot. ``link_batch_to_slot``
+        # deliberately keeps the slot at AWAITING_SCIENTIST until the
+        # PSP MO create fires (see cycle_services docstring) — so the
+        # slot-status gate above passes for a slot that already has a
+        # batch linked, and each extra click would create an orphan
+        # TrialBatch row cluttering the /trial-batches list. Once a
+        # batch is linked the operator's next action is on the batch
+        # detail page ("Create MO on PSP"), not another create-and-
+        # link click.
+        if slot.trial_batch_id is not None:
+            return Response(
+                {
+                    "code": "slot_already_has_batch",
+                    "detail": (
+                        "A trial batch is already linked to this slot. "
+                        "Open the batch to create its PSP MO — a second "
+                        "batch on the same slot would leave an orphan "
+                        "recipe row."
+                    ),
                 },
                 status=status.HTTP_409_CONFLICT,
             )

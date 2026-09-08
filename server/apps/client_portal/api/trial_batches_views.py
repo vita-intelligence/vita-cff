@@ -49,6 +49,8 @@ from apps.formulations.models import Formulation
 from apps.trial_batches.cycle_services import (
     CycleHasActiveSlots,
     CycleHasPendingTopUp,
+    CycleNoApprovedSample,
+    CyclePaidAttemptsOutstanding,
     InvalidAdditionalSampleQuantity,
     SlotNotActive,
     confirm_trial_batches_done,
@@ -510,17 +512,24 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
             "release_documents": release_docs_payload,
         }
     # ``slots_used`` counts slots the customer has actually been sent
-    # a sample for (or is currently being sent one for) — anything past
-    # the AWAITING_SCIENTIST seed row and excluding auto-cancels.
-    # Without this, a freshly-opened cycle would read "1 of 3" the
-    # moment the seed slot is created and the customer would think a
-    # sample had already shipped.
+    # a sample for — the card label reads "N of M samples sent" and
+    # the customer's mental model of "sent" is the physical dispatch
+    # event, not the production kick-off. Include SHIPPED and every
+    # later state (delivered / feedback / closed-with-verdict); exclude
+    # AWAITING_SCIENTIST (planning, not started), IN_PRODUCTION (being
+    # made but hasn't left the lab), and CLOSED_CANCELLED (never went
+    # out). Earlier revisions only excluded AWAITING_SCIENTIST +
+    # CLOSED_CANCELLED, so the counter jumped from "1 of 2" to "2 of
+    # 2" the moment sample #1 got a verdict and sample #2 auto-
+    # spawned into IN_PRODUCTION — the customer read that as "we've
+    # already sent both" when in reality only one was on a truck.
     slots_worked = sum(
         1
         for s in slots
         if s.status
         not in (
             TrialBatchSlotStatus.AWAITING_SCIENTIST,
+            TrialBatchSlotStatus.IN_PRODUCTION,
             TrialBatchSlotStatus.CLOSED_CANCELLED,
         )
     )
@@ -562,10 +571,40 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
         if cycle.customer_confirmed_done_at is not None
         else None
     )
+    # ``verdicts_given`` counts paid-for attempts the customer has
+    # already responded to (satisfied or iterate). A slot with no
+    # verdict is either still in flight (caught by ``has_active_slots``
+    # above) OR has been closed by an auto-cancel path
+    # (``CLOSED_CANCELLED`` — carries no verdict, was never a real
+    # attempt). Both correctly leave ``verdicts_given`` untouched.
+    verdicts_given = sum(1 for s in slots if getattr(s, "verdict", None))
+    # Any customer verdict of ``satisfied`` on any slot in this cycle.
+    # Once true the pipeline has a locked recipe to build a FINAL spec
+    # from; before that the "we're done" terminal choice would strand
+    # R&D with nothing to sign off, so we gate the FE option on this
+    # flag downstream (see ``TerminalChoicePanel`` in the portal).
+    has_approved_sample = any(
+        getattr(s, "verdict", None) == TrialBatchSlotVerdict.SATISFIED
+        for s in slots
+    )
+    # ``can_finalise`` = "the customer has consumed every paid-for
+    # attempt AND is not waiting on anything". Requires ALL of:
+    #  * they haven't already answered "we're done"
+    #  * no top-up is with finance
+    #  * no slot is in flight
+    #  * every paid-for attempt (``total_slots``) has a verdict
+    #
+    # The ``verdicts_given >= total_slots`` check was the missing one:
+    # after slot #1 verdict=``needs_iteration`` the scientist owes the
+    # customer slot #2, but the moment slot #1 closes there's a window
+    # where ``has_active_slots`` is false and the terminal-choice
+    # prompt would fire prematurely — asking the customer to "finalise
+    # or ask for more" when we still owe them a paid-for attempt.
     can_finalise = (
         customer_confirmed_done_at is None
         and not has_pending_top_up
         and not has_active_slots
+        and verdicts_given >= cycle.total_slots
     )
     # Portal-facing total_slots is the current run's slot count —
     # ``total_slots`` on the row still counts everything ever
@@ -593,6 +632,12 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
         "has_pending_top_up": has_pending_top_up,
         "has_active_slots": has_active_slots,
         "can_finalise": can_finalise,
+        # Gate for the "No, we're done" terminal-choice button. When
+        # false the customer never approved any sample and the FE must
+        # hide that option — closing the cycle without a satisfied
+        # verdict would leave R&D with no recipe to build the FINAL
+        # spec from.
+        "has_approved_sample": has_approved_sample,
         "slots": [
             _serialise_slot(
                 s, production_by_slot.get(str(s.id)), sequence_offset=offset
@@ -987,6 +1032,16 @@ class PortalTrialBatchConfirmDoneView(PortalAPIView):
         except CycleHasActiveSlots as exc:
             return Response(
                 {"code": "active_slots", "detail": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except CyclePaidAttemptsOutstanding as exc:
+            return Response(
+                {"code": "paid_attempts_outstanding", "detail": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except CycleNoApprovedSample as exc:
+            return Response(
+                {"code": "no_approved_sample", "detail": str(exc)},
                 status=status.HTTP_409_CONFLICT,
             )
         cycle_after = TrialBatchCycle.objects.get(pk=cycle.pk)

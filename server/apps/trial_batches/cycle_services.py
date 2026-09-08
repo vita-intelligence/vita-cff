@@ -92,6 +92,25 @@ class CycleHasActiveSlots(Exception):
     """
 
 
+class CyclePaidAttemptsOutstanding(Exception):
+    """Cycle can't be finalised — the customer hasn't given a verdict
+    on every paid-for slot yet. Fires when e.g. slot #1 was closed as
+    ``needs_iteration`` but the scientist hasn't spawned slot #2 into
+    ``AWAITING_SCIENTIST`` yet: there's a brief window where no slot
+    is technically "in flight" but the customer is still owed a
+    physical run for a paid attempt.
+    """
+
+
+class CycleNoApprovedSample(Exception):
+    """Cycle can't be finalised — no slot carries a ``satisfied``
+    verdict, so R&D would have no locked recipe to build the FINAL
+    spec from. The customer must either approve a sample they've
+    already received, or order another round via
+    :func:`request_additional_samples`.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Cycle creation
 # ---------------------------------------------------------------------------
@@ -894,6 +913,39 @@ def confirm_trial_batches_done(
     if active:
         raise CycleHasActiveSlots(
             f"Cycle {cycle.id} still has slots in flight."
+        )
+
+    # Every paid-for attempt must carry a verdict. Mirrors the
+    # ``can_finalise`` gate on the portal payload — needed as a hard
+    # server-side check because a stale FE / bookmarked confirm-done
+    # URL could otherwise sneak past the amber "waiting for R&D to
+    # prep next batch" hold that the payload gate produces.
+    verdicts_given = TrialBatchSlot.objects.filter(
+        cycle=cycle,
+        verdict__isnull=False,
+    ).exclude(verdict="").count()
+    if verdicts_given < cycle.total_slots:
+        raise CyclePaidAttemptsOutstanding(
+            f"Cycle {cycle.id} has {verdicts_given} verdicts across "
+            f"{cycle.total_slots} paid attempts — scientist still "
+            f"owes another slot."
+        )
+
+    # Refuse to close without an approved recipe. R&D can't sign a
+    # FINAL spec off nothing — the customer has to mark at least one
+    # sample as ``satisfied`` before the pipeline advances. Without
+    # this guard a bookmarked confirm-done call after a run of pure
+    # ``needs_iteration`` verdicts would strand the project with a
+    # stamped ``customer_confirmed_done_at`` and no recipe to build
+    # the FINAL from.
+    has_approved = TrialBatchSlot.objects.filter(
+        cycle=cycle,
+        verdict=TrialBatchSlotVerdict.SATISFIED,
+    ).exists()
+    if not has_approved:
+        raise CycleNoApprovedSample(
+            f"Cycle {cycle.id} has no slot with a ``satisfied`` "
+            f"verdict — approve a sample before finalising."
         )
 
     now = timezone.now()

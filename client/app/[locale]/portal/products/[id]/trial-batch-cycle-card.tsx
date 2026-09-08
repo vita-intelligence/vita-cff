@@ -245,6 +245,12 @@ interface Cycle {
    *  hasn't already answered — i.e. the terminal-choice prompt is
    *  the honest thing to render right now. */
   readonly can_finalise: boolean;
+  /** True when any slot in this cycle carries a customer verdict of
+   *  ``satisfied``. Gates the "No, we're done" terminal-choice option:
+   *  without an approved recipe R&D has nothing to build the FINAL
+   *  spec from, so we hide the button and leave only "request more"
+   *  when this is false. */
+  readonly has_approved_sample: boolean;
 }
 
 
@@ -535,6 +541,7 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
       {needsTerminalChoice ? (
         <TerminalChoicePanel
           busy={busy}
+          hasApprovedSample={cycle.has_approved_sample}
           onOpenRequestMore={() => setRequestModalOpen(true)}
           onOpenConfirmDone={() => setConfirmDoneOpen(true)}
         />
@@ -2043,21 +2050,29 @@ function FeedbackForm({
 // panel itself owns nothing beyond the two triggers.
 function TerminalChoicePanel({
   busy,
+  hasApprovedSample,
   onOpenRequestMore,
   onOpenConfirmDone,
 }: {
   busy: boolean;
+  hasApprovedSample: boolean;
   onOpenRequestMore: () => void;
   onOpenConfirmDone: () => void;
 }) {
+  // Without a satisfied verdict on any slot, "No, we're done" would
+  // strand R&D with no locked recipe to build the FINAL spec from —
+  // so we hide that option and only offer "request more" until the
+  // customer approves a sample. Copy above the button row swaps to
+  // explain the situation.
   return (
     <div className="mt-4 border-2 border-black bg-white p-4">
       <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
         What next?
       </p>
       <p className="mt-1 text-xs text-neutral-600">
-        Either request another batch to keep iterating, or lock this in
-        and move on to the final specification.
+        {hasApprovedSample
+          ? "Either request another batch to keep iterating, or lock this in and move on to the final specification."
+          : "None of the samples so far are approved as your final recipe. Order another round and mark the one that works when it arrives — we can't advance to the final specification until you've approved a sample."}
       </p>
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
         <button
@@ -2073,20 +2088,22 @@ function TerminalChoicePanel({
             We&rsquo;ll invoice you for the extras and produce another batch.
           </p>
         </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onOpenConfirmDone}
-          className="flex-1 border-2 border-black bg-black p-3 text-left text-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <p className="flex items-center gap-2 text-sm font-black uppercase">
-            <Check className="h-4 w-4" />
-            No, we&rsquo;re done
-          </p>
-          <p className="mt-1 text-xs text-neutral-300">
-            Lock in the recipe and move on to the final specification.
-          </p>
-        </button>
+        {hasApprovedSample ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onOpenConfirmDone}
+            className="flex-1 border-2 border-black bg-black p-3 text-left text-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <p className="flex items-center gap-2 text-sm font-black uppercase">
+              <Check className="h-4 w-4" />
+              No, we&rsquo;re done
+            </p>
+            <p className="mt-1 text-xs text-neutral-300">
+              Lock in the recipe and move on to the final specification.
+            </p>
+          </button>
+        ) : null}
       </div>
     </div>
   );
