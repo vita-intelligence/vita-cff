@@ -172,6 +172,15 @@ LOCAL_APPS = [
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
+# django-silk — request/SQL profiler, dev-only. Double-gated on
+# DEBUG **and** ``ENABLE_SILK=1`` so a stray DEBUG=True in a shared
+# environment can't accidentally turn on the profiler middleware.
+# Nothing about silk ships to production — the package is opt-in
+# in the local venv and never activates in App Service.
+SILK_ENABLED = DEBUG and _env_bool("ENABLE_SILK", default=False)
+if SILK_ENABLED:
+    INSTALLED_APPS = INSTALLED_APPS + ["silk"]
+
 
 # Authentication
 AUTH_USER_MODEL = "accounts.User"
@@ -359,6 +368,12 @@ MIDDLEWARE = [
     # ``config.middleware`` for the reasoning.
     "config.middleware.MisclickGuardMiddleware",
 ]
+
+if SILK_ENABLED:
+    # Silk's middleware wraps every request to record timing + SQL.
+    # Insert immediately after SecurityMiddleware so the profiler
+    # captures the full downstream chain (auth, session, view).
+    MIDDLEWARE.insert(1, "silk.middleware.SilkyMiddleware")
 
 # Django's default is ``DENY`` which blocks ALL ``<iframe>`` /
 # ``<object>`` embedding of any Django-served response — including

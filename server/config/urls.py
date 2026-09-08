@@ -94,3 +94,8 @@ if settings.DEBUG:
     urlpatterns += static(
         settings.MEDIA_URL, document_root=settings.MEDIA_ROOT
     )
+
+# django-silk profiler UI at /silk/ — dev-only, opt-in via
+# ``ENABLE_SILK=1``. See ``settings.SILK_ENABLED`` for the guard.
+if getattr(settings, "SILK_ENABLED", False):
+    urlpatterns += [path("silk/", include("silk.urls", namespace="silk"))]
