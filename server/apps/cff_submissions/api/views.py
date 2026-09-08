@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from django.core.cache import cache
 from django.db.models import Q
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ParseError
@@ -741,6 +742,17 @@ class CFFFieldLabelsView(APIView):
         # combination in one round-trip — the previous shape fired
         # one query for distinct form ids and then N additional
         # queries (one per form id) to fetch namespaces.
+        # Cache the whole per-org payload for 5 min. Wix form
+        # schema changes are infrequent (schema refresh runs on
+        # submission ingest, not on every list render), so serving
+        # a slightly-stale label map is safe. Prevents this
+        # endpoint from being the hot loop the CFF list page fires
+        # on mount.
+        cache_key = f"cff-field-labels:{self.organization.id}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
         labels_by_form: dict[str, dict[str, str]] = {}
         pairs = (
             CFFSubmission.objects
@@ -752,7 +764,10 @@ class CFFFieldLabelsView(APIView):
             labels = get_field_labels(form_id=str(form_id), namespace=ns)
             if labels:
                 labels_by_form[str(form_id)] = labels
-        return Response({"field_labels_by_form": labels_by_form})
+
+        payload = {"field_labels_by_form": labels_by_form}
+        cache.set(cache_key, payload, timeout=300)
+        return Response(payload)
 
 
 # ---------------------------------------------------------------------------

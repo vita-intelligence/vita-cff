@@ -147,6 +147,7 @@ export function useInfiniteCFFSubmissions(
     getNextPageParam: (last) => last.next,
     getPreviousPageParam: (first) => first.previous,
     enabled: args.enabled ?? true,
+    staleTime: 30_000,
     refetchOnWindowFocus: true,
   });
 }

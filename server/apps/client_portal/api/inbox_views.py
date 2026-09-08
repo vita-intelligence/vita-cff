@@ -74,6 +74,56 @@ def _preview(comment: Comment) -> str:
     return body
 
 
+def _batch_comment_summaries(
+    *,
+    fk_field: str,
+    entity_ids: list,
+    last_read_by_id: dict,
+    client_account,
+) -> dict[str, tuple[Comment, int]]:
+    """Return ``{entity_id_str: (latest_comment, unread_count)}`` for
+    every entity in one pass. Replaces the per-row "latest + unread"
+    pattern that fired 2 queries per parent row — 20 threads meant
+    40 round-trips per inbox render.
+
+    Fetches all shared, non-deleted comments for the given entity ids
+    in one DESC-ordered query, groups them client-side, then computes
+    ``latest`` (head of each group) + unread count (post-``last_read``
+    excluding own messages) without further round-trips.
+    """
+
+    if not entity_ids:
+        return {}
+
+    id_field = f"{fk_field}_id"
+    comments = (
+        Comment.objects
+        .filter(**{f"{id_field}__in": entity_ids})
+        .filter(
+            visibility=Comment.Visibility.SHARED,
+            is_deleted=False,
+        )
+        .select_related("author", "client_account__customer")
+        .order_by(id_field, "-created_at")
+    )
+
+    by_entity: dict[str, list[Comment]] = {}
+    for c in comments:
+        pid = str(getattr(c, id_field))
+        by_entity.setdefault(pid, []).append(c)
+
+    result: dict[str, tuple[Comment, int]] = {}
+    own_ca_id = client_account.id
+    for pid, group in by_entity.items():
+        last_read = last_read_by_id.get(pid, _UNIX_EPOCH)
+        unread = sum(
+            1 for c in group
+            if c.created_at > last_read and c.client_account_id != own_ca_id
+        )
+        result[pid] = (group[0], unread)
+    return result
+
+
 def _gather_proposal_threads(client_account, request: Request) -> list[dict[str, Any]]:
     """Build the inbox rows for every proposal the client owns that
     has at least one shared comment.
@@ -96,44 +146,31 @@ def _gather_proposal_threads(client_account, request: Request) -> list[dict[str,
         )
         .distinct()
     )
+    proposal_ids = [p.id for p in proposals]
     read_rows = (
         CommentReadState.objects
         .filter(
             viewer_client=client_account,
             content_type=proposal_ct,
-            object_id__in=[p.id for p in proposals],
+            object_id__in=proposal_ids,
         )
         .values_list("object_id", "last_read_at")
     )
     last_read_by_pid = {str(pid): ts for pid, ts in read_rows}
 
+    summaries = _batch_comment_summaries(
+        fk_field="proposal",
+        entity_ids=proposal_ids,
+        last_read_by_id=last_read_by_pid,
+        client_account=client_account,
+    )
+
     rows: list[dict[str, Any]] = []
     for proposal in proposals:
-        latest = (
-            Comment.objects
-            .filter(
-                proposal=proposal,
-                visibility=Comment.Visibility.SHARED,
-                is_deleted=False,
-            )
-            .select_related("author", "client_account__customer")
-            .order_by("-created_at")
-            .first()
-        )
-        if latest is None:
+        entry = summaries.get(str(proposal.id))
+        if entry is None:
             continue
-        last_read = last_read_by_pid.get(str(proposal.id), _UNIX_EPOCH)
-        unread = (
-            Comment.objects
-            .filter(
-                proposal=proposal,
-                visibility=Comment.Visibility.SHARED,
-                is_deleted=False,
-                created_at__gt=last_read,
-            )
-            .exclude(client_account=client_account)
-            .count()
-        )
+        latest, unread = entry
         rows.append(
             {
                 "entity_kind": "proposal",
@@ -214,34 +251,22 @@ def _gather_spec_threads(client_account, request: Request) -> list[dict[str, Any
     last_read_by_sid = {str(sid): ts for sid, ts in read_rows}
 
     rows: list[dict[str, Any]] = []
-    sheets = SpecificationSheet.objects.filter(id__in=list(sheet_ids))
+    sheets = SpecificationSheet.objects.filter(id__in=list(sheet_ids)).select_related(
+        "formulation_version__formulation",
+    )
+    sheet_id_list = list(sheet_ids)
+    summaries = _batch_comment_summaries(
+        fk_field="specification_sheet",
+        entity_ids=sheet_id_list,
+        last_read_by_id=last_read_by_sid,
+        client_account=client_account,
+    )
     for sheet in sheets:
         sid = str(sheet.id)
-        latest = (
-            Comment.objects
-            .filter(
-                specification_sheet=sheet,
-                visibility=Comment.Visibility.SHARED,
-                is_deleted=False,
-            )
-            .select_related("author", "client_account__customer")
-            .order_by("-created_at")
-            .first()
-        )
-        if latest is None:
+        entry = summaries.get(sid)
+        if entry is None:
             continue
-        last_read = last_read_by_sid.get(sid, _UNIX_EPOCH)
-        unread = (
-            Comment.objects
-            .filter(
-                specification_sheet=sheet,
-                visibility=Comment.Visibility.SHARED,
-                is_deleted=False,
-                created_at__gt=last_read,
-            )
-            .exclude(client_account=client_account)
-            .count()
-        )
+        latest, unread = entry
         parent_proposal = sheet_to_proposal.get(sid)
         title = (
             (sheet.code or "").strip()
@@ -297,6 +322,7 @@ def _gather_cff_threads(client_account, request: Request) -> list[dict[str, Any]
             comments__visibility=Comment.Visibility.SHARED,
             comments__is_deleted=False,
         )
+        .prefetch_related("projects")
         .distinct()
     )
     cff_ids = [c.id for c in cffs]
@@ -315,41 +341,30 @@ def _gather_cff_threads(client_account, request: Request) -> list[dict[str, Any]
     )
     last_read_by_id = {str(pk): ts for pk, ts in read_rows}
 
+    summaries = _batch_comment_summaries(
+        fk_field="cff_submission",
+        entity_ids=cff_ids,
+        last_read_by_id=last_read_by_id,
+        client_account=client_account,
+    )
+
     rows: list[dict[str, Any]] = []
     for cff in cffs:
-        latest = (
-            Comment.objects
-            .filter(
-                cff_submission=cff,
-                visibility=Comment.Visibility.SHARED,
-                is_deleted=False,
-            )
-            .select_related("author", "client_account__customer")
-            .order_by("-created_at")
-            .first()
-        )
-        if latest is None:
+        entry = summaries.get(str(cff.id))
+        if entry is None:
             continue
-        last_read = last_read_by_id.get(str(cff.id), _UNIX_EPOCH)
-        unread = (
-            Comment.objects
-            .filter(
-                cff_submission=cff,
-                visibility=Comment.Visibility.SHARED,
-                is_deleted=False,
-                created_at__gt=last_read,
-            )
-            .exclude(client_account=client_account)
-            .count()
-        )
+        latest, unread = entry
         # CFF rows don't have a clean human title — the Wix
         # form-submission ID is opaque. Use a linked project's code
         # when the CFF has been routed to at least one, otherwise a
         # short id slice so the row still has *something* to read
         # against. A CFF can sit across multiple projects under the
         # M2M shape; pick the first by name so the title is stable
-        # across re-renders even when the link set grows.
-        first_project = cff.projects.order_by("name").first()
+        # across re-renders even when the link set grows. Sort the
+        # already-prefetched list in Python to avoid an extra query
+        # per row.
+        projects_sorted = sorted(cff.projects.all(), key=lambda p: p.name or "")
+        first_project = projects_sorted[0] if projects_sorted else None
         title = (
             f"CFF · {first_project.code or first_project.name}"
             if first_project is not None
@@ -403,48 +418,54 @@ def _gather_label_design_threads(client_account, request: Request) -> list[dict[
             comments__visibility=Comment.Visibility.SHARED,
             comments__is_deleted=False,
         )
-        .select_related("formulation")
+        # Pull the proposal so the row title can carry the order
+        # code — RTG multi-order customers otherwise see identical
+        # "Vitamin C Capsules" titles for every one of their orders'
+        # label threads, and can't tell which thread covers which
+        # order without clicking into each.
+        .select_related("formulation", "proposal")
         .distinct()
     )
+    ld_ids = [ld.id for ld in label_designs]
     read_rows = (
         CommentReadState.objects.filter(
             viewer_client=client_account,
             content_type=label_design_ct,
-            object_id__in=[ld.id for ld in label_designs],
+            object_id__in=ld_ids,
         )
         .values_list("object_id", "last_read_at")
     )
     last_read_by_id = {str(ld_id): ts for ld_id, ts in read_rows}
 
+    summaries = _batch_comment_summaries(
+        fk_field="label_design",
+        entity_ids=ld_ids,
+        last_read_by_id=last_read_by_id,
+        client_account=client_account,
+    )
+
     rows: list[dict[str, Any]] = []
     for ld in label_designs:
-        latest = (
-            Comment.objects.filter(
-                label_design=ld,
-                visibility=Comment.Visibility.SHARED,
-                is_deleted=False,
-            )
-            .select_related("author", "client_account__customer")
-            .order_by("-created_at")
-            .first()
-        )
-        if latest is None:
+        entry = summaries.get(str(ld.id))
+        if entry is None:
             continue
-        last_read = last_read_by_id.get(str(ld.id), _UNIX_EPOCH)
-        unread = (
-            Comment.objects.filter(
-                label_design=ld,
-                visibility=Comment.Visibility.SHARED,
-                is_deleted=False,
-                created_at__gt=last_read,
-            )
-            .exclude(client_account=client_account)
-            .count()
-        )
-        title = (
+        latest, unread = entry
+        base_title = (
             ld.formulation.name
             or ld.formulation.code
             or "Label design"
+        )
+        # Suffix the proposal code when present so RTG multi-order
+        # customers can tell their orders apart in the bell drop-down.
+        # Custom (1:1 formulation:proposal) rows still read cleanly
+        # because the suffix just repeats their single order code.
+        proposal_code = (
+            (ld.proposal.code or "").strip()
+            if ld.proposal_id is not None else ""
+        )
+        title = (
+            f"{base_title} · {proposal_code}"
+            if proposal_code else base_title
         )
         rows.append(
             {

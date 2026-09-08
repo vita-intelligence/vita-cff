@@ -35,6 +35,7 @@ a legitimate customer out).
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from django.shortcuts import get_object_or_404
@@ -499,41 +500,30 @@ class PortalSampleDetailView(PortalAPIView):
             .first()
         )
 
-        mo_chain = _mo_chain_or_none(payment, trial_batch)
-        # PSP CO snapshot is the richest source — carries the actual
-        # OrderWizard phase + operator's next-action copy so the
-        # customer sees the same specificity the PSP /projects page
-        # shows ("Need MO creation", "Awaiting ingredients", etc.).
-        # Only fires when payment is approved (before that PSP has
-        # nothing on this order).
-        snapshot = (
-            _co_snapshot_or_none(payment)
-            if payment.status == PaymentStatus.APPROVED
-            else None
-        )
-
-        # Final Product Release documents attached to PSP's root MO.
-        # Empty until the release ceremony completes on PSP; on
-        # completion the customer sees CoA, BMR, micro report, label
-        # proof + retain-sample record. Silent-degrade posture — a
-        # PSP outage or unresolved CO returns [] rather than blocking
-        # the whole detail page.
-        release_documents = (
-            _release_documents_or_empty(payment)
-            if payment.status == PaymentStatus.APPROVED
-            else []
-        )
-
-        # Dispatch-confirmation snapshot — what the coordinator filled
-        # + what the operator captured at truck arrival. ``None`` until
-        # PSP has a picked_up shipment; the FE hides the card for that
-        # case. Same APPROVED gate as release_documents so unpaid
-        # samples don't leak downstream operational data.
-        dispatch = (
-            _dispatch_or_none(payment)
-            if payment.status == PaymentStatus.APPROVED
-            else None
-        )
+        # Fire the four PSP-facing lookups in parallel. Each is an
+        # HTTP round-trip to Phoenix (~300–600ms) with silent-degrade
+        # on failure, so wall-clock latency on this detail page was
+        # sum-of-round-trips. Running them concurrently drops the
+        # page to slowest-single-call. Helpers already catch and
+        # convert their own exceptions to None/[], so a thread that
+        # fails does not poison the response.
+        approved = payment.status == PaymentStatus.APPROVED
+        with ThreadPoolExecutor(max_workers=4) as _ex:
+            _f_mo_chain = _ex.submit(_mo_chain_or_none, payment, trial_batch)
+            _f_snapshot = (
+                _ex.submit(_co_snapshot_or_none, payment) if approved else None
+            )
+            _f_release = (
+                _ex.submit(_release_documents_or_empty, payment)
+                if approved else None
+            )
+            _f_dispatch = (
+                _ex.submit(_dispatch_or_none, payment) if approved else None
+            )
+            mo_chain = _f_mo_chain.result()
+            snapshot = _f_snapshot.result() if _f_snapshot else None
+            release_documents = _f_release.result() if _f_release else []
+            dispatch = _f_dispatch.result() if _f_dispatch else None
 
         return Response(
             {
