@@ -6427,6 +6427,36 @@ export function FormulationBuilder({
               return computed ? `${baseHint} ${computed}` : baseHint;
             })()}
           />
+          {/* Powder fill weight mirrored onto Setup. The canonical
+              input lives on the Formulation tab (line ~5774) alongside
+              the powder pickers because scientists used to hit it
+              while composing the blend. But scientists building the
+              Setup card for a powder kept missing it — the Setup tab
+              shows "Scoops per serving = 1" with no visible mass
+              anywhere, and every downstream reader (spec sheet
+              directions, cost calc, PSP push, pack-total hint below)
+              needs ``target_fill_weight_mg`` to be non-zero. Rendering
+              a second bound input here keeps both surfaces in sync
+              (shared ``powderFillG`` UI-draft state + reconciling
+              useEffect at line ~3783), so editing either place
+              propagates immediately. Only renders for powder — gummy /
+              capsule / tablet / liquid have their own per-form scoop
+              or unit mass model. */}
+          {metadata.dosage_form === "powder" ? (
+            <TextField
+              label={tFormulations("fields.powder_fill_weight")}
+              value={powderFillG}
+              onChange={(v) => {
+                setPowderFillG(v);
+                setMetadata({
+                  ...metadata,
+                  target_fill_weight_mg: gStringToMgString(v),
+                });
+              }}
+              disabled={!canWrite}
+              hint={tFormulations("fields.powder_fill_weight_hint")}
+            />
+          ) : null}
           <TextField
             label={tFormulations("fields.appearance")}
             value={metadata.appearance}

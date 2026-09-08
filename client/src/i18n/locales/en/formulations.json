@@ -101,7 +101,7 @@
     "serving_size_hint_capsule": "Number of capsules the customer takes per serving (typically 1–3).",
     "serving_size_hint_tablet": "Number of tablets per serving (typically 1–2).",
     "serving_size_hint_gummy": "Number of gummies per serving (typically 1–2).",
-    "serving_size_hint_powder": "Number of scoops per serving (typically 1).",
+    "serving_size_hint_powder": "How many scoops the customer takes per serving (typically 1). This is a count, not a mass — set the grams-per-scoop below in Powder fill weight.",
     "serving_size_hint_liquid": "Millilitres the customer consumes per serving (typically 10–30 ml).",
     "serving_size_hint_default": "Units the customer consumes per serving.",
     "serving_size_computed_capsule_one": "= 1 capsule per serving",
