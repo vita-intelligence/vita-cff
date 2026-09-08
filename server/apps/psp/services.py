@@ -191,6 +191,41 @@ class PspUnreachable(PspError):
     code = "psp_unreachable"
 
 
+class PspValidationError(PspError):
+    """PSP replied with a 4xx and a structured JSON error body — the
+    call succeeded end-to-end at the transport layer, but PSP refused
+    the request on business grounds (validation, missing config,
+    stream mismatch, trace-quantity refusal, …). Distinct from
+    :class:`PspUnreachable` (network / transport failures) so the
+    view layer can surface PSP's own error code + detail instead of
+    the generic "Couldn't reach PSP" copy.
+
+    ``code`` — the ``error`` string PSP sent (e.g.
+    ``"trace_quantity_too_small"``).
+
+    ``detail`` — human-readable message from PSP's response body.
+
+    ``extras`` — the whole parsed body so callers can pluck out
+    per-error fields like ``min_batch_qty`` without re-parsing.
+    """
+
+    code = "psp_validation_error"
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        psp_error: str,
+        detail: str,
+        extras: dict[str, Any] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.psp_error = psp_error
+        self.detail = detail
+        self.extras = extras or {}
+        super().__init__(detail or psp_error or f"PSP returned HTTP {status_code}")
+
+
 class PspRateLimited(PspError):
     code = "psp_rate_limited"
 
@@ -403,10 +438,36 @@ class PspClient:
                 _PSP_BREAKER.record_success()
                 return None
             body_snippet = ""
+            body_parsed: dict[str, Any] | None = None
             try:
                 body_snippet = (exc.read() or b"").decode("utf-8", errors="replace")[:500]
             except Exception:  # pragma: no cover — defensive
                 body_snippet = ""
+            if body_snippet:
+                try:
+                    parsed = json.loads(body_snippet)
+                    if isinstance(parsed, dict):
+                        body_parsed = parsed
+                except Exception:  # noqa: BLE001 — non-JSON 4xx bodies
+                    body_parsed = None
+            # 4xx with a JSON body carrying an ``error`` code → PSP is
+            # up and refused on business grounds. Raise
+            # :class:`PspValidationError` so the view layer can surface
+            # the honest ``trace_quantity_too_small`` / whatever code
+            # + detail message. Falls through to :class:`PspUnreachable`
+            # for opaque 4xx (HTML error pages, malformed bodies) so
+            # legacy code paths keep behaving as before.
+            if body_parsed and body_parsed.get("error"):
+                raise PspValidationError(
+                    status_code=exc.code,
+                    psp_error=str(body_parsed.get("error") or ""),
+                    detail=str(
+                        body_parsed.get("detail")
+                        or body_parsed.get("error")
+                        or f"PSP returned HTTP {exc.code}"
+                    ),
+                    extras=body_parsed,
+                ) from exc
             raise PspUnreachable(
                 f"PSP returned HTTP {exc.code}."
                 + (f" Body: {body_snippet}" if body_snippet else "")

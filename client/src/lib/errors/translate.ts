@@ -27,7 +27,19 @@ function translateCodeStrict(
 ): string | null {
   if (!code) return null;
   const key = `codes.${code}`;
-  const translated = t(key);
+  // next-intl in strict mode throws ``MISSING_MESSAGE`` when a key is
+  // absent from the locale file instead of returning the key path.
+  // Catch that so a brand-new server error code (e.g.
+  // ``trace_quantity_too_small`` before someone lands a locale entry)
+  // falls through to ``extractApiErrorMessage``'s next step (which
+  // prefers the API's human-readable ``detail`` for these cases)
+  // rather than crashing the whole error-render path.
+  let translated: string;
+  try {
+    translated = t(key);
+  } catch {
+    return null;
+  }
   if (translated === key) return null;
   return translated;
 }

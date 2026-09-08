@@ -319,6 +319,7 @@ class TrialBatchCreatePspMoView(APIView):
             PspTrialBatchItemMissing,
             PspTrialBatchWarehouseMissing,
             PspUnreachable,
+            PspValidationError,
             create_psp_manufacturing_order_for_trial_batch,
         )
 
@@ -517,6 +518,25 @@ class TrialBatchCreatePspMoView(APIView):
                     "error": exc.code,
                     "psp_error": exc.psp_error,
                     "detail": str(exc),
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        except PspValidationError as exc:
+            # PSP returned a structured 4xx — this is a real, actionable
+            # validation error (e.g. batch too small for a BOM line's
+            # trace ingredient), not a network problem. Surface PSP's
+            # own error code + detail so the FE renders the honest
+            # "scale the batch to at least X" message instead of the
+            # generic "Couldn't reach PSP" copy tied to psp_unreachable.
+            return Response(
+                {
+                    "error": exc.psp_error or "psp_validation_error",
+                    "detail": exc.detail,
+                    **{
+                        k: v
+                        for k, v in exc.extras.items()
+                        if k not in ("error", "detail")
+                    },
                 },
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )

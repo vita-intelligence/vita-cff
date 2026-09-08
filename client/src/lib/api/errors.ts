@@ -79,7 +79,13 @@ function extractFieldErrors(data: unknown): ApiFieldErrors {
     readonly string[] | Record<string, readonly string[]>
   > = {};
   for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
-    if (key === "detail" || key === "code" || key === "errors") continue;
+    // ``error`` is a top-level error-code alias emitted by some services
+    // (integration controllers, Phoenix-style bodies proxied through
+    // NPD). Treated the same as ``code`` in ``normalizeApiError``
+    // below; DON'T let it leak into ``fieldErrors`` where the
+    // translator would try to resolve it as an i18n code and throw
+    // ``MISSING_MESSAGE`` under next-intl strict mode.
+    if (key === "detail" || key === "code" || key === "error" || key === "errors") continue;
     if (Array.isArray(value) && value.every((v) => typeof v === "string")) {
       result[key] = value as readonly string[];
     } else if (typeof value === "string") {
@@ -124,10 +130,21 @@ export function normalizeApiError(error: unknown): ApiError {
     const fieldErrors = extractFieldErrors(payload);
     const message =
       payload?.detail ?? error.message ?? "Request failed. Please try again.";
+    // Accept either ``code`` (Django/DRF convention) or ``error``
+    // (Phoenix / integration-controller convention). NPD forwards
+    // PSP's 4xx bodies verbatim, and those use ``error``. Preferring
+    // ``code`` when both are present keeps the Django-native behaviour
+    // stable.
+    const codeAlias =
+      typeof payload?.code === "string"
+        ? payload.code
+        : typeof payload?.error === "string"
+          ? (payload.error as string)
+          : undefined;
     return new ApiError({
       message,
       status,
-      code: payload?.code,
+      code: codeAlias,
       fieldErrors,
       payload: payload ?? undefined,
     });
