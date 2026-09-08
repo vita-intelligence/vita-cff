@@ -456,6 +456,25 @@ _PACKAGING_KEYWORD_SLOTS: tuple[tuple[str, str], ...] = (
     ("jar", "packaging_container"),
     ("container", "packaging_container"),
     ("carton", "packaging_container"),
+    # Real-world packaging catalogue names for primary containers
+    # often skip the generic word "bottle" in favour of material +
+    # size + neck-finish descriptors (e.g. "150ml Glass Amber 38mm
+    # CT neck", "500ml HDPE Boston Round"). Without these hints a
+    # combo whose container is described industrially resolves to
+    # None in the fallback and drops off the spec sheet's
+    # Bottle/Pouch/Tub row, leaving the lid as the only visible
+    # packaging item. Keeps the earlier direct-container matches
+    # first so a "Glass Jar" still routes as a jar (both keywords
+    # match; jar wins on order, which is what a spec sheet author
+    # would expect).
+    ("glass", "packaging_container"),
+    ("hdpe", "packaging_container"),
+    ("ldpe", "packaging_container"),
+    ("pet", "packaging_container"),
+    ("boston", "packaging_container"),
+    ("neck", "packaging_container"),
+    ("vial", "packaging_container"),
+    ("flask", "packaging_container"),
     ("label", "packaging_label"),
     ("sleeve", "packaging_label"),
     ("wrap", "packaging_label"),

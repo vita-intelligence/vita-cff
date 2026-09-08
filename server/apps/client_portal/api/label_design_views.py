@@ -115,6 +115,58 @@ def _ensure_status(label_design: LabelDesign, *allowed: str) -> None:
         )
 
 
+def _ensure_rtg_payment_approved(label_design: LabelDesign) -> None:
+    """Refuse label-workflow writes on an RTG order until finance has
+    approved the invoice payment. Prevents the customer from starting
+    design work (choose-path, preferences, artwork upload) on an
+    order Vita hasn't been paid for.
+
+    Match rule: at least one ``FINAL``-kind ``APPROVED`` Payment for
+    the label's ``formulation`` and — when the label carries one —
+    its ``proposal_id``. RTG multi-order customers each get their own
+    proposal + payment so the check must include the proposal
+    filter, otherwise a sibling RTG order that IS paid would falsely
+    unlock this one.
+
+    No-op on non-RTG projects: custom projects gate label work on
+    deposit + trial-batch upstream and have their own pipeline
+    guards.
+    """
+
+    from apps.formulations.models import ProjectType
+    from apps.payments.constants import PaymentKind, PaymentStatus
+    from apps.payments.models import Payment
+
+    if label_design.formulation.project_type != ProjectType.READY_TO_GO.value:
+        return
+
+    # RTG production orders raise a DEPOSIT invoice for the full
+    # order value; the sample-kit shape uses FINAL. Accept either so
+    # the gate keeps working if the RTG payment shape ever converges
+    # on FINAL, but the common path today is DEPOSIT. Requires the
+    # payment be scoped to the label's proposal — a paid sample kit
+    # or a paid sibling RTG order must NOT unlock this one.
+    payment_filter = {
+        "formulation_id": label_design.formulation_id,
+        "kind__in": (PaymentKind.DEPOSIT, PaymentKind.FINAL),
+        "status": PaymentStatus.APPROVED,
+    }
+    if label_design.proposal_id is not None:
+        payment_filter["proposal_id"] = label_design.proposal_id
+
+    if not Payment.objects.filter(**payment_filter).exists():
+        raise ValidationError(
+            {
+                "detail": (
+                    "Label design is locked until we confirm your payment. "
+                    "Once finance receives your invoice payment, this stage "
+                    "will unlock automatically."
+                ),
+                "code": "payment_required",
+            }
+        )
+
+
 def _sign_document_hash(html: str) -> str:
     return hashlib.sha256(html.encode("utf-8")).hexdigest()
 
@@ -151,6 +203,7 @@ class PortalLabelDesignChoosePathView(PortalAPIView):
             label_design_id, customer_ids_for_account(request.user)
         )
         _ensure_status(ld, LabelDesignStatus.LABEL_PATH_PENDING)
+        _ensure_rtg_payment_approved(ld)
 
         serializer = ChoosePathSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -221,6 +274,7 @@ class PortalLabelDesignPreferencesView(PortalAPIView):
             label_design_id, customer_ids_for_account(request.user)
         )
         _ensure_status(ld, LabelDesignStatus.DESIGN_PREFERENCES_PENDING)
+        _ensure_rtg_payment_approved(ld)
         if ld.design_path != LabelDesignPath.DESIGN_BY_US:
             raise ValidationError(
                 {"detail": "preferences only apply to DESIGN_BY_US path", "code": "wrong_path"}
@@ -534,6 +588,7 @@ class PortalLabelDesignUploadArtworkView(PortalAPIView):
                 {"detail": "uploads only allowed on DESIGN_BY_CUSTOMER path", "code": "wrong_path"}
             )
         _ensure_status(ld, LabelDesignStatus.DESIGN_IN_PROGRESS)
+        _ensure_rtg_payment_approved(ld)
 
         serializer = CustomerUploadArtworkSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

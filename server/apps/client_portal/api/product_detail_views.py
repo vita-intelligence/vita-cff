@@ -1974,6 +1974,7 @@ def _build_next_action(
     proposals: list[Proposal],
     sheets: list[SpecificationSheet],
     label_design: LabelDesign | None,
+    payment: Payment | None = None,
     request: Any | None = None,
 ) -> dict | None:
     """The single "what do I do next?" action for the customer.
@@ -1987,7 +1988,67 @@ def _build_next_action(
     advanced "current" stage wins, so a customer with both an unsigned
     proposal AND a customer-approval-pending label sees the label
     action (which is the actual blocker on the most recent stage).
+
+    RTG exception: the proposal is the commercial commitment — until
+    it's signed we never surface a label CTA, because signing the
+    draft spec (which the RTG flow allows before proposal sign so
+    the customer can review the recipe up-front) also nudges the
+    label workflow to ``LABEL_PATH_PENDING``. Without this early
+    return the portal would ask the customer to pick a label path
+    for an order they haven't authorised yet.
     """
+
+    is_ready_to_go = (
+        formulation.project_type == ProjectType.READY_TO_GO.value
+    )
+
+    if is_ready_to_go:
+        rtg_sent_proposal = next(
+            (
+                p
+                for p in proposals
+                if p.status == "sent" and p.customer_signed_at is None
+            ),
+            None,
+        )
+        if rtg_sent_proposal is not None:
+            return {
+                "label": "Sign your proposal",
+                "subtitle": (
+                    "Read through the order details and sign to authorise "
+                    "your invoice."
+                ),
+                "url": f"/portal/proposals/{rtg_sent_proposal.id}",
+                "urgency": "high",
+            }
+
+        # RTG payment gate: after the proposal is signed, the label
+        # workflow must not open until finance has approved the
+        # payment. Signing an RTG proposal raises a DEPOSIT invoice
+        # for the full order value (single upfront payment); FINAL is
+        # only the sample-kit fee shape, which is a different order
+        # kind. The gate must scope by proposal (not just formulation)
+        # so a paid sample kit or a paid sibling RTG order does not
+        # unlock this order's label workflow — the ``payment`` param
+        # in scope is a formulation-wide newest-FINAL lookup and can
+        # match the wrong row here, so we do our own scoped check.
+        gating_proposal_id = None
+        if label_design is not None and label_design.proposal_id is not None:
+            gating_proposal_id = label_design.proposal_id
+        else:
+            signed = _first_signed_proposal(proposals)
+            if signed is not None:
+                gating_proposal_id = signed.id
+        if gating_proposal_id is None:
+            return None
+        approved_payment_exists = Payment.objects.filter(
+            formulation_id=formulation.id,
+            proposal_id=gating_proposal_id,
+            kind__in=(PaymentKind.DEPOSIT, PaymentKind.FINAL),
+            status=PaymentStatus.APPROVED,
+        ).exists()
+        if not approved_payment_exists:
+            return None
 
     # Label-design takes precedence — it's the latest stage and
     # carries the most blocking sub-states.
@@ -2022,36 +2083,6 @@ def _build_next_action(
                 "subtitle": "Drop in the PDF or PNG you designed.",
                 "url": f"/portal/label-designs/{label_design.id}/upload",
                 "urgency": "medium",
-            }
-
-    is_ready_to_go = (
-        formulation.project_type == ProjectType.READY_TO_GO.value
-    )
-
-    # RTG-only: the customer signs the PROPOSAL, not a draft spec
-    # (the spec is a director-signed template we clone at checkout).
-    # Surface the sign-proposal CTA up here so the detail page's top
-    # action card matches the actions queue on the dashboard header.
-    # Custom projects walk their own draft-spec sign step below so
-    # they never hit this branch.
-    if is_ready_to_go:
-        rtg_sent_proposal = next(
-            (
-                p
-                for p in proposals
-                if p.status == "sent" and p.customer_signed_at is None
-            ),
-            None,
-        )
-        if rtg_sent_proposal is not None:
-            return {
-                "label": "Sign your proposal",
-                "subtitle": (
-                    "Read through the order details and sign to authorise "
-                    "your invoice."
-                ),
-                "url": f"/portal/proposals/{rtg_sent_proposal.id}",
-                "urgency": "high",
             }
 
     # Final spec waiting for signature. Ready-to-go projects never
@@ -2575,6 +2606,7 @@ class PortalProductDetailView(PortalAPIView):
                     proposals=proposals,
                     sheets=sheets,
                     label_design=label_design,
+                    payment=payment,
                     request=request,
                 ),
                 "documents": _build_documents(

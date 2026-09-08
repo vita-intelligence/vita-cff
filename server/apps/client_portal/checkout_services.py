@@ -631,6 +631,19 @@ _PACKAGING_KEYWORD_SLOTS: tuple[tuple[str, str], ...] = (
     ("jar", "packaging_container"),
     ("container", "packaging_container"),
     ("carton", "packaging_container"),
+    # Industrial container descriptors — the packaging catalogue often
+    # names bottles by material + neck spec ("150ml Glass Amber 38mm
+    # CT neck") without the generic word "bottle", so the fallback
+    # keyword scan was missing them entirely. Kept in sync with the
+    # regenerate-sheet resolver in ``specifications.services``.
+    ("glass", "packaging_container"),
+    ("hdpe", "packaging_container"),
+    ("ldpe", "packaging_container"),
+    ("pet", "packaging_container"),
+    ("boston", "packaging_container"),
+    ("neck", "packaging_container"),
+    ("vial", "packaging_container"),
+    ("flask", "packaging_container"),
     ("label", "packaging_label"),
     ("sleeve", "packaging_label"),
     ("wrap", "packaging_label"),

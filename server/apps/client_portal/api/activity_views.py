@@ -368,18 +368,35 @@ def _collect_projects(
             s.formulation_version.formulation_id, []
         ).append(s)
 
-    labels_by_form: dict = {}
+    # RTG multi-order: keyed by ``(formulation_id, proposal_id)`` so
+    # a paid order's label state does not overwrite an unpaid sibling
+    # order's card. Formulation-orphan rows (sample-kit shape, legacy)
+    # are bucketed separately so we can fall back cleanly per card.
+    labels_by_proposal: dict = {}
+    labels_by_form_orphan: dict = {}
     for ld in LabelDesign.objects.filter(formulation_id__in=formulation_ids):
-        labels_by_form[ld.formulation_id] = ld
+        if ld.proposal_id is not None:
+            labels_by_proposal[(ld.formulation_id, ld.proposal_id)] = ld
+        else:
+            labels_by_form_orphan.setdefault(ld.formulation_id, []).append(ld)
 
     items: list[dict] = []
     for row in rows:
         proposals_for_row = proposals_by_form.get(row.id, [])
+        anchor_for_label = proposals_for_row[0] if proposals_for_row else None
+        row_label = None
+        if anchor_for_label is not None:
+            row_label = labels_by_proposal.get(
+                (row.id, anchor_for_label.id)
+            )
+        if row_label is None:
+            _orphans = labels_by_form_orphan.get(row.id) or []
+            row_label = _orphans[0] if _orphans else None
         stage_key, _action_url = resolve_stage(
             formulation=row,
             proposals=proposals_for_row,
             sheets=sheets_by_form.get(row.id, []),
-            label_design=labels_by_form.get(row.id),
+            label_design=row_label,
         )
         status_label = STAGE_LABELS.get(stage_key, STAGE_LABELS["unknown"])
         tone, needs = STAGE_TONES.get(stage_key, ("in_progress", False))

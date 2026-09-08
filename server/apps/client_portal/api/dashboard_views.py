@@ -122,7 +122,7 @@ def _build_actions(customer_ids, request=None) -> list[dict]:
         SampleAllocationStatus as _SampleAllocationStatus,
     )
 
-    signed_unallocated_proposals = (
+    signed_unallocated_proposals = list(
         Proposal.objects.filter(
             customer_id__in=customer_ids,
             status="sent",
@@ -131,13 +131,26 @@ def _build_actions(customer_ids, request=None) -> list[dict]:
         .select_related("formulation_version__formulation")
         .order_by("updated_at")
     )
+    # Batch the SampleAllocation lookup for every formulation on this
+    # page in one query. Was previously one ``.filter().first()`` per
+    # signed proposal — N round-trips on a page that's already gated
+    # on the customer + sent-and-signed filter.
+    _signed_form_ids = [
+        p.formulation_version.formulation.id
+        for p in signed_unallocated_proposals
+        if p.formulation_version and p.formulation_version.formulation
+    ]
+    _allocation_by_form_id = {
+        a.formulation_id: a
+        for a in _SampleAllocation.objects.filter(
+            formulation_id__in=_signed_form_ids,
+        )
+    }
     for proposal in signed_unallocated_proposals:
         formulation = proposal.formulation_version.formulation
         if formulation is None:
             continue
-        allocation = _SampleAllocation.objects.filter(
-            formulation=formulation
-        ).first()
+        allocation = _allocation_by_form_id.get(formulation.id)
         if (
             allocation is not None
             and allocation.status == _SampleAllocationStatus.CONFIRMED
@@ -303,14 +316,44 @@ def _build_actions(customer_ids, request=None) -> list[dict]:
     #    code suffix on each subtitle lets the customer tell which
     #    artwork an action belongs to without opening the page.
     #    Scope shared with the final-spec block above.
-    label_designs = (
+    label_designs = list(
         LabelDesign.objects.filter(
             formulation_id__in=customer_formulation_ids,
         )
         .select_related("formulation", "specification_sheet")
         .order_by("updated_at")
     )
+    # RTG payment gate: label CTAs on the dashboard queue must not
+    # fire until the FINAL payment for the RTG order is APPROVED.
+    # Mirrors the ``_build_next_action`` guard on the per-project
+    # page, keeping the two surfaces consistent — otherwise the
+    # customer would still see "Choose label path" on the dashboard
+    # even after we hid it on the project detail. Batched into one
+    # query so this stays O(1) rather than N+1 on the label loop.
+    from apps.formulations.models import ProjectType as _ProjectType
+    _rtg_label_formulation_ids = [
+        ld.formulation_id
+        for ld in label_designs
+        if ld.formulation.project_type == _ProjectType.READY_TO_GO.value
+    ]
+    _paid_rtg_pairs: set = set()
+    if _rtg_label_formulation_ids:
+        from apps.payments.constants import (
+            PaymentKind as _PaymentKind,
+            PaymentStatus as _PaymentStatus,
+        )
+        from apps.payments.models import Payment as _Payment
+        _paid_rtg_pairs = set(
+            _Payment.objects.filter(
+                formulation_id__in=_rtg_label_formulation_ids,
+                kind__in=(_PaymentKind.DEPOSIT, _PaymentKind.FINAL),
+                status=_PaymentStatus.APPROVED,
+            ).values_list("formulation_id", "proposal_id")
+        )
     for ld in label_designs:
+        if ld.formulation.project_type == _ProjectType.READY_TO_GO.value:
+            if (ld.formulation_id, ld.proposal_id) not in _paid_rtg_pairs:
+                continue
         spec_code = (
             ld.specification_sheet.code if ld.specification_sheet else ""
         )
@@ -474,15 +517,40 @@ def _build_products(customer_ids) -> list[dict]:
             s.formulation_version.formulation_id, []
         ).append(s)
 
-    labels_by_form: dict = {}
+    # RTG multi-order: a customer can hold N proposals on the same
+    # formulation, each with its own LabelDesign. The old shape
+    # ``labels_by_form[formulation_id] = ld`` overwrote earlier
+    # orders' labels with a sibling's (last row in insertion order
+    # won), so a paid order #1 label state bled onto an unpaid
+    # order #2 card. Key by ``(formulation_id, proposal_id)`` and
+    # keep formulation-orphan labels (sample-kit shape, legacy pre-
+    # RTG-per-order rows) in a separate bucket so the picker below
+    # can fall back cleanly when the card's anchor proposal has no
+    # matching label row.
+    labels_by_proposal: dict = {}
+    labels_by_form_orphan: dict = {}
     for ld in LabelDesign.objects.filter(formulation_id__in=formulation_ids):
-        labels_by_form[ld.formulation_id] = ld
+        if ld.proposal_id is not None:
+            labels_by_proposal[(ld.formulation_id, ld.proposal_id)] = ld
+        else:
+            labels_by_form_orphan.setdefault(ld.formulation_id, []).append(ld)
 
     products: list[dict] = []
     for formulation in formulations:
         proposals = proposals_by_form.get(formulation.id, [])
         sheets = sheets_by_form.get(formulation.id, [])
-        label_design = labels_by_form.get(formulation.id)
+        # Pick the label for the card's anchor proposal (newest
+        # -updated_at). Fall back to a formulation-orphan row for
+        # legacy shapes without a proposal FK.
+        anchor_for_label = proposals[0] if proposals else None
+        label_design = None
+        if anchor_for_label is not None:
+            label_design = labels_by_proposal.get(
+                (formulation.id, anchor_for_label.id)
+            )
+        if label_design is None:
+            _orphans = labels_by_form_orphan.get(formulation.id) or []
+            label_design = _orphans[0] if _orphans else None
         stage_key, action_url = _resolve_stage(
             formulation=formulation,
             proposals=proposals,
