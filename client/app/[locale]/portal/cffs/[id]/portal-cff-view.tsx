@@ -116,7 +116,7 @@ export function PortalCFFView({ submissionId }: { submissionId: string }) {
           reason without hunting for it. Kept above the responses so it's
           the first thing on the page after the header. */}
       {cff.is_rejected ? (
-        <Card className="!border-red-700 !bg-red-50">
+        <Card className="border-red-700! bg-red-50!">
           <div className="flex flex-col gap-3">
             <span className="text-[11px] font-bold uppercase tracking-widest text-red-800">
               We're not proceeding with this request
