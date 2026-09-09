@@ -2442,6 +2442,34 @@ class PortalProductDetailView(PortalAPIView):
         # payment / documents builders walk both orders' state and
         # bleed "you already paid" / "here's your invoice" from the
         # first order onto the second order's page.
+        #
+        # Fallback for legacy formulation-only URLs on RTG: the
+        # customer bookmarked ``/portal/projects/<formulation_uuid>``
+        # before we started minting proposal-scoped URLs, so the
+        # request comes in with ``proposal_uuid = None`` even though
+        # RTG genuinely has multiple parallel orders for the same
+        # SKU. Auto-narrow to the NEWEST proposal so a second order
+        # never inherits the first order's paid deposit / signed
+        # spec / dispatch history. Custom projects stay untouched —
+        # they're 1:1 with the formulation by design.
+        if proposal_uuid is None and len(proposals) > 1:
+            is_rtg_formulation = (
+                getattr(formulation, "project_type", None)
+                == ProjectType.READY_TO_GO.value
+            )
+            if is_rtg_formulation:
+                # Pick the freshest proposal customer-side: prefer the
+                # most-recently-signed row, fall back to
+                # ``created_at`` for pre-signed drafts.
+                def _proposal_recency_key(p):
+                    signed = getattr(p, "customer_signed_at", None)
+                    created = getattr(p, "created_at", None)
+                    return (signed or created, created)
+
+                newest = max(proposals, key=_proposal_recency_key)
+                proposals = [newest]
+                proposal_uuid = newest.id
+
         if proposal_uuid is not None:
             proposals = [p for p in proposals if p.id == proposal_uuid]
             sheets_qs_filter = {
