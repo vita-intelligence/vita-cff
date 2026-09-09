@@ -179,9 +179,18 @@ export function RequestList({
 // evidence (carrier, driver, vehicle, checklist, photos).
 // ---------------------------------------------------------------
 
-function RequestRow({ request }: { request: DispatchRequest }) {
+function RequestRow({ request: initialRequest }: { request: DispatchRequest }) {
   const [expanded, setExpanded] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Local override lets the row reflect a confirm-delivery response
+  // immediately without waiting for ``router.refresh()`` to propagate
+  // through ``PortalInfiniteList``'s cached ``items`` state (which
+  // holds its own copy of the paginated list and doesn't re-adopt
+  // ``initialItems`` when the operator has a stored search query,
+  // among other edge cases). ``router.refresh()`` still fires as a
+  // safety net so the summary pills stay in sync.
+  const [override, setOverride] = useState<DispatchRequest | null>(null);
+  const request = override ?? initialRequest;
   const lot = request.lot;
   const symbol = lot?.unit_of_measurement.symbol ?? "";
   const shipment = request.shipment;
@@ -301,6 +310,7 @@ function RequestRow({ request }: { request: DispatchRequest }) {
         <MarkDeliveredDialog
           request={request}
           onClose={() => setConfirmOpen(false)}
+          onDelivered={(fresh) => setOverride(fresh)}
         />
       ) : null}
     </article>
@@ -310,9 +320,11 @@ function RequestRow({ request }: { request: DispatchRequest }) {
 function MarkDeliveredDialog({
   request,
   onClose,
+  onDelivered,
 }: {
   request: DispatchRequest;
   onClose: () => void;
+  onDelivered: (fresh: DispatchRequest) => void;
 }) {
   const router = useRouter();
   const [signatory, setSignatory] = useState("");
@@ -330,15 +342,22 @@ function MarkDeliveredDialog({
     setError(null);
     startPending(async () => {
       try {
-        await apiClient.post(
+        const resp = await apiClient.post<{ request?: DispatchRequest }>(
           `/api/portal/warehouse/dispatch-requests/${encodeURIComponent(request.uuid)}/confirm-delivery/`,
           {
             recipient_signatory: trimmed,
             delivery_notes: notes.trim() || undefined,
           },
         );
-        // Full server refresh — the request row updates status +
-        // delivered_at + the pill turns green.
+        // Instant row update from the API response — bypasses
+        // ``PortalInfiniteList``'s cached ``items`` state which
+        // doesn't reliably re-adopt fresh ``initialItems`` after
+        // ``router.refresh()``. Refresh still fires so summary pills
+        // + other rows stay in sync with the backend.
+        const fresh = resp?.data?.request;
+        if (fresh && typeof fresh === "object" && "uuid" in fresh) {
+          onDelivered(fresh);
+        }
         router.refresh();
         onClose();
       } catch (err: unknown) {
