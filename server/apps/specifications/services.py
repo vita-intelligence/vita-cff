@@ -3231,12 +3231,25 @@ def accept_as_customer(
         # signers aren't platform users) so the PSP-mirror hook on
         # that helper never fires for a customer-sign event. Push the
         # sync explicitly so PSP sees ``npd_final_spec_signed_at``.
+        #
+        # Also re-push the BOM: PSP's Trust Card compares
+        # ``bom.npd_spec_sheet_uuid`` to ``co.npd_final_spec_uuid`` to
+        # detect drift, and the BOM's row was originally tagged with
+        # whatever sheet was current at push time (the DRAFT/proposal
+        # spec, signed at deposit). Without a re-push the CO's FINAL
+        # uuid lands on PSP but the BOM's uuid stays stuck on the
+        # DRAFT, so the Trust Card flips from "not signed" straight
+        # to "BOM/spec drift" the moment the FINAL sync lands — even
+        # though both specs describe the same recipe. Re-pushing
+        # regenerates ``_bom_provenance`` which now prefers the
+        # signed FINAL.
         def _push_final_sign_to_psp() -> None:
             from apps.formulations.models import Formulation as _Formulation
             from apps.payments.services import (
                 _proposal_for_spec_sheet,
                 _sync_formulation_proposal_to_psp,
             )
+            from apps.psp.services import push_bom_to_psp
 
             fresh = _Formulation.objects.filter(pk=formulation_pk).first()
             if fresh is None:
@@ -3250,6 +3263,18 @@ def accept_as_customer(
             except Exception:
                 logger.exception(
                     "final-spec sign: PSP mirror sync bubbled for "
+                    "formulation %s sheet %s",
+                    formulation_pk,
+                    sheet_pk,
+                )
+            # BOM re-push is idempotent + silent-degrade; the only
+            # observable change on PSP for an unchanged recipe is the
+            # BOM row's ``npd_spec_sheet_uuid`` + ``npd_synced_at``.
+            try:
+                push_bom_to_psp(formulation=fresh)
+            except Exception:
+                logger.exception(
+                    "final-spec sign: BOM re-push bubbled for "
                     "formulation %s sheet %s",
                     formulation_pk,
                     sheet_pk,

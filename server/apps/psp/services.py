@@ -3582,15 +3582,34 @@ def _final_spec_state_for_proposal(proposal: Any) -> dict:
     )
 
     # RTG multi-order isolation: for each downstream state below,
-    # narrow to spec sheets + payments attached to THIS specific
-    # proposal (not the whole formulation). Without this the second
-    # RTG order's PSP CO would receive the first order's final-spec
+    # narrow to FINAL spec sheets attached to THIS specific proposal
+    # (not the whole formulation). Without this the second RTG
+    # order's PSP CO would receive the first order's final-spec
     # status + payment timestamps and think it was already
     # production-authorised.
+    #
+    # ``document_kind=FINAL`` filter is load-bearing: Custom
+    # proposals link the DRAFT (proposal) spec to their ProposalLine,
+    # not the FINAL — the FINAL is created via a separate post-trials
+    # flow that carries no ProposalLine → spec link. If we collected
+    # every ProposalLine-linked spec regardless of kind, the ``id
+    # IN [draft_id] AND document_kind = FINAL`` intersection below
+    # is guaranteed to be empty and ``active_final`` comes back as
+    # ``None`` for every Custom project. Restricting to FINAL kind
+    # here means Custom lines contribute nothing (the linked sheet
+    # is a DRAFT) and we correctly fall through to the formulation-
+    # scoped fallback that finds the real FINAL. RTG is unaffected —
+    # RTG links the FINAL/storefront-SKU spec directly, so the
+    # filter still selects it.
     from apps.proposals.models import ProposalLine
 
-    proposal_line_spec_ids = list(
-        ProposalLine.objects.filter(proposal=proposal)
+    proposal_line_final_spec_ids = list(
+        ProposalLine.objects.filter(
+            proposal=proposal,
+            specification_sheet__document_kind=(
+                SpecificationDocumentKind.FINAL
+            ),
+        )
         .exclude(specification_sheet__isnull=True)
         .values_list("specification_sheet_id", flat=True)
     )
@@ -3598,7 +3617,8 @@ def _final_spec_state_for_proposal(proposal: Any) -> dict:
     # Active FINAL — approved / sent / accepted. Rejected + draft +
     # in_review don't count. Prefer sheets linked to THIS proposal
     # (RTG-safe); fall back to any FINAL on the formulation for
-    # legacy Custom sheets that predate the ProposalLine → spec link.
+    # Custom (whose FINAL is not ProposalLine-linked) and for legacy
+    # RTG sheets that predate the ProposalLine → spec link.
     active_final_qs = SpecificationSheet.objects.filter(
         document_kind=SpecificationDocumentKind.FINAL,
         status__in=(
@@ -3607,9 +3627,9 @@ def _final_spec_state_for_proposal(proposal: Any) -> dict:
             SpecificationStatus.ACCEPTED.value,
         ),
     )
-    if proposal_line_spec_ids:
+    if proposal_line_final_spec_ids:
         active_final = (
-            active_final_qs.filter(id__in=proposal_line_spec_ids)
+            active_final_qs.filter(id__in=proposal_line_final_spec_ids)
             .order_by("-updated_at")
             .first()
         )
@@ -3627,9 +3647,9 @@ def _final_spec_state_for_proposal(proposal: Any) -> dict:
         document_kind=SpecificationDocumentKind.FINAL,
         status=SpecificationStatus.REJECTED.value,
     )
-    if proposal_line_spec_ids:
+    if proposal_line_final_spec_ids:
         latest_rejected = (
-            rejected_qs.filter(id__in=proposal_line_spec_ids)
+            rejected_qs.filter(id__in=proposal_line_final_spec_ids)
             .order_by("-customer_rejected_at")
             .first()
         )
@@ -3657,6 +3677,23 @@ def _final_spec_state_for_proposal(proposal: Any) -> dict:
         .first()
     )
 
+    # ``formulation_version.version_number`` of the active FINAL —
+    # exposed so PSP's MO Trust Card can compare it against
+    # ``bom.npd_formulation_version_id`` and decide "same recipe / no
+    # drift" without falling back to timestamp comparison. Timestamp
+    # comparison ("BOM synced after sign → drift") produces a false
+    # positive every time we re-push the BOM for reasons unrelated
+    # to a recipe change (SPOU refresh, packaging fix, provenance
+    # metadata update). The version_number is the honest signal —
+    # the customer signed against version N; if the BOM is also on
+    # version N, the recipe is bit-for-bit what they agreed to.
+    active_final_version_id = None
+    if active_final is not None:
+        fv = getattr(active_final, "formulation_version", None)
+        version_number = getattr(fv, "version_number", None)
+        if version_number is not None:
+            active_final_version_id = str(version_number)
+
     return {
         "npd_customer_confirmed_done_at": _iso_or_none(confirmed_done_at),
         "npd_final_spec_uuid": (
@@ -3672,6 +3709,7 @@ def _final_spec_state_for_proposal(proposal: Any) -> dict:
             getattr(latest_rejected, "customer_rejected_at", None)
         ),
         "npd_final_payment_approved_at": _iso_or_none(final_payment_approved_at),
+        "npd_final_spec_formulation_version_id": active_final_version_id,
     }
 
 
@@ -5359,34 +5397,97 @@ def _bom_lines_from(
         item = line.item
         if item is None or not getattr(item, "psp_source_uuid", None):
             continue
-        raw_qty = line.mg_per_serving_cached
-        if raw_qty is None or raw_qty <= 0:
+
+        source_kind = str(getattr(line, "source_kind", "active") or "active")
+        stage_ratio_mode = str(
+            getattr(line, "stage_ratio_mode", "none") or "none"
+        )
+        attrs = item.attributes if isinstance(item.attributes, dict) else {}
+        item_type = str(attrs.get("psp_item_type") or "").strip().lower()
+
+        # Semi-finished references on the finished stage's BOM are
+        # placeholder "point at the prior stage's output" lines the
+        # scientist adds so the stage card shows the chain. The
+        # cascade in _push_staged_cascade auto-injects the semi with
+        # its SPOU-derived per-parent-unit qty (30 servings/pack ÷
+        # 83.34 servings/kg = 0.36 kg/pack). Shipping this line as a
+        # raw "1 per unit" here would preempt the auto-injection via
+        # the dedup guard and lock in a wrong qty, so drop it.
+        if item_type == "semi_finished":
             continue
+
         # Target unit = the child item's declared stock UoM. Every
-        # line lands tagged in the item's own unit (kg powder → kg,
-        # oil in ml → ml, capsule shell in pcs → pcs) instead of the
-        # dimension base — so PSP's MO Parts table shows each item in
-        # its native unit rather than everything homogenised to kg / L.
+        # mass line lands tagged in the item's own unit (kg powder →
+        # kg, oil in ml → ml) instead of the dimension base. Count-
+        # dimension items (packaging, shells) fall back to "pcs" so
+        # the qty rides through the converter unchanged and lands
+        # with a real UoM tag on PSP.
         target_symbol = _unit_symbol_for(item) or None
-        source_kind = getattr(line, "source_kind", "active")
-        if source_kind == "manual":
-            # User typed qty in the item's native unit already —
-            # source is the item's own unit, so the converter is a
-            # no-op (or a same-dimension re-express if the operator
-            # picked a display unit and the item is stored in a
-            # sibling unit — rare but valid).
-            source_qty = Decimal(str(raw_qty))
+
+        # Per-output-unit lines: manual pick with stage_ratio_mode =
+        # per_unit (packaging pouches, labels, caps — 1 per pack, NOT
+        # per serving), OR any packaging item regardless of what the
+        # ratio mode says (belt-and-braces defensive default — a
+        # scientist who miskeys the ratio mode on a packaging pick
+        # still ships as 1-per-pack rather than 60-per-pack). Qty
+        # comes from stage_ratio_value with label_claim_mg as legacy
+        # fallback — mg_per_serving_cached is deliberately null on
+        # these rows and would drop them entirely if we required it.
+        is_per_output = (
+            stage_ratio_mode == "per_unit"
+            or item_type == "packaging"
+        )
+
+        if is_per_output:
+            raw_qty = (
+                getattr(line, "stage_ratio_value", None)
+                or getattr(line, "label_claim_mg", None)
+            )
+            if raw_qty is None:
+                continue
+            try:
+                source_qty = Decimal(str(raw_qty))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if source_qty <= 0:
+                continue
+            # Don't multiply by servings — the qty is already
+            # expressed per finished output. Source unit = target
+            # unit so the converter is a no-op (or same-dimension
+            # re-express). Default to "pcs" for count packaging
+            # items that don't carry a local unit on the mirror.
+            source_symbol = target_symbol or "pcs"
+            target_symbol = target_symbol or "pcs"
+        elif source_kind == "manual":
+            # Manual non-per-unit line (rare — user typed a mass qty
+            # in the item's native unit as an override). Qty rides
+            # through unchanged; no serving scaling. Uses
+            # mg_per_serving_cached as the qty when set (legacy),
+            # else stage_ratio_value.
+            raw_qty = getattr(line, "mg_per_serving_cached", None) or getattr(
+                line, "stage_ratio_value", None
+            )
+            if raw_qty is None:
+                continue
+            try:
+                source_qty = Decimal(str(raw_qty))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if source_qty <= 0:
+                continue
             source_symbol = target_symbol or "mg"
         else:
             # Actives + band picks: compute cascade is always mg per
-            # serving. Scale to per-1-parent-unit then hand off to the
-            # target-aware converter so mass items land in their own
-            # mass unit (g / kg / mg) rather than being uniformly
-            # collapsed to kg. Count / volume items are handled via
-            # the source_unit-tagged override path — see
-            # ``_override_to_bom_lines``.
+            # serving. Scale to per-1-parent-unit then hand off to
+            # the target-aware converter so mass items land in their
+            # own mass unit (g / kg / mg) rather than being uniformly
+            # collapsed to kg.
+            raw_qty = getattr(line, "mg_per_serving_cached", None)
+            if raw_qty is None or raw_qty <= 0:
+                continue
             source_qty = Decimal(str(raw_qty)) * servings
             source_symbol = "mg"
+
         qty, _sym, uom_uuid = _convert_qty_to_target(
             source_qty,
             source_symbol,
@@ -5606,20 +5707,41 @@ def _bom_provenance(formulation: Any) -> dict:
     """
 
     try:
-        from apps.specifications.models import SpecificationSheet
+        from apps.specifications.models import (
+            SpecificationDocumentKind,
+            SpecificationSheet,
+        )
 
+        # Prefer the customer-signed FINAL over a customer-signed
+        # DRAFT even if the DRAFT was signed more recently. Custom
+        # projects have BOTH signed sheets against the same
+        # formulation version (DRAFT signed at deposit, FINAL signed
+        # post-trials), and PSP's MO Trust Card compares
+        # ``bom.npd_spec_sheet_uuid`` to ``co.npd_final_spec_uuid``
+        # to detect drift — pointing the BOM at the DRAFT then
+        # produces a false-positive "BOM/spec drift" the moment the
+        # FINAL uuid lands on the CO. RTG has only a FINAL (storefront-
+        # SKU spec signed at checkout), so this preference is a no-op
+        # there. Falls back to any signed sheet (legacy formulations
+        # signed once before the DRAFT/FINAL split), then to any
+        # director-signed sheet (director-only sign-off) to preserve
+        # existing behaviour on rows the customer hasn't touched.
+        base_qs = SpecificationSheet.objects.filter(
+            formulation_version__formulation=formulation,
+        )
         sheet = (
-            SpecificationSheet.objects.filter(
-                formulation_version__formulation=formulation,
+            base_qs.filter(
                 customer_signed_at__isnull=False,
+                document_kind=SpecificationDocumentKind.FINAL,
             )
             .order_by("-customer_signed_at")
             .first()
         ) or (
-            SpecificationSheet.objects.filter(
-                formulation_version__formulation=formulation,
-                director_signed_at__isnull=False,
-            )
+            base_qs.filter(customer_signed_at__isnull=False)
+            .order_by("-customer_signed_at")
+            .first()
+        ) or (
+            base_qs.filter(director_signed_at__isnull=False)
             .order_by("-director_signed_at")
             .first()
         )
@@ -5807,131 +5929,137 @@ def _semi_stage_servings(
     """Semi-finished stage's servings-per-output-unit — the number of
     servings that fit in 1 stock unit of the stage's PSP output item.
 
-    Priority chain (each preserves the safest divisor for downstream
-    prior-semi qty math, which is ``child_stage.SPOU / semi.SPOU``):
+    ALWAYS re-derived at push time from current recipe + the semi's
+    stock UoM. No caching, no scientist override, no "trust the
+    stored value" fallback. Scaling from NPD (authoring) to PSP
+    (production) is deterministic physics — the whole point of
+    splitting the two systems is that the numbers derive themselves.
 
-    1. Scientist explicitly set the value (> 1) on the stage → use it.
-       They know the yield ratio for this specific batch, we don't
-       overrule it.
-    2. Semi's stock UoM is a mass unit and the formulation has a
-       per-serving mass → derive
-       ``SPOU = one_stock_unit_in_mg ÷ mg_per_serving``.
-       (500 mg per capsule × 1 kg semi = 2000 caps ⇒ SPOU=2000.)
-    3. Semi is the **pack-equivalent** in the chain — it shares the
-       finished stage's stock UoM AND is the last such semi before
-       the finished stage → inherit ``servings_per_pack``.
-       (Bottling semi before a Labelling finished stage: 1 bottle =
-       120 servings ⇒ SPOU=120.)
-    4. Semi's stock UoM is count (``pcs``) → SPOU=1 (1 serving per
-       piece — the natural convention for "each" / unit items like
-       an Encapsulation stage that outputs individual capsules).
-    5. Anything else (volume without a density bridge, missing catalog,
-       unknown symbol, offline) → fall back to the raw stored value
-       (default 1). Worst-case ships wrong qty like the old code did;
-       the scientist fixes it on the Stages tab.
+    Three cases, all deterministic:
 
-    Kills two classes of cascade error at once: the "3 kg of blend
-    for 3 capsules" case (mass semi collapsing 1/1) AND the "120
-    bottles per pack" case (pack-equivalent semi collapsing 120/1).
+    * **Count stock UoM, pack-equivalent** — this semi's stock UoM
+      matches the finished stage's AND it's the last such semi
+      before the finished stage (Bottling before Labelling).
+      1 stock unit = 1 pack ⇒ SPOU = ``servings_per_pack``.
+
+    * **Count stock UoM, not pack-equivalent** — Encapsulation
+      stage output = individual capsules. 1 pc = 1 serving ⇒
+      SPOU = 1.
+
+    * **Mass or volume stock UoM** — SPOU = ``per_stock_unit_mg
+      ÷ per_serving_mg``. Both sides converted to a common
+      milligram basis:
+
+        - Mass symbols: kg=1e6, g=1e3, mg=1.
+        - Volume symbols: L=1e6, ml=1e3 (water density 1 g/ml).
+        - Per-serving basis: ``water_volume_ml × 1000`` for liquid
+          dosage forms with a water volume; else
+          ``total_weight_mg`` from ``compute_formulation_totals``
+          (solids + gummies + powders + tablets + capsules).
+
+      Matches the FE's ``suggestServingsPerOutputUnit`` symbol map
+      exactly so BE + FE agree on the number without needing a
+      round-trip.
+
+    Raises ``ValueError`` when the stage's stock UoM isn't
+    configured, isn't in the PSP catalog, isn't in the recognised
+    symbol map, or the recipe can't produce a positive per-serving
+    basis (empty formulation, malformed compute output). Failing
+    loud is the right thing — a "return the last known value"
+    fallback is exactly how MO00219/220 shipped with half the
+    intended semi qty. The FE builder should prevent every one of
+    these misconfigurations from reaching save.
     """
 
-    stored = _stage_servings(stage)
-    if stored > Decimal("1"):
-        return stored
+    from apps.formulations.services import compute_formulation_totals
+
+    stage_id = getattr(stage, "id", "?")
 
     semi_uom_uuid = getattr(stage, "psp_item_stock_uom_uuid", None)
     if not semi_uom_uuid:
-        return stored
+        raise ValueError(
+            f"Stage {stage_id}: no stock UoM configured — SPOU cannot"
+            " be derived. Fix the stage's stock UoM on NPD before push."
+        )
 
     unit_info = _psp_unit_info_by_uuid(client, organization, semi_uom_uuid)
     if unit_info is None:
-        return stored
+        raise ValueError(
+            f"Stage {stage_id}: stock UoM {semi_uom_uuid} not in PSP"
+            " catalog — SPOU cannot be derived. Sync the units catalog"
+            " and retry."
+        )
 
+    symbol = str(unit_info.get("symbol") or "").strip().lower()
     dimension = str(unit_info.get("dimension") or "").strip().lower()
 
     if dimension == "count":
-        # Pack-equivalent check first: is this the last count semi
-        # in the chain whose stock UoM matches the finished stage's
-        # (a "Bottling" before a "Labelling" finished)? If so, 1
-        # stock-unit of this semi IS one pack — inherit
-        # ``servings_per_pack``. Earlier same-UoM semis
-        # (Encapsulation before Bottling) are per-capsule ⇒ SPOU=1.
         if _is_pack_equivalent_semi(stage, stages, finished_stage):
             derived = _finished_stage_servings(formulation)
-            _persist_auto_derived_spou(stage, derived)
-            logger.info(
-                "PSP push_bom: auto-derived pack-equivalent SPOU=%s for"
-                " count-semi stage %s (%s) — inherited from finished stage",
-                derived,
-                getattr(stage, "id", "?"),
-                unit_info.get("symbol"),
-            )
-            return derived
-
-        # Individual-unit convention: 1 pc = 1 serving.
-        derived = Decimal("1")
+        else:
+            derived = Decimal("1")
         _persist_auto_derived_spou(stage, derived)
         logger.info(
-            "PSP push_bom: auto-derived SPOU=1 for count-semi stage %s (%s)",
-            getattr(stage, "id", "?"),
-            unit_info.get("symbol"),
+            "PSP push_bom: derived SPOU=%s for count-semi stage %s (%s)",
+            derived, stage_id, symbol,
         )
         return derived
 
-    if dimension != "mass":
-        # Volume / length / area / time — we'd need an item-specific
-        # bridge (density for volume, etc.) to derive honestly. Bail
-        # to the stored value rather than guessing.
-        return stored
-
-    # Mass path: convert 1 semi-stock-unit → mg via the shared
-    # converter, then divide by per-serving mg.
-    from apps.formulations.services import compute_formulation_totals
-
-    try:
-        totals = compute_formulation_totals(formulation=formulation)
-    except Exception:
-        logger.exception(
-            "PSP push_bom: compute_formulation_totals failed for formulation %s;"
-            " skipping SPOU auto-derive on stage %s",
-            getattr(formulation, "pk", "?"),
-            getattr(stage, "id", "?"),
+    # Mass + volume path — both converge on a common mg basis so
+    # the divide-through is uniform. Water density = 1 g/ml, same
+    # convention the FE uses in ``suggestServingsPerOutputUnit``.
+    mg_per_stock_unit: dict[str, Decimal] = {
+        "kg": Decimal("1000000"),
+        "g": Decimal("1000"),
+        "mg": Decimal("1"),
+        "l": Decimal("1000000"),
+        "ml": Decimal("1000"),
+    }
+    factor = mg_per_stock_unit.get(symbol)
+    if factor is None:
+        raise ValueError(
+            f"Stage {stage_id}: stock UoM '{symbol}' isn't a known mass"
+            " (kg/g/mg) or volume (L/ml) unit. Pick a supported UoM on"
+            " NPD."
         )
-        return stored
 
-    raw_mg = getattr(totals, "total_weight_mg", None)
-    if raw_mg is None:
-        return stored
-    try:
-        mg_per_serving = Decimal(str(raw_mg))
-    except (InvalidOperation, TypeError, ValueError):
-        return stored
-    if mg_per_serving <= 0:
-        return stored
+    dosage_form = getattr(formulation, "dosage_form", "")
+    is_liquid = dosage_form == "liquid"
+    water_ml_raw = getattr(formulation, "water_volume_ml", None)
+    totals_weight_mg: Any = None
+    if is_liquid and water_ml_raw:
+        try:
+            per_serving_mg = Decimal(str(water_ml_raw)) * Decimal("1000")
+        except (InvalidOperation, TypeError, ValueError):
+            per_serving_mg = Decimal("0")
+    else:
+        totals_weight_mg = getattr(
+            compute_formulation_totals(formulation=formulation),
+            "total_weight_mg",
+            None,
+        )
+        try:
+            per_serving_mg = (
+                Decimal(str(totals_weight_mg))
+                if totals_weight_mg is not None
+                else Decimal("0")
+            )
+        except (InvalidOperation, TypeError, ValueError):
+            per_serving_mg = Decimal("0")
 
-    stock_unit_in_mg, _sym, _uuid = _convert_qty_to_target(
-        Decimal("1"),
-        unit_info["symbol"],
-        "mg",
-        client=client,
-        organization=organization,
-    )
-    if stock_unit_in_mg is None or stock_unit_in_mg <= 0:
-        return stored
+    if per_serving_mg <= 0:
+        raise ValueError(
+            f"Stage {stage_id}: recipe produced a zero per-serving basis"
+            f" (dosage_form={dosage_form}, total_weight_mg={totals_weight_mg},"
+            f" water_volume_ml={water_ml_raw}). Add ingredients or set"
+            " water volume on Setup, then re-save."
+        )
 
-    derived = stock_unit_in_mg / mg_per_serving
-    if derived <= 0:
-        return stored
-
+    derived = factor / per_serving_mg
     _persist_auto_derived_spou(stage, derived)
     logger.info(
-        "PSP push_bom: auto-derived SPOU=%s for mass-semi stage %s"
-        " (1 %s = %s mg ÷ %s mg/serving)",
-        derived,
-        getattr(stage, "id", "?"),
-        unit_info["symbol"],
-        stock_unit_in_mg,
-        mg_per_serving,
+        "PSP push_bom: derived SPOU=%s for %s-semi stage %s (1 %s = %s mg ÷ %s mg/serving)",
+        derived, dimension, stage_id, symbol, factor, per_serving_mg,
     )
     return derived
 
