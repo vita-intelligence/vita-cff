@@ -526,8 +526,25 @@ class LatestSpecSheetHtmlView(APIView):
         if formulation is None:
             raise NotFound("formulation_not_found")
 
+        # Reorder → source. Reorders mint their own fresh
+        # ``Formulation`` on NPD but reuse the SOURCE formulation's
+        # already-signed FINAL spec via ``ProposalLine.specification_sheet``
+        # — the reorder's own formulation carries no sheets. Walk to
+        # the source so PSP's QC iframe renders the actual signed
+        # sheet (which is what the customer approved and what QA
+        # needs to sign off against). If ``source_formulation`` is
+        # nil (data drift / legacy row) fall through to the reorder
+        # itself and let the "no_spec_sheet" 404 fire.
+        source_formulation = (
+            formulation.source_formulation
+            if getattr(formulation, "is_reorder", False)
+            and getattr(formulation, "source_formulation_id", None)
+            else None
+        )
+        lookup_formulation = source_formulation or formulation
+
         sheets = SpecificationSheet.objects.filter(
-            formulation_version__formulation=formulation
+            formulation_version__formulation=lookup_formulation
         ).select_related("formulation_version", "organization")
 
         final_sheet = (
@@ -639,13 +656,41 @@ class LatestValidationSheetHtmlView(APIView):
 
         # Pure-formulation path — used by PSP when the MO has no
         # ``npd_trial_batch_uuid`` (typical for sample MOs of already-
-        # approved RTG products). Only ``passed`` at this stage: a
-        # stale ``failed`` from a prior batch isn't the compliance
-        # evidence PSP needs, and showing it would misrepresent the
-        # current formulation as unfit.
+        # approved RTG products, AND for reorders which reuse the
+        # source's validated recipe entirely). Only ``passed`` at
+        # this stage: a stale ``failed`` from a prior batch isn't
+        # the compliance evidence PSP needs, and showing it would
+        # misrepresent the current formulation as unfit.
         if chosen is None and raw_formulation:
+            # Reorder → source. Reorders reuse the SOURCE
+            # formulation's validation trail (recipe is a locked
+            # copy). The reorder's own formulation has no
+            # ProductValidation rows because no trial batches ran
+            # against it — walk to the source so the passed
+            # validation on the ORIGINAL customer order shows up
+            # on the reorder's QC page.
+            effective_formulation_id = raw_formulation
+            try:
+                incoming = Formulation.objects.filter(
+                    pk=raw_formulation
+                ).first()
+                if (
+                    incoming is not None
+                    and getattr(incoming, "is_reorder", False)
+                    and getattr(incoming, "source_formulation_id", None)
+                ):
+                    effective_formulation_id = str(
+                        incoming.source_formulation_id
+                    )
+            except Exception:
+                # Silent-degrade — never break the QC embed on a
+                # lookup issue; fall back to the raw uuid.
+                effective_formulation_id = raw_formulation
+
             fallback_qs = ProductValidation.objects.filter(
-                trial_batch__formulation_version__formulation_id=raw_formulation,
+                trial_batch__formulation_version__formulation_id=(
+                    effective_formulation_id
+                ),
                 status="passed",
             )
             if token is not None:
