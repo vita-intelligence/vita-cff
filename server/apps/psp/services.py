@@ -3874,24 +3874,29 @@ def _absolute_media_url(relative_or_empty: str) -> str:
 
 def _bundled_deposit_paid_at(proposal: Any):
     """Earliest ``approved_at`` across every approved DEPOSIT Payment
-    tied to one of the proposal's formulations. Returns ``None`` when
-    no deposit has landed yet — presence of this timestamp is what
-    flips the PSP kanban phase to ``:trial_batches_in_flight``.
+    tied to THIS proposal. Returns ``None`` when no deposit has landed
+    yet — presence of this timestamp is what flips the PSP kanban
+    phase to ``:trial_batches_in_flight`` and auto-confirms RTG /
+    reorder COs on PSP.
+
+    Scoped to ``proposal_id`` so re-orders of the same RTG SKU can't
+    inherit a deposit from a prior proposal. Formulation is reused
+    across many proposals for RTG products (one SKU, many customer
+    orders); a query keyed only on ``formulation`` would return the
+    earliest historical deposit and auto-confirm every new order for
+    that SKU before the customer even paid.
     """
 
     from apps.payments.constants import PaymentKind, PaymentStatus
     from apps.payments.models import Payment
 
-    formulation_ids = list(
-        proposal.lines.filter(
-            formulation_version__formulation__isnull=False,
-        ).values_list("formulation_version__formulation_id", flat=True).distinct()
-    )
-    if not formulation_ids:
+    proposal_id = getattr(proposal, "id", None) or getattr(proposal, "pk", None)
+    if not proposal_id:
         return None
+
     return (
         Payment.objects.filter(
-            formulation_id__in=formulation_ids,
+            proposal_id=proposal_id,
             kind=PaymentKind.DEPOSIT,
             status=PaymentStatus.APPROVED,
         )
