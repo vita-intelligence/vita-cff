@@ -2662,6 +2662,52 @@ def seed_default_stages(*, formulation: Formulation) -> list[FormulationStage]:
     return [stage]
 
 
+def _derive_stage_spou(
+    formulation: Formulation,
+    psp_item_type: str,
+    psp_item_stock_uom_uuid: Any,
+) -> Decimal | None:
+    """Authoritative SPOU derivation for a formulation stage.
+
+    Called from :func:`set_formulation_stages` after the FE payload is
+    parsed, before the create / update fires. Returns the derived SPOU
+    the DB should store, or ``None`` when derivation isn't possible
+    (missing UoM record, unconfigured stock UoM, etc.) so the caller
+    keeps whatever the FE sent.
+
+    Currently derives:
+
+      * ``finished_product`` stage: always
+        ``formulation.servings_per_pack`` (fallback 1). Contract: 1
+        finished stock-unit (bottle / pouch / jar) contains N
+        servings, where N is the pack's servings count. Overrides
+        any FE-supplied value because scientists have no reason to
+        type a different number here — the read-only display on the
+        stage form auto-derives from Setup, and any manual override
+        would silently break downstream MO qty math.
+
+      * ``semi_finished`` stage: returns ``None`` and defers to the
+        FE-supplied value. The PSP push cascade
+        (:func:`apps.psp.services._semi_stage_servings`) recomputes
+        semi SPOU from the stock UoM + per-serving basis at push
+        time regardless, so a stale semi value only affects the FE
+        routing preview until the next stage save. Deriving semi
+        SPOU here would require a live PSP call to resolve the
+        UoM's symbol + dimension (mass / volume / count), which is
+        expensive on every stage save.
+    """
+
+    if psp_item_type == "finished_product":
+        spp_raw = getattr(formulation, "servings_per_pack", None)
+        try:
+            spp = Decimal(str(spp_raw)) if spp_raw is not None else Decimal("0")
+        except (InvalidOperation, TypeError, ValueError):
+            spp = Decimal("0")
+        return spp if spp > 0 else Decimal("1")
+
+    return None
+
+
 def _parse_positive_decimal(value: Any, *, default: Decimal) -> Decimal:
     """Coerce a payload value to a positive ``Decimal``. Empty / null /
     invalid / non-positive input falls back to ``default`` so a stray
@@ -2800,6 +2846,37 @@ def set_formulation_stages(
             raise ValueError(
                 "psp_item_type must be 'semi_finished' or 'finished_product'"
             )
+
+        # ────────────────────────────────────────────────────────────
+        # SPOU auto-derive — takes precedence over whatever the FE
+        # sent. The stage form has a read-only SPOU display so
+        # scientists never intend to type this value; a wrong number
+        # (e.g. "360" typed when the user meant "grams per tub" or
+        # left over from an older auto-populate that used net_quantity)
+        # would cause downstream BOM math to under-order raw material
+        # by up to servings_per_pack×. Deriving on the BE guarantees
+        # the DB always reflects the correct SPOU regardless of what
+        # ships from the FE draft.
+        #
+        # Contract:
+        #   * finished_product stage: SPOU == servings_per_pack.
+        #     "1 pack (bottle / pouch / jar) = N servings" — same
+        #     rule ``_finished_stage_servings`` enforces at PSP push
+        #     time (see apps/psp/services.py). Persisting it here
+        #     stops the routing preview from disagreeing with the
+        #     eventual PSP mo.quantity number.
+        #   * semi_finished stage: kept as-is (either the FE's
+        #     ``suggestServingsPerOutputUnit`` output, or a manual
+        #     override for pack-equivalent semis). The PSP push
+        #     cascade ``_semi_stage_servings`` recomputes from the
+        #     stock UoM + per-serving basis anyway, so a stale semi
+        #     value only affects the FE routing preview until the
+        #     next save round-trip.
+        derived_spou = _derive_stage_spou(
+            formulation, payload["psp_item_type"], raw.get("psp_item_stock_uom_uuid")
+        )
+        if derived_spou is not None:
+            payload["servings_per_output_unit"] = derived_spou
 
         if raw_id:
             existing = FormulationStage.objects.filter(

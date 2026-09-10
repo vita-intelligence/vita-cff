@@ -8,6 +8,7 @@ import { CountryMultiPicker } from "@/components/forms/country-multi-picker";
 import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
 import { PackagingRoutingSection } from "./packaging-routing-section";
 import { StageBomsPreview } from "./stage-boms-preview";
+import { StageFlowCard } from "./stage-flow-card";
 import { StageStrip, suggestServingsPerOutputUnit } from "./stage-strip";
 import { useLocale, useTranslations } from "next-intl";
 import {
@@ -6603,6 +6604,17 @@ export function FormulationBuilder({
           </ul>
         </div>
       )}
+      {/* Stage-to-stage cascade visualiser. Read-only card: shows
+          per-pack output of each stage + auto-injected consumption
+          qty of the previous stage as the next stage's first BOM
+          line. Same math the BE ``_push_staged_cascade`` runs at
+          PSP push time — mirrored here so scientists don't have to
+          reason about it. */}
+      <StageFlowCard
+        stages={formulation.stages}
+        uomOptions={uomOptions}
+        servingsPerPack={Number(metadata.servings_per_pack) || 0}
+      />
       <StageStrip
         pspBaseUrl={organization?.psp_base_url ?? null}
         pspFinishedProductUuid={formulation.psp_finished_product_uuid ?? null}
