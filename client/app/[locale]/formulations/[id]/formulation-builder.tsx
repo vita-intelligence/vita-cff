@@ -9326,7 +9326,9 @@ const RoutingTabBody = memo(function RoutingTabBody({
               </p>
             </div>
           ) : null}
-          {stages.map((stage) => {
+          {[...stages]
+            .sort((a, b) => a.sort_order - b.sort_order)
+            .map((stage, stageIndex, stagesSorted) => {
             const rows = rowsByStage.map.get(stage.id) ?? [];
             const isFinished = stage.psp_item_type === "finished_product";
             const stageInfo = stageInfoById.get(stage.id);
@@ -9334,6 +9336,47 @@ const RoutingTabBody = memo(function RoutingTabBody({
             const perServingMg = baseMassByStage.get(stage.id) ?? 0;
             const perStockUnitMg = perServingMg * stageServings;
             const perPackMg = perServingMg * servingsPerPack;
+            // Prior-stage output line — mirrors the BE cascade in
+            // ``_push_staged_cascade`` (apps/psp/services.py:6413) that
+            // auto-injects the previous stage's semi as the first BOM
+            // row at PSP push time. Shown as a real row alongside the
+            // scientist's routed ingredients so what ships to PSP is
+            // visible on this tab, not just in the Stage flow header.
+            //
+            // qty per 1 unit of THIS stage output (in prev's stock UoM):
+            //   qty = this.SPOU ÷ prev.SPOU
+            // e.g. Super Powder (SPOU 30) consuming Super Powder PB
+            // (SPOU 83.33): 30 ÷ 83.33 = 0.36 kg per 1 pack.
+            //
+            // Dedup guard mirrors BE (line 6413-6418): if the scientist
+            // already routed the prev-stage semi as an explicit
+            // ingredient on this stage, their line is authoritative —
+            // skip the synthetic row.
+            const prevStage =
+              stageIndex > 0 ? stagesSorted[stageIndex - 1] : null;
+            const prevStageInfo = prevStage
+              ? stageInfoById.get(prevStage.id)
+              : null;
+            const prevServings = prevStageInfo?.servings_per_output_unit ?? 0;
+            // Prev stage's PSP semi-finished UUID (null until first
+            // push). If the scientist routed an ingredient row that
+            // maps to this same PSP item, don't double-count.
+            const prevPspSemiUuid = prevStage?.psp_semi_finished_uuid ?? null;
+            const priorRowAlreadyRouted =
+              !!prevPspSemiUuid &&
+              rows.some((r) => r.itemId === prevPspSemiUuid);
+            const priorStageQtyPerUnit =
+              prevStage && prevServings > 0 && stageServings > 0
+                ? stageServings / prevServings
+                : null;
+            const prevUomSymbol = prevStage?.psp_item_stock_uom_uuid
+              ? uomByUuid.get(prevStage.psp_item_stock_uom_uuid)?.symbol ?? ""
+              : "";
+            const showPriorStageRow =
+              !!prevStage &&
+              !priorRowAlreadyRouted &&
+              priorStageQtyPerUnit !== null &&
+              priorStageQtyPerUnit > 0;
             return (
               <div
                 key={stage.id}
@@ -9519,7 +9562,51 @@ const RoutingTabBody = memo(function RoutingTabBody({
                 </p>
 
                 <ul className="mt-3 flex flex-col gap-1 text-sm">
-                  {rows.length === 0 ? (
+                  {/* Auto-cascade "prior semi" row — the previous
+                      stage's output as an ingredient on this stage.
+                      Not routable (no scientist action), but rendered
+                      inline with real rows so the Routing tab reflects
+                      what actually ships to PSP. */}
+                  {showPriorStageRow && prevStage && priorStageQtyPerUnit ? (
+                    (() => {
+                      const totalBatchQty =
+                        priorStageQtyPerUnit *
+                        ((finishedUnits * servingsPerPack) /
+                          (stageServings > 0 ? stageServings : 1));
+                      const fmtQty = (n: number) => {
+                        if (!Number.isFinite(n)) return "—";
+                        const s = n.toFixed(5);
+                        return s.replace(/\.?0+$/, "") || "0";
+                      };
+                      return (
+                        <li
+                          key={`prior-stage-${prevStage.id}`}
+                          className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-emerald-300 bg-emerald-50/40 px-3 py-2 text-xs"
+                        >
+                          <span className="flex items-center gap-2">
+                            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-emerald-800 ring-1 ring-emerald-200">
+                              Auto · prior stage
+                            </span>
+                            <span className="font-medium text-ink-1000">
+                              {prevStage.psp_item_name ||
+                                prevStage.name ||
+                                "Previous stage"}
+                            </span>
+                          </span>
+                          <span className="flex shrink-0 items-baseline gap-3 text-right tabular-nums">
+                            <span className="text-ink-500">
+                              {fmtQty(priorStageQtyPerUnit)} {prevUomSymbol}{" "}
+                              / unit
+                            </span>
+                            <span className="text-ink-1000">
+                              {fmtQty(totalBatchQty)} {prevUomSymbol}
+                            </span>
+                          </span>
+                        </li>
+                      );
+                    })()
+                  ) : null}
+                  {rows.length === 0 && !showPriorStageRow ? (
                     <li className="rounded-lg border border-dashed border-ink-200 px-3 py-4 text-center text-xs text-ink-500">
                       No ingredients routed here yet — pick a row on
                       the left and set its stage to{" "}
