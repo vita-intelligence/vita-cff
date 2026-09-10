@@ -3233,7 +3233,32 @@ def _label_additional_assets_for_formulation(formulation: Any) -> list[dict]:
     return result
 
 
-def _header_image_url_for_formulation(formulation: Any) -> str:
+def _header_image_url_for_proposal(proposal: Any) -> str:
+    """Proposal-scoped variant of :func:`_header_image_url_for_formulation`.
+    Resolves the primary formulation via the proposal's first line,
+    then delegates. Empty string when the proposal has no formulation
+    lines yet (draft state).
+    """
+
+    if proposal is None:
+        return ""
+    line = (
+        proposal.lines.select_related("formulation_version__formulation")
+        .filter(formulation_version__formulation__isnull=False)
+        .order_by("id")
+        .first()
+    )
+    if line is None:
+        return ""
+    formulation = getattr(line.formulation_version, "formulation", None)
+    if formulation is None:
+        return ""
+    return _header_image_url_for_formulation(formulation, proposal=proposal)
+
+
+def _header_image_url_for_formulation(
+    formulation: Any, *, proposal: Any | None = None
+) -> str:
     """Pick one image URL for PSP to render as the project's header
     on the dashboard + detail page.
 
@@ -3242,16 +3267,34 @@ def _header_image_url_for_formulation(formulation: Any) -> str:
       2. First :class:`FormulationPhoto` the scientist uploaded
          (``is_primary DESC, sort_order`` = model's default order).
       3. Empty string — PSP shows its neutral placeholder.
+
+    ``proposal`` scopes the LabelDesign lookup to a specific order
+    (RTG multi-order case: one formulation backs N proposals, each
+    with its own artwork). When absent, falls back to the newest
+    LabelDesign on the formulation (Custom + legacy pre-proposal-FK
+    rows).
     """
 
     from apps.formulations.models import FormulationPhoto
     from apps.label_design.models import LabelDesign
 
-    label = (
-        LabelDesign.objects.filter(formulation_id=formulation.id)
-        .select_related("current_revision")
-        .first()
-    )
+    proposal_id = getattr(proposal, "id", None) if proposal is not None else None
+    label = None
+    if proposal_id:
+        label = (
+            LabelDesign.objects.filter(
+                formulation_id=formulation.id,
+                proposal_id=proposal_id,
+            )
+            .select_related("current_revision")
+            .first()
+        )
+    if label is None:
+        label = (
+            LabelDesign.objects.filter(formulation_id=formulation.id)
+            .select_related("current_revision")
+            .first()
+        )
     if _label_customer_approved_at(label) is not None:
         revision = getattr(label, "current_revision", None)
         # Preferred: a generated thumbnail from the PDF pipeline.
@@ -3770,11 +3813,33 @@ def _label_design_state_for_proposal(proposal: Any) -> dict:
         return empty
 
     primary_formulation_id = formulation_ids[0]
-    label = (
-        LabelDesign.objects.filter(formulation_id=primary_formulation_id)
-        .select_related("current_revision")
-        .first()
-    )
+    # Prefer THIS proposal's LabelDesign. RTG multi-order case: one
+    # formulation backs many parallel orders, each with its own
+    # LabelDesign row. Without the proposal_id filter, ``.first()``
+    # (sorted by -updated_at per LabelDesign.Meta.ordering) returns
+    # whichever design happened to be edited most recently — so a
+    # new order for the same SKU inherits the OLD order's approved
+    # artwork state, and vice-versa. Custom flows fall back to the
+    # formulation-scoped query because Custom is 1:1 with formulation
+    # and legacy LabelDesign rows may pre-date the proposal FK
+    # (proposal_id=None on old rows).
+    proposal_id = getattr(proposal, "id", None)
+    label = None
+    if proposal_id:
+        label = (
+            LabelDesign.objects.filter(
+                formulation_id=primary_formulation_id,
+                proposal_id=proposal_id,
+            )
+            .select_related("current_revision")
+            .first()
+        )
+    if label is None:
+        label = (
+            LabelDesign.objects.filter(formulation_id=primary_formulation_id)
+            .select_related("current_revision")
+            .first()
+        )
     if label is None:
         return empty
 
@@ -4486,6 +4551,15 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         # approval). All nil when no LabelDesign row exists yet for
         # the primary formulation.
         **_label_design_state_for_proposal(proposal),
+        # Header image for PSP's /projects card banner + detail hero.
+        # Priority: this proposal's approved LabelDesign preview →
+        # first product photo → empty. Proposal-scoped so a fresh RTG
+        # order doesn't inherit a prior order's approved artwork.
+        # Uses the primary line's formulation as the anchor (same
+        # rule as ``_label_design_state_for_proposal``); bundled
+        # multi-product proposals surface the primary product's
+        # artwork on the merged CO card.
+        "header_image_url": _header_image_url_for_proposal(proposal),
         # Latest-transition timestamps for the wizard phase gate.
         "npd_proposal_created_at": _iso_or_none(getattr(proposal, "created_at", None)),
         "npd_proposal_created_by_name": _person_display_name(
