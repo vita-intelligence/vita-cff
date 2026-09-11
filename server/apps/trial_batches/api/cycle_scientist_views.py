@@ -174,16 +174,28 @@ def _serialise_cycle_for_scientist(cycle: TrialBatchCycle) -> dict[str, Any]:
     # on the /trial-batches kanban card. Once a batch is linked to the
     # slot the scientist's next step is on the batch detail page
     # ("Create MO on PSP"), not another create-and-link click, so the
-    # badge stops firing. Without the ``trial_batch_id`` guard the
-    # slot lingers at AWAITING_SCIENTIST (see ``link_batch_to_slot``
-    # in cycle_services — status only advances on PSP MO create) and
-    # the badge kept nudging the operator, tempting a second click
-    # that would have spawned an orphan batch.
-    action_needed = (
-        active is not None
-        and active.status == TrialBatchSlotStatus.AWAITING_SCIENTIST
-        and active.trial_batch_id is None
+    # badge stops firing for that slot. But when the cycle has MULTIPLE
+    # open slots (e.g. the customer paid for 3 samples and slot 1 has
+    # a batch while slot 2 is still awaiting), the badge must keep
+    # firing for the un-linked slots — otherwise the whole cycle drops
+    # out of the ``needs_click`` column even though there's still a
+    # click to make. The ``active`` var picks the FIRST non-closed slot
+    # (used for ``active_slot_id`` + ``can_open_next_slot`` semantics),
+    # while ``next_batch_needed`` scans EVERY open slot for the next
+    # one without a batch. Splitting the two lets the kanban card stay
+    # visible for as long as any slot still needs the create-batch
+    # click, without breaking other fields that depend on ``active``'s
+    # "in-flight slot" meaning.
+    next_batch_needed = next(
+        (
+            s
+            for s in slots
+            if s.status == TrialBatchSlotStatus.AWAITING_SCIENTIST
+            and s.trial_batch_id is None
+        ),
+        None,
     )
+    action_needed = next_batch_needed is not None
     # "Worked" = slots that have actually been produced (or are being
     # produced) — anything past the AWAITING_SCIENTIST seed row, and
     # excluding CLOSED_CANCELLED so an auto-cancelled slot from a

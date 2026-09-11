@@ -713,7 +713,21 @@ def apply_additional_samples_on_payment_approved(
     if was_team_terminated:
         cycle.slots_display_offset = used
 
-    for i in range(request.requested_quantity):
+    # Materialise slots up to the NEW total_slots — not just the
+    # requested_quantity. The deposit path is intentionally lazy
+    # (``create_cycle_for_deposit`` seeds slot 1 only; subsequent
+    # deposit slots wait for ``open_next_slot_iterated`` so each
+    # iteration can pin its own recipe version). When a top-up lands
+    # BEFORE the first iteration verdict, only creating
+    # ``requested_quantity`` slots leaves the cycle short — the modal
+    # renders fewer slot rows than the ``total_slots`` header
+    # advertises ("paid for 3, shows 2"). Catching up here means the
+    # scientist sees every slot the customer paid for the moment the
+    # top-up clears finance. Chronological sequencing preserved:
+    # deferred deposit slots come first, top-up slots after.
+    new_total = cycle.total_slots + request.requested_quantity
+    slots_to_create = new_total - used
+    for i in range(slots_to_create):
         TrialBatchSlot.objects.create(
             cycle=cycle,
             sequence_no=used + 1 + i,
@@ -721,7 +735,7 @@ def apply_additional_samples_on_payment_approved(
             status=TrialBatchSlotStatus.AWAITING_SCIENTIST,
         )
 
-    cycle.total_slots = cycle.total_slots + request.requested_quantity
+    cycle.total_slots = new_total
     if cycle.status in (
         TrialBatchCycleStatus.MAX_REACHED,
         TrialBatchCycleStatus.SATISFIED,
