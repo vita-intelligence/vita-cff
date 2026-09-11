@@ -1816,7 +1816,7 @@ class PspClient:
                 method="POST",
                 body=body,
             )
-        except PspUnreachable as exc:
+        except (PspUnreachable, PspValidationError) as exc:
             # Name-conflict fallback: PSP enforces a unique (company,
             # name) constraint on items. When two NPD formulations
             # try to auto-create the same-named finished product (or a
@@ -1825,9 +1825,13 @@ class PspClient:
             # than surface a scary error, look the item up by exact
             # name + item_type and return it — the scientist gets a
             # link to the existing SKU without a manual re-picker
-            # step. The 422 body is embedded in the exception message
-            # by ``_request``; we probe for the marker substring so
-            # the fallback is precise (any other 422 rethrows).
+            # step. Catches both branches of ``_request``'s 422
+            # handling: ``PspValidationError`` when PSP returns a
+            # JSON body with ``error`` set (current behaviour, e.g.
+            # ``{"error": "..."}``), ``PspUnreachable`` when the 422
+            # body is opaque (legacy / html error pages). The marker
+            # substring probe is precise so any non-name conflict
+            # rethrows.
             message = str(exc)
             name_conflict = (
                 "name already exists" in message.lower()
@@ -4254,11 +4258,52 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
     if not lines:
         return None
 
+    # Bring the client up early so we can back-fill any line-formulation
+    # that still lacks ``psp_finished_product_uuid`` before we send the
+    # merge payload. PSP's ``proposal_merge`` resolves each line to a
+    # local ``Item`` via ``psp_finished_product_uuid`` and rejects the
+    # CO-line changeset with ``item_id: [can't be blank]`` when it's
+    # null — historically NPD relied on ``push_bom`` (the save-BOM
+    # button) to auto-create the finished-product item, but proposals
+    # can now be drafted + sent before a scientist ever opens the
+    # builder (portal-CFF autoconvert path). Ensuring here means the
+    # send-to-client flow never 500s just because save-BOM hasn't
+    # run yet.
+    try:
+        client = _client_factory(config)
+    except PspInvalidConfig:
+        logger.exception(
+            "PSP sync_proposal_to_psp: invalid config for org %s",
+            organization.pk,
+        )
+        return None
+
     line_payload: list[dict[str, Any]] = []
     for line in lines:
         formulation = line.formulation_version.formulation
         if formulation is None:
             continue
+        # Idempotent PSP-item back-fill. ``_ensure_finished_product``
+        # uses ``external_sku`` for dedup + caches the uuid back onto
+        # ``formulation.psp_finished_product_uuid`` so subsequent syncs
+        # short-circuit on the ``if not …`` guard. On PSP unreachable
+        # / transient error we skip the ensure (returns None) and let
+        # the downstream merge decide — same behaviour as before, but
+        # now the happy path repairs itself instead of 500ing.
+        if not getattr(formulation, "psp_finished_product_uuid", None):
+            try:
+                _ensure_finished_product(client=client, formulation=formulation)
+            except PspError:
+                logger.exception(
+                    "PSP sync_proposal_to_psp: ensure_finished_product "
+                    "failed for formulation %s (proposal %s, org %s)",
+                    formulation.pk,
+                    proposal.pk,
+                    organization.pk,
+                )
+            # Refresh the FK from DB in case ``_ensure_finished_product``
+            # populated it on another instance during a retry / race.
+            formulation.refresh_from_db(fields=["psp_finished_product_uuid"])
         # Phase 3: attach the customer's picked packaging combo (if
         # any) so PSP can overlay the CO's packaging BOM with the
         # combo's items instead of the canonical formulation's default
@@ -4571,7 +4616,6 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
     }
 
     try:
-        client = _client_factory(config)
         return client.merge_customer_orders_from_proposal(payload)
     except PspError:
         logger.exception(
