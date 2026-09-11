@@ -32,6 +32,21 @@ export default async function PortalCFFDetailPage({
   if (res.status === 404) notFound();
   if (!res.ok) notFound();
 
+  // Swap-in-place: once triage links the CFF to a Formulation the
+  // customer's mental model is "this is now my project workspace".
+  // Hard-redirect to the product page so the full pipeline (draft
+  // spec → proposal → sample selection → …) takes over the URL
+  // instead of the stale CFF-form record. Only walk this branch when
+  // ``project_id`` is populated — a pending or rejected CFF still
+  // renders its own detail here.
+  const cff = (await res.json()) as {
+    has_project?: boolean;
+    project_id?: string | null;
+  };
+  if (cff.has_project && cff.project_id) {
+    redirect(`/portal/products/${cff.project_id}`);
+  }
+
   return (
     <PortalShell active="products">
       <PortalCFFView submissionId={id} />

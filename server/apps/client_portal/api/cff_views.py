@@ -100,6 +100,12 @@ class PortalCFFListItemSerializer(serializers.Serializer):
     status = serializers.CharField(source="wix_status")
     has_project = serializers.SerializerMethodField()
     project_code = serializers.SerializerMethodField()
+    # UUID of the linked project so the FE can redirect the CFF page
+    # to /portal/products/<id> once triage attaches a Formulation.
+    # The row transforms from "CFF · under review" to the full project
+    # workspace in place; without this uuid on the wire the FE would
+    # have to hit a second endpoint to resolve the code → id mapping.
+    project_id = serializers.SerializerMethodField()
     # Rejection state is customer-visible so they can see the outcome
     # without waiting on an email. The reason is intentionally shown
     # verbatim — internal triage notes are usually short and factual
@@ -142,6 +148,16 @@ class PortalCFFListItemSerializer(serializers.Serializer):
         if first is None:
             return None
         return first.code or first.name or None
+
+    def get_project_id(self, obj) -> str | None:
+        # Same "first by name" pick as ``project_code`` so the id and
+        # code always refer to the same Formulation. Returned as the
+        # canonical string form so FE routing can build a URL without
+        # a second decode step.
+        first = obj.projects.order_by("name").first()
+        if first is None:
+            return None
+        return str(first.id)
 
     def get_lifecycle_state(self, obj) -> str:
         # Priority order: project_created wins over rejected wins

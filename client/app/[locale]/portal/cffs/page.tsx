@@ -36,6 +36,9 @@ interface CFFListResponse {
     provenance: string;
     // Single-value lifecycle: "under_review" | "rejected" | "project_created".
     lifecycle_state: string;
+    // Formulation UUID once triage attaches a project. Present alongside
+    // ``project_code`` for building /portal/products/&lt;id&gt; links.
+    project_id: string | null;
   }>;
 }
 
@@ -55,8 +58,19 @@ export default async function PortalCFFsListPage() {
   if (!res || res.status === 401 || res.status === 403) {
     redirect("/portal/login");
   }
-  const data: CFFListResponse =
+  const rawData: CFFListResponse =
     res && res.ok ? await res.json() : { results: [] };
+  // Swap-in-place: once triage attaches a Formulation the row belongs
+  // on /portal/products (activity feed surfaces the full project card
+  // there). Keeping the CFF card here too duplicates the customer's
+  // brief across two surfaces with two different statuses. Rejected
+  // CFFs stay in the list — the customer needs to see the outcome
+  // inline; they can't act on it via the product page.
+  const data: CFFListResponse = {
+    results: rawData.results.filter(
+      (cff) => !cff.has_project || cff.is_rejected,
+    ),
+  };
 
   return (
     <PortalShell active="products">
@@ -90,10 +104,31 @@ export default async function PortalCFFsListPage() {
       </div>
 
       {data.results.length === 0 ? (
-        <EmptyState
-          title="No requests yet"
-          body="When you submit a custom formulation request through the Vita NPD form, it will appear here."
-        />
+        rawData.results.length > 0 ? (
+          // Every request the customer submitted has already been
+          // promoted to a project — the CFF cards live on the products
+          // hub now. Point them there instead of showing the misleading
+          // "you haven't submitted anything" copy that reads as if
+          // their work vanished.
+          <EmptyState
+            title="Everything is on your Products page"
+            body="Each request you submitted has been turned into a project. Open your Products page to see the pipeline for each one — draft spec, proposal, samples, production."
+            action={
+              <Link
+                href="/portal/products"
+                className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-white hover:bg-neutral-800"
+              >
+                Go to Products
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            }
+          />
+        ) : (
+          <EmptyState
+            title="No requests yet"
+            body="When you submit a custom formulation request through the Vita NPD form, it will appear here."
+          />
+        )
       ) : (
         <div className="grid gap-4">
           {data.results.map((cff) => {

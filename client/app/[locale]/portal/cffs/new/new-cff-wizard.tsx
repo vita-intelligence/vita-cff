@@ -567,11 +567,16 @@ export function NewCFFWizard({
       } catch {
         // ignore
       }
+      // Land on the main portal hub, not the CFF-history page. The
+      // hub's activity feed shows the just-submitted brief as a "Under
+      // review" card and later swaps it in place for the project card
+      // once triage attaches a Formulation — that's the surface the
+      // customer should be watching, not the requests archive.
       const newId = data?.id;
       router.push(
         newId
-          ? `/portal/cffs?just_submitted=${encodeURIComponent(newId)}`
-          : "/portal/cffs",
+          ? `/portal/products?just_submitted=${encodeURIComponent(newId)}`
+          : "/portal/products",
       );
     } catch (err: unknown) {
       const api = normalizeApiError(err);
