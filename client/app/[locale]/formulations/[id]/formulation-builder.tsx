@@ -8726,15 +8726,18 @@ const RoutingTabBody = memo(function RoutingTabBody({
     return set;
   }, [lines]);
 
-  // Split PSP results into pinned stage-outputs + everything else,
-  // dropping anything the formulation already carries. Previously
-  // already-picked items rendered greyed-out — user request: cut
-  // them entirely so the picker only shows things you can still add.
-  const pinnedResults = pspItems.filter(
-    (it) =>
-      stageOutputUuids.has(it.uuid) && !alreadyPickedPspUuids.has(it.uuid),
-  );
-  const otherResults = pspItems.filter(
+  // Two exclusions on the pickable list:
+  //  1. ``alreadyPickedPspUuids`` — already in the ingredient inventory
+  //     for this formulation (user preference: hide, don't grey out).
+  //  2. ``stageOutputUuids`` — the semi-finished outputs of THIS
+  //     formulation's earlier stages. The routing tab auto-adds a
+  //     prior-stage BOM row for the operator (see the
+  //     ``show-prior-stage-output-as-bom-row`` commit); surfacing the
+  //     same item here would let a scientist add a duplicate line
+  //     with the same PSP uuid — one from the stage cascade, one
+  //     from a manual pick — which the compute pass then can't
+  //     dedup cleanly. Filter them out entirely.
+  const pickableResults = pspItems.filter(
     (it) =>
       !stageOutputUuids.has(it.uuid) && !alreadyPickedPspUuids.has(it.uuid),
   );
@@ -8958,9 +8961,7 @@ const RoutingTabBody = memo(function RoutingTabBody({
               onSearchChange={setPickerSearch}
               pickerType={pickerType}
               onPickerTypeChange={setPickerType}
-              pinnedResults={pinnedResults}
-              otherResults={otherResults}
-              stageOutputUuids={stageOutputUuids}
+              pickableResults={pickableResults}
               alreadyPickedPspUuids={alreadyPickedPspUuids}
               selection={pickerSelection}
               onToggle={togglePickerSelection}
@@ -9748,19 +9749,18 @@ const RoutingTabBody = memo(function RoutingTabBody({
 
 /**
  * PSP catalog picker embedded in the Routing tab's inventory column.
- * Search + item-type filter chips + a pinned "Stage outputs" band at
- * the top for the semi-finished items produced by earlier stages of
- * this formulation. Multi-select via checkboxes; the parent then
- * opens a qty-confirm modal on ``onNext``.
+ * Search + item-type filter chips + multi-select via checkboxes; the
+ * parent then opens a qty-confirm modal on ``onNext``. Prior-stage
+ * outputs for this formulation are filtered out upstream — they're
+ * already auto-added as BOM rows on the routing tab so offering them
+ * here would let the scientist create a duplicate line.
  */
 function RoutingInventoryPicker({
   search,
   onSearchChange,
   pickerType,
   onPickerTypeChange,
-  pinnedResults,
-  otherResults,
-  stageOutputUuids,
+  pickableResults,
   alreadyPickedPspUuids,
   selection,
   onToggle,
@@ -9778,9 +9778,7 @@ function RoutingInventoryPicker({
   onPickerTypeChange: (
     t: "all" | "raw_material" | "semi_finished" | "packaging",
   ) => void;
-  pinnedResults: readonly PspItemDto[];
-  otherResults: readonly PspItemDto[];
-  stageOutputUuids: ReadonlySet<string>;
+  pickableResults: readonly PspItemDto[];
   alreadyPickedPspUuids: ReadonlySet<string>;
   /** Full DTO for each currently-selected item, keyed by uuid. Held
    *  as a Map (not a Set) so picks made in one search survive when
@@ -9796,7 +9794,7 @@ function RoutingInventoryPicker({
   pickBusy: boolean;
   /** RTG projects handle packaging through combos, not this picker.
    *  When true: the Packaging chip is hidden and any ``item_type ===
-   *  "packaging"`` row is filtered out of ``otherResults`` even
+   *  "packaging"`` row is filtered out of ``pickableResults`` even
    *  under the "All" filter. */
   hidePackaging?: boolean;
 }) {
@@ -9823,19 +9821,18 @@ function RoutingInventoryPicker({
         { key: "semi_finished", label: "Semi" },
         { key: "packaging", label: "Packaging" },
       ];
-  // On RTG, drop any packaging rows from the "other" results so the
+  // On RTG, drop any packaging rows from the pickable list so the
   // "All" view doesn't leak packaging into the ingredient list.
-  const filteredOtherResults = hidePackaging
-    ? otherResults.filter(
+  const filteredResults = hidePackaging
+    ? pickableResults.filter(
         (item) =>
           (item.item_type ?? "").toString().toLowerCase() !== "packaging",
       )
-    : otherResults;
+    : pickableResults;
 
   const renderRow = (item: PspItemDto) => {
     const isSelected = selection.has(item.uuid);
     const isAlready = alreadyPickedPspUuids.has(item.uuid);
-    const isStageOutput = stageOutputUuids.has(item.uuid);
     return (
       <li
         key={item.uuid}
@@ -9846,9 +9843,7 @@ function RoutingInventoryPicker({
         className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
           isSelected
             ? "border-orange-400 bg-orange-50/50"
-            : isStageOutput
-              ? "border-orange-200 bg-orange-50/20"
-              : "border-ink-200 bg-ink-0"
+            : "border-ink-200 bg-ink-0"
         } ${
           !canWrite || isAlready ? "" : "cursor-pointer"
         } ${isAlready ? "opacity-40" : ""}`}
@@ -9938,19 +9933,9 @@ function RoutingInventoryPicker({
         ))}
       </div>
       <div className="max-h-[520px] overflow-y-auto">
-        {pinnedResults.length > 0 ? (
-          <div className="mb-3">
-            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-orange-700">
-              Stage outputs
-            </p>
-            <ul className="flex flex-col gap-1">
-              {pinnedResults.map(renderRow)}
-            </ul>
-          </div>
-        ) : null}
-        {isLoading && filteredOtherResults.length === 0 ? (
+        {isLoading && filteredResults.length === 0 ? (
           <p className="text-center text-xs text-ink-500">Loading…</p>
-        ) : filteredOtherResults.length === 0 && pinnedResults.length === 0 ? (
+        ) : filteredResults.length === 0 ? (
           <p className="rounded-lg bg-ink-50 px-3 py-6 text-center text-xs text-ink-500">
             {search
               ? "No matches."
@@ -9958,7 +9943,7 @@ function RoutingInventoryPicker({
           </p>
         ) : (
           <ul className="flex flex-col gap-1">
-            {filteredOtherResults.map(renderRow)}
+            {filteredResults.map(renderRow)}
           </ul>
         )}
       </div>
