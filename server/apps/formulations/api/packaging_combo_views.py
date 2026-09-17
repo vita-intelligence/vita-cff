@@ -218,18 +218,45 @@ class PackagingCombosView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 if item_id not in item_cache:
+                    # Item may be either an existing local ``catalogues_item``
+                    # (legacy pick / already-mirrored PSP row) OR a fresh
+                    # PSP UUID coming off the PSP-source-of-truth picker.
+                    # Try local first, then mirror the PSP row into the
+                    # ``psp_mirror`` catalogue on-the-fly so combos always
+                    # reference a local FK the rest of the pipeline can
+                    # load.
                     item = Item.objects.filter(
                         id=item_id,
                         catalogue__organization=self.organization,
                     ).first()
                     if item is None:
-                        return Response(
-                            {
-                                "error": "unknown_item",
-                                "detail": f'Combo "{name}" references an item that isn\'t in this org.',
-                            },
-                            status=status.HTTP_400_BAD_REQUEST,
+                        from apps.psp.services import (
+                            mirror_psp_item,
+                            PspError,
+                            PspMirrorItemNotFound,
+                            PspDecryptionFailed,
+                            PspNotConfigured,
                         )
+
+                        try:
+                            item = mirror_psp_item(
+                                organization=self.organization,
+                                actor=request.user,
+                                psp_item_uuid=item_id,
+                            )
+                        except (
+                            PspMirrorItemNotFound,
+                            PspError,
+                            PspDecryptionFailed,
+                            PspNotConfigured,
+                        ):
+                            return Response(
+                                {
+                                    "error": "unknown_item",
+                                    "detail": f'Combo "{name}" references an item that isn\'t in this org (and no matching PSP item).',
+                                },
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
                     item_cache[item_id] = item
                 qty = int(ir.get("quantity") or 1)
                 if qty < 1:

@@ -2548,6 +2548,27 @@ def list_psp_items(
         return []
 
 
+def list_psp_items_strict(
+    *,
+    organization: Any,
+    search: str | None = None,
+    item_types: list[str] | None = None,
+    use_as: str | None = None,
+) -> list[PspItem]:
+    """Strict variant of :func:`list_psp_items` — raises instead of
+    silently returning ``[]``. Used by the user-facing pickers that
+    now treat PSP as the sole source of truth: they need to render a
+    "PSP not connected" error banner instead of an empty list."""
+
+    if not is_psp_live(organization):
+        raise PspNotConfigured("PSP integration not connected for this org.")
+    config = get_psp_config(organization=organization)
+    client = _client_factory(config)
+    return client.list_items(
+        search=search, item_types=item_types, use_as=use_as
+    )
+
+
 def list_psp_workstation_users(*, organization: Any) -> list[dict[str, Any]]:
     """Fetch PSP's operator list for the stage builder's workers
     multi-picker. Empty on any soft failure — the FE renders "no

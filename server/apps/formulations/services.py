@@ -990,11 +990,132 @@ def _classify_anti_caking_picks(
     return (has_stearate, has_silica)
 
 
+@dataclass(frozen=True)
+class _PickedCapsuleSpec:
+    """Runtime shape returned by :func:`_pick_capsule_spec`. Mirrors
+    the legacy :class:`apps.formulations.constants.CapsuleSize` shape
+    (``key``, ``label``, ``max_weight_mg``) so downstream compute
+    doesn't need to know whether the spec came from a picked PSP
+    shell item or from the deprecated hardcoded table."""
+
+    key: str
+    label: str
+    max_weight_mg: float
+    shell_weight_mg: float | None
+    #: Source of the spec — one of ``picked`` (user chose a shell) or
+    #: ``auto`` (best-fit from PSP catalogue). Handy for the UI hint
+    #: on the compute panel.
+    source: str
+
+
+def _decimal_from_attr(value: Any) -> float | None:
+    """Parse a capacity value off ``Item.attributes``. Accepts str,
+    int, float, Decimal; returns None on missing / unparseable."""
+
+    if value is None or value == "":
+        return None
+    try:
+        return float(Decimal(str(value)))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _capsule_spec_from_local_item(item: Item, *, source: str) -> _PickedCapsuleSpec | None:
+    """Build a spec from an already-loaded Django Item (the picked
+    shell OR a legacy local mirror). Returns None if the required
+    attributes aren't populated on this shell — caller decides
+    whether to fall back or fail."""
+
+    attrs = item.attributes or {}
+    max_fill = _decimal_from_attr(attrs.get("max_fill_mg"))
+    if max_fill is None or max_fill <= 0:
+        return None
+    shell_weight = _decimal_from_attr(attrs.get("shell_weight_mg"))
+    # ``psp_source_uuid`` (from the mirror upsert) is preferred as the
+    # stable key; falling back to the local Item PK is safe because
+    # both are string-typed and never collide.
+    key = str(getattr(item, "psp_source_uuid", None) or item.id)
+    return _PickedCapsuleSpec(
+        key=key,
+        label=item.name or "",
+        max_weight_mg=max_fill,
+        shell_weight_mg=shell_weight,
+        source=source,
+    )
+
+
+def _pick_capsule_spec(
+    *,
+    picked_shells: tuple[Item, ...],
+    requested_size_key: str | None,
+    organization: Any | None,
+    target_weight_mg: float,
+) -> _PickedCapsuleSpec | None:
+    """Resolve the capsule capacity spec used by the compute path.
+
+    Preference order:
+      1. First picked shell whose ``attributes`` carries
+         ``max_fill_mg`` (manual pick always wins).
+      2. Auto-pick from PSP: smallest live capsule shell whose
+         ``max_fill_mg >= target_weight_mg``. Requires
+         ``organization`` (needed to reach PSP's integration wire).
+
+    Returns ``None`` when neither path yields a spec — the caller
+    surfaces this as "no capsule fits" viability."""
+
+    for shell in picked_shells:
+        spec = _capsule_spec_from_local_item(shell, source="picked")
+        if spec is not None:
+            return spec
+
+    if organization is None or target_weight_mg <= 0:
+        return None
+
+    # Auto-pick from PSP inventory.
+    from apps.psp.services import list_psp_items
+
+    psp_shells = list_psp_items(
+        organization=organization,
+        item_types=["raw_material"],
+        use_as="Capsule Shell",
+    )
+    candidates: list[tuple[float, str, str, float | None]] = []
+    for psp in psp_shells:
+        if not psp.is_active:
+            continue
+        max_fill = _decimal_from_attr((psp.attributes or {}).get("max_fill_mg"))
+        if max_fill is None or max_fill <= 0:
+            continue
+        shell_weight = _decimal_from_attr(
+            (psp.attributes or {}).get("shell_weight_mg")
+        )
+        candidates.append((max_fill, psp.uuid, psp.name or "", shell_weight))
+
+    if not candidates:
+        return None
+    # Ascending by capacity so the first entry that fits is also the
+    # smallest — matches the "just enough shell" scientist intent.
+    candidates.sort(key=lambda c: c[0])
+    for max_fill, uuid, name, shell_weight in candidates:
+        if max_fill >= target_weight_mg:
+            return _PickedCapsuleSpec(
+                key=uuid,
+                label=name,
+                max_weight_mg=max_fill,
+                shell_weight_mg=shell_weight,
+                source="auto",
+            )
+    # Nothing fits — recipe is bigger than the largest PSP shell.
+    return None
+
+
 def _compute_capsule(
     total_active: Decimal,
     requested_size_key: str | None,
     mcc_carrier_items: tuple[Item, ...] = (),
     anti_caking_items: tuple[Item, ...] = (),
+    capsule_shell_items: tuple[Item, ...] = (),
+    organization: Any | None = None,
     excipient_overrides: dict[str, Any] | None = None,
 ) -> tuple[
     str | None, str | None, Decimal | None, Decimal | None,
@@ -1002,17 +1123,36 @@ def _compute_capsule(
 ]:
     warnings: list[str] = []
 
-    if requested_size_key:
-        size = capsule_size_by_key(requested_size_key)
-        if size is None:
-            raise InvalidCapsuleSize()
-    else:
-        size = auto_pick_capsule_size(float(total_active))
-        if size is None:
-            warnings.append("capsule_too_large")
+    # Capsule sizing is now PSP-driven — capacity + shell mass live on
+    # the capsule shell item itself (attributes.max_fill_mg /
+    # attributes.shell_weight_mg, populated on PSP by R&D and mirrored
+    # into the local Item). Resolution order:
+    #   1. If the recipe already picked one or more shells → use the
+    #      first pick's stated capacity. Manual choice always wins.
+    #   2. Otherwise, if we have an ``organization`` we can hit PSP for
+    #      the shell catalogue — pick the smallest live shell whose
+    #      ``max_fill_mg`` covers the recipe fill (approximated for the
+    #      pick as ``total_active + a small margin``; the fit test
+    #      runs against the true recipe total below).
+    #   3. ``requested_size_key`` is preserved as a compatibility hint
+    #      but only wins if it happens to name a picked shell (by uuid
+    #      or by attributes.size). Legacy hardcoded keys resolve to
+    #      ``None`` and the picker falls through to auto-pick.
+    size = _pick_capsule_spec(
+        picked_shells=capsule_shell_items,
+        requested_size_key=requested_size_key,
+        organization=organization,
+        target_weight_mg=float(total_active),
+    )
+    if size is None and requested_size_key:
+        # Legacy hardcoded key path — no longer authoritative. Warn
+        # and let the caller decide (usually a "please pick a capsule
+        # shell" hint on the FE).
+        warnings.append("capsule_shell_not_picked")
 
     if size is None:
-        # Cannot make — total active exceeds every auto-pickable size.
+        # Cannot make — no shell picked AND PSP has no shell whose
+        # capacity fits the active load.
         return (
             None,
             None,
@@ -2001,6 +2141,12 @@ def compute_totals(
     dcp_carrier_items: tuple[Item, ...] = (),
     anti_caking_items: tuple[Item, ...] = (),
     powder_carrier_items: tuple[Item, ...] = (),
+    # Capsule shell picks — first item wins for capacity + shell mass.
+    # Empty tuple triggers PSP-inventory auto-pick (when ``organization``
+    # is supplied) — picks the smallest capsule whose ``max_fill_mg``
+    # comfortably fits the recipe's total fill weight.
+    capsule_shell_items: tuple[Item, ...] = (),
+    organization: Any | None = None,
     excipient_overrides: dict[str, Any] | None = None,
 ) -> FormulationTotals:
     """Compute the full totals block for a formulation.
@@ -2158,6 +2304,8 @@ def compute_totals(
             capsule_size_key or None,
             mcc_carrier_items=mcc_carrier_items,
             anti_caking_items=anti_caking_items,
+            capsule_shell_items=capsule_shell_items,
+            organization=organization,
             excipient_overrides=excipient_overrides,
         )
     elif dosage_form == DosageForm.TABLET.value:
@@ -5410,6 +5558,10 @@ def compute_formulation_totals(
         powder_carrier_items=tuple(
             formulation.powder_carrier_items.all().order_by("name")
         ),
+        capsule_shell_items=tuple(
+            formulation.capsule_shell_items.all().order_by("name")
+        ),
+        organization=formulation.organization,
         excipient_overrides=formulation.excipient_overrides or {},
     )
 

@@ -2395,22 +2395,31 @@ def set_packaging(
 
     ``selections`` is a dict keyed by the FK slot name
     (``packaging_lid``, ``packaging_container``, ``packaging_label``,
-    ``packaging_antitemper``). Each value is either a packaging
-    ``Item`` UUID or ``None`` to clear that slot. Slots not present in
-    the dict are untouched — the caller can update a single slot
-    without re-sending the others.
+    ``packaging_antitemper``). Each value is either a packaging item
+    identifier or ``None`` to clear that slot. Slots not present in
+    the dict are untouched.
 
-    Every non-null selection is validated twice: the item must live in
-    the sheet's org ``packaging`` catalogue (prevents cross-tenant
-    attach), and its ``packaging_type`` attribute must match the slot
-    (prevents selecting a closure for the bottle row). Both failures
-    surface as :class:`PackagingItemNotAllowed` with a single error
-    code so the API layer can translate them uniformly.
+    Item identifiers may be either (a) a PSP item UUID coming from the
+    live PSP-source-of-truth picker — in which case the item is
+    mirrored into the local ``psp_mirror`` catalogue on-the-fly and
+    that mirror row becomes the FK target; or (b) a local
+    ``catalogues_item`` id from a legacy pick that was already
+    mirrored. Every non-null selection is validated for
+    ``packaging_type`` against the slot (prevents selecting a closure
+    for the bottle row). Failures surface as
+    :class:`PackagingItemNotAllowed` with a single error code so the
+    API layer can translate them uniformly.
     """
+    from apps.psp.services import (
+        mirror_psp_item,
+        PspError,
+        PspMirrorItemNotFound,
+        PspDecryptionFailed,
+        PspNotConfigured,
+    )
 
     _guard_editable(sheet)
     before = snapshot(sheet)
-    catalogue: Catalogue | None = None
 
     for slot, raw_id in selections.items():
         if slot not in PACKAGING_SLOT_TYPES:
@@ -2420,16 +2429,27 @@ def set_packaging(
             setattr(sheet, slot, None)
             continue
 
-        if catalogue is None:
-            catalogue = Catalogue.objects.filter(
-                organization=sheet.organization, slug=PACKAGING_SLUG
-            ).first()
-            if catalogue is None:
-                raise PackagingItemNotAllowed()
-
-        item = Item.objects.filter(catalogue=catalogue, id=raw_id).first()
+        # Resolve raw_id → local Item row. First try existing
+        # ``catalogues_item`` (legacy mirror/local pick), then fall
+        # through to a PSP mirror upsert for freshly-picked PSP UUIDs
+        # coming off the live packaging picker.
+        item = Item.objects.filter(
+            id=raw_id, catalogue__organization=sheet.organization
+        ).first()
         if item is None:
-            raise PackagingItemNotAllowed()
+            try:
+                item = mirror_psp_item(
+                    organization=sheet.organization,
+                    actor=actor,
+                    psp_item_uuid=raw_id,
+                )
+            except (
+                PspMirrorItemNotFound,
+                PspError,
+                PspDecryptionFailed,
+                PspNotConfigured,
+            ):
+                raise PackagingItemNotAllowed()
 
         expected_type = PACKAGING_SLOT_TYPES[slot]
         actual_type = (item.attributes or {}).get("packaging_type")

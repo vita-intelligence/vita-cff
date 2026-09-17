@@ -49,6 +49,83 @@ from apps.organizations.modules import (
     CataloguesCapability,
 )
 from apps.organizations.services import has_capability
+from apps.catalogues.models import (
+    PACKAGING_SLUG,
+    RAW_MATERIALS_SLUG,
+    PSP_MIRROR_SLUG,
+)
+from apps.psp.services import (
+    PspError,
+    PspNotConfigured,
+    PspDecryptionFailed,
+    list_psp_items_strict,
+)
+
+# Catalogues whose CANONICAL data lives on PSP once the org's PSP
+# integration is connected. The item picker for these three reads
+# live from PSP (not the local table); the local rows are only ever
+# the ``psp_mirror`` upsert target used on save.
+_PSP_BACKED_CATALOGUE_SLUGS: frozenset[str] = frozenset(
+    {RAW_MATERIALS_SLUG, PACKAGING_SLUG, PSP_MIRROR_SLUG}
+)
+
+# Catalogue slug → PSP item_type filter. ``psp_mirror`` is left open
+# (all types) because it's the general-purpose mirror bucket.
+_PSP_ITEM_TYPE_BY_SLUG: dict[str, list[str] | None] = {
+    RAW_MATERIALS_SLUG: ["raw_material"],
+    PACKAGING_SLUG: ["packaging"],
+    PSP_MIRROR_SLUG: None,
+}
+
+
+def _psp_use_as_snake_to_title(value: str) -> str:
+    """Translate a snake_case ``use_as`` value (which is what NPD's
+    ``normalize_use_as_value`` emits) into PSP's Title-Case wire form
+    so the ``?use_as=`` filter on PSP's integration endpoint matches.
+    Falls back to the raw value on unknown keys so mis-spellings still
+    hit PSP's own normaliser."""
+
+    mapping = {
+        "active": "Active",
+        "sweetener": "Sweeteners",
+        "bulking_agent": "Bulking Agent",
+        "flavouring": "Flavouring",
+        "colour": "Colour",
+        "acidity_regulator": "Acidity Regulator",
+        "glazing_agent": "Glazing Agent",
+        "gelling_agent": "Gelling Agent",
+        "emulsifier": "Emulsifier",
+        "disintegrant": "Disintegrant",
+        "stabiliser": "Stabiliser",
+        "anti_caking": "Anti-caking Agent",
+        "coating": "Coating Agent",
+        "preservative": "Preservative",
+        "carrier": "Carrier",
+        "excipient": "Excipient",
+        "capsule_shell": "Capsule Shell",
+        "other": "Other",
+    }
+    return mapping.get(value, value)
+
+
+def _psp_item_to_read_shape(item) -> dict:
+    """Render a :class:`PspItem` in the same read shape the local
+    ``ItemReadSerializer`` returns, so the picker component doesn't
+    need to care whether the row is PSP-live or locally-mirrored."""
+
+    return {
+        "id": item.uuid,
+        "name": item.name or "",
+        "internal_code": item.code or item.external_sku or "",
+        "unit": "",
+        "base_price": (
+            str(item.selling_price) if item.selling_price is not None else None
+        ),
+        "is_archived": not item.is_active,
+        "attributes": dict(item.attributes or {}),
+        "created_at": None,
+        "updated_at": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +281,70 @@ class ItemListCreateView(APIView):
             use_as_in = tuple(dict.fromkeys(canonicalised)) or None
         else:
             use_as_in = None
+
+        # PSP-source-of-truth branch: raw_materials / packaging /
+        # psp_mirror pickers read live from PSP. No fallback to the
+        # local table — a disconnected PSP surfaces as 503 so the
+        # picker's error banner renders.
+        if self.catalogue.slug in _PSP_BACKED_CATALOGUE_SLUGS:
+            item_types = _PSP_ITEM_TYPE_BY_SLUG.get(self.catalogue.slug)
+            use_as_values = list(use_as_in) if use_as_in else [None]
+            try:
+                collected: dict[str, object] = {}
+                for canonical in use_as_values:
+                    psp_use_as = (
+                        _psp_use_as_snake_to_title(canonical)
+                        if canonical
+                        else None
+                    )
+                    for item in list_psp_items_strict(
+                        organization=self.organization,
+                        search=search,
+                        item_types=item_types,
+                        use_as=psp_use_as,
+                    ):
+                        if not include_archived and not item.is_active:
+                            continue
+                        collected.setdefault(item.uuid, item)
+            except PspNotConfigured:
+                return Response(
+                    {
+                        "detail": "PSP integration is not connected for this organization. Configure it at Settings → Integrations.",
+                        "code": "psp_not_connected",
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            except (PspError, PspDecryptionFailed) as exc:
+                return Response(
+                    {
+                        "detail": f"Failed to fetch items from PSP: {exc}",
+                        "code": "psp_fetch_failed",
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+
+            raw_order = request.query_params.get("ordering", "name")
+            descending = raw_order.startswith("-")
+            field = raw_order.lstrip("-").lower()
+            if field not in {"name", "internal_code"}:
+                field = "name"
+                descending = False
+            results = sorted(
+                collected.values(),
+                key=lambda x: (
+                    (x.name or "").lower()
+                    if field == "name"
+                    else (x.code or x.external_sku or "").lower()
+                ),
+                reverse=descending,
+            )
+            return Response(
+                {
+                    "next": None,
+                    "previous": None,
+                    "results": [_psp_item_to_read_shape(x) for x in results],
+                }
+            )
 
         raw_order = request.query_params.get("ordering", "name")
         descending = raw_order.startswith("-")

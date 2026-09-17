@@ -1619,13 +1619,11 @@ export function FormulationBuilder({
   const [lines, setLines] = useState<BuilderLine[]>(
     linesFrom(initialFormulation),
   );
-  // Publish the live line set to any parent that subscribed — the
-  // cost calculator uses this so unsaved builder edits reflect in
-  // the pill without a network round-trip. Fires on mount + on every
-  // ``setLines`` write.
-  useEffect(() => {
-    onLinesChange?.(lines);
-  }, [lines, onLinesChange]);
+  // Emit useEffect lives further down (after ``bandPickLines`` is
+  // derived from metadata + the picker caches). Declaring it here
+  // would hit TDZ on the ``bandPickLines`` reference — search this
+  // file for ``onLinesChange?.([...lines, ...bandPickLines])`` to
+  // find the actual emit site.
   // Grams-side draft for the powder fill-weight input. The source
   // of truth stays on ``metadata.target_fill_weight_mg`` (mg, matches
   // the API); this local state just preserves what the scientist
@@ -1885,6 +1883,155 @@ export function FormulationBuilder({
     },
     [],
   );
+  // -----------------------------------------------------------------
+  // Cost calculator live feed for band picks.
+  //
+  // Band pickers (flavouring, colour, capsule shell, MCC carrier,
+  // anti-caking, gummy base, gelling, glazing, premix, acidity,
+  // powder carrier, DCP carrier, sweetener) update ``metadata.*_item_ids``
+  // + per-band name caches on every tick, but ``lines`` only refreshes
+  // after Save Version (linesFrom(updated) call). Cost calculator was
+  // therefore blind to unsaved picks — the operator saw "no cost" on
+  // every ingredient they'd just added until they saved.
+  //
+  // Fix: synthesize a lightweight band_pick BuilderLine for each id
+  // in ``metadata.*_item_ids`` that isn't already represented in
+  // ``lines`` (same band + same item), and merge them into the
+  // emission. Name / code / psp uuid come from ``pendingPicksCache``
+  // first (unified via ``mergePendingPicks``), then per-band caches
+  // as fallback. ``label_claim_mg`` defaults to "0" — band mg is
+  // derived by the compute path from the size / carrier math, not a
+  // per-line label claim, so 0 here is honest (the cost row still
+  // renders with the PSP unit-cost + a "band pick — mg derived from
+  // stage" note when the calculator supports it later).
+  // -----------------------------------------------------------------
+  type BandRegistryEntry = {
+    readonly field: keyof MetadataDraft;
+    readonly bandKey: string;
+  };
+  // ``bandKey`` values MUST match the backend's
+  // ``FormulationLine.BAND_KEY_CHOICES`` enum verbatim — the dedupe
+  // below compares synthesized-band keys against persisted-line
+  // keys, so any drift (e.g. "mcc_carrier" here vs "mcc" on the
+  // server) fires a phantom second row on the cost calculator once
+  // the line is saved. See ``apps/formulations/models.py`` for the
+  // canonical list.
+  const BAND_PICK_REGISTRY: readonly BandRegistryEntry[] = [
+    { field: "flavouring_item_ids", bandKey: "flavouring" },
+    { field: "colour_item_ids", bandKey: "colour" },
+    { field: "sweetener_item_ids", bandKey: "sweetener" },
+    { field: "capsule_shell_item_ids", bandKey: "capsule_shell" },
+    { field: "mcc_carrier_item_ids", bandKey: "mcc" },
+    { field: "dcp_carrier_item_ids", bandKey: "dcp" },
+    { field: "anti_caking_item_ids", bandKey: "anti_caking" },
+    { field: "powder_carrier_item_ids", bandKey: "powder_carrier" },
+    { field: "gummy_base_item_ids", bandKey: "gummy_base" },
+    { field: "gelling_item_ids", bandKey: "gelling" },
+    { field: "glazing_item_ids", bandKey: "glazing" },
+    { field: "premix_sweetener_item_ids", bandKey: "premix_sweetener" },
+    { field: "acidity_item_ids", bandKey: "acidity" },
+  ];
+
+  const bandPickLines = useMemo<BuilderLine[]>(() => {
+    // Already-present set — anything in ``lines`` with the same
+    // (band_key, item_id) is skipped so the emit doesn't double-count
+    // a persisted pick.
+    const already = new Set<string>();
+    for (const line of lines) {
+      const kind = (line as unknown as { source_kind?: string })
+        .source_kind;
+      if (kind === "band_pick") {
+        const bk = (line as unknown as { band_key?: string | null })
+          .band_key;
+        if (bk) already.add(`${bk}::${line.item_id}`);
+      }
+    }
+    // Best-effort lookup helper — checks the shared
+    // ``pendingPicksCache`` first, then falls through to each per-band
+    // name cache. Missing lookups still emit a row so the cost table
+    // shows the item id at minimum; the row will hydrate the moment
+    // any picker page refreshes its options.
+    const resolve = (
+      id: string,
+    ): {
+      name: string;
+      code: string;
+      pspUuid: string | null;
+    } => {
+      const shared = pendingPicksCache[id];
+      if (shared) {
+        return {
+          name: shared.name,
+          code: shared.code,
+          pspUuid: shared.pspSourceUuid,
+        };
+      }
+      const name =
+        capsuleShellNames[id] ??
+        mccCarrierNames[id] ??
+        antiCakingNames[id] ??
+        flavouringLive[id]?.name ??
+        sweetenerLive[id]?.name ??
+        colourLive[id]?.name ??
+        id;
+      const code =
+        capsuleShellCodes[id] ??
+        mccCarrierCodes[id] ??
+        antiCakingCodes[id] ??
+        "";
+      return { name, code, pspUuid: null };
+    };
+    const out: BuilderLine[] = [];
+    for (const entry of BAND_PICK_REGISTRY) {
+      const ids = (metadata[entry.field] as readonly string[] | undefined) ?? [];
+      for (const id of ids) {
+        if (already.has(`${entry.bandKey}::${id}`)) continue;
+        const { name, code, pspUuid } = resolve(id);
+        out.push({
+          key: `pending-band:${entry.bandKey}:${id}`,
+          item_id: id,
+          item_name: name,
+          item_internal_code: code,
+          item_psp_source_uuid: pspUuid,
+          item_attributes: {},
+          label_claim_mg: "0",
+          purity_override: "",
+          overage_override: "",
+          extract_ratio_override: "",
+          display_order: 10_000 + out.length,
+          stage_id: null,
+          source_kind: "band_pick",
+          band_key: entry.bandKey,
+          stage_ratio_mode: "none",
+          stage_ratio_value: "",
+          item_unit: "",
+        });
+      }
+    }
+    return out;
+  }, [
+    lines,
+    metadata,
+    pendingPicksCache,
+    capsuleShellNames,
+    capsuleShellCodes,
+    mccCarrierNames,
+    mccCarrierCodes,
+    antiCakingNames,
+    antiCakingCodes,
+    flavouringLive,
+    sweetenerLive,
+    colourLive,
+  ]);
+
+  // Publish the live line set to any parent that subscribed — the
+  // cost calculator uses this so unsaved builder edits reflect in
+  // the pill without a network round-trip. Fires on mount + on every
+  // ``setLines`` write AND on every band-picker change.
+  useEffect(() => {
+    onLinesChange?.([...lines, ...bandPickLines]);
+  }, [lines, bandPickLines, onLinesChange]);
+
   //: Raw text from the picker input — updates on every keystroke.
   const [searchInput, setSearchInput] = useState("");
   //: Debounced query that drives the picker cache key. Lags by 200ms.
@@ -3723,9 +3870,16 @@ export function FormulationBuilder({
       items: ReadonlyArray<{
         readonly id: string;
         readonly name: string;
+        readonly internal_code: string;
+        readonly psp_source_uuid: string | null;
         readonly attributes?: Readonly<Record<string, unknown>>;
       }>,
     ) => {
+      // Feed the shared picker cache so the cost calculator sees the
+      // pick on the same render (psp uuid for price lookup, name /
+      // code for the row label). Prevents the "picked but not
+      // costed" gap until Save Version fires.
+      mergePendingPicks(items);
       setter((prev) => {
         const next = { ...prev };
         for (const it of items) {
@@ -5644,6 +5798,10 @@ export function FormulationBuilder({
                 setMetadata({ ...metadata, capsule_shell_item_ids: ids })
               }
               onPickedItemsChange={(items) => {
+                // Feed the shared picker cache so the cost calculator
+                // sees fresh picks on the same render (psp uuid for
+                // price lookup, name / code for the row label).
+                mergePendingPicks(items);
                 setCapsuleShellNames((prev) => {
                   const next = { ...prev };
                   for (const it of items) next[it.id] = it.name;
@@ -5689,6 +5847,7 @@ export function FormulationBuilder({
                 setMetadata({ ...metadata, mcc_carrier_item_ids: ids })
               }
               onPickedItemsChange={(items) => {
+                mergePendingPicks(items);
                 setMccCarrierNames((prev) => {
                   // Merge so previously-known names survive even when
                   // the picker page is currently scrolled past them.
@@ -5755,6 +5914,7 @@ export function FormulationBuilder({
                 setMetadata({ ...metadata, anti_caking_item_ids: ids })
               }
               onPickedItemsChange={(items) => {
+                mergePendingPicks(items);
                 setAntiCakingNames((prev) => {
                   const next = { ...prev };
                   for (const it of items) next[it.id] = it.name;
@@ -5922,6 +6082,7 @@ export function FormulationBuilder({
                 setMetadata({ ...metadata, acidity_item_ids: ids })
               }
               onPickedItemsChange={(items) => {
+                mergePendingPicks(items);
                 setAcidityLive((prev) => {
                   const next = { ...prev };
                   for (const it of items) {
@@ -5989,6 +6150,7 @@ export function FormulationBuilder({
                 setMetadata({ ...metadata, anti_caking_item_ids: ids })
               }
               onPickedItemsChange={(items) => {
+                mergePendingPicks(items);
                 setAntiCakingNames((prev) => {
                   const next = { ...prev };
                   for (const it of items) next[it.id] = it.name;
@@ -6028,6 +6190,7 @@ export function FormulationBuilder({
                 setMetadata({ ...metadata, powder_carrier_item_ids: ids })
               }
               onPickedItemsChange={(items) => {
+                mergePendingPicks(items);
                 // Bare item names only -- the grouping helper wraps
                 // them in "Carrier (...)" outside this cache.
                 setPowderCarrierNames((prev) => {
@@ -6078,6 +6241,7 @@ export function FormulationBuilder({
                 setMetadata({ ...metadata, acidity_item_ids: ids })
               }
               onPickedItemsChange={(items) => {
+                mergePendingPicks(items);
                 // Gummy doesn't read the dose rate, but it still
                 // benefits from a live label cache so toggling a
                 // pick updates the brackets in the totals panel

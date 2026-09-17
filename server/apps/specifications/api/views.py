@@ -27,6 +27,12 @@ from apps.specifications.api.serializers import (
     SpecificationCustomerAcceptSerializer,
 )
 from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
+from apps.psp.services import (
+    PspError,
+    PspNotConfigured,
+    PspDecryptionFailed,
+    list_psp_items_strict,
+)
 from apps.specifications.models import SpecificationSheet
 from apps.formulations.services import (
     SpecSheetBuilderIncomplete as _SpecSheetBuilderIncomplete,
@@ -806,27 +812,21 @@ _PACKAGING_MAX_LIMIT = 200
 class SpecificationPackagingOptionsView(APIView):
     """``GET`` ``/.../specifications/packaging-options/``.
 
-    Server-side search across the org's packaging catalogue,
-    scoped to one slot at a time. Query parameters:
+    PSP-live packaging picker — reads the org's packaging items from
+    PSP directly (never the local catalogue), scoped to one spec-sheet
+    slot at a time. Query parameters:
 
     - ``slot`` (required) — one of the four packaging slots.
-    - ``search`` (optional) — substring matched case-insensitively
-      against ``name`` and ``internal_code``.
-    - ``limit`` (optional) — page size, defaults to 50, clamped to 200.
+    - ``search`` (optional) — passed through to PSP's ``search`` filter.
+    - ``limit`` (optional) — client-side page cap (defaults to 50, max 200).
 
-    The endpoint deliberately returns only what the caller asks
-    for: at catalogue scale (potentially millions of packaging
-    rows across orgs) shipping everything at once is a non-starter
-    for both the wire and the browser. The picker component on the
-    client debounces ``search`` keystrokes so the typing latency is
-    a single round-trip per pause.
-
-    Performance note: the underlying filter joins on the ``(catalogue,
-    name)`` index for the ORDER + LIMIT, then filters
-    ``attributes->>'packaging_type'`` in-memory. For tenants pushing
-    past ~100K packaging rows, the long-term fix is to denormalise
-    ``packaging_type`` to a real column so a composite index picks up
-    the full predicate — tracked out of band, not blocking F4.1.
+    Behaviour is deliberately strict: if the org's PSP integration is
+    not connected (or the wire call fails), the endpoint returns 503
+    with a structured error so the client can render a "PSP is not
+    reachable" banner. There is **no** fallback to the local packaging
+    catalogue — PSP is the sole source of truth when connected. The
+    picker returns each item's PSP UUID as ``id``; the save endpoint
+    mirrors it into the local ``psp_mirror`` catalogue on click.
     """
 
     permission_classes = (HasSpecificationsPermission,)
@@ -849,36 +849,46 @@ class SpecificationPackagingOptionsView(APIView):
             raw_limit = _PACKAGING_DEFAULT_LIMIT
         limit = max(1, min(raw_limit, _PACKAGING_MAX_LIMIT))
 
-        catalogue = Catalogue.objects.filter(
-            organization=self.organization, slug=PACKAGING_SLUG
-        ).first()
-        if catalogue is None:
-            return Response({"results": [], "slot": slot, "limit": limit})
-
-        queryset = Item.objects.filter(
-            catalogue=catalogue,
-            is_archived=False,
-            attributes__packaging_type=expected_type,
-        )
-        if search:
-            from django.db.models import Q
-
-            queryset = queryset.filter(
-                Q(name__icontains=search)
-                | Q(internal_code__icontains=search)
+        try:
+            psp_items = list_psp_items_strict(
+                organization=self.organization,
+                search=search or None,
+                item_types=["packaging"],
             )
-        items = list(
-            queryset.order_by("name").values("id", "name", "internal_code")[
-                :limit
-            ]
-        )
+        except PspNotConfigured:
+            return Response(
+                {
+                    "detail": "PSP integration is not connected for this organization. Configure it at Settings → Integrations.",
+                    "code": "psp_not_connected",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except (PspError, PspDecryptionFailed) as exc:
+            return Response(
+                {
+                    "detail": f"Failed to fetch packaging from PSP: {exc}",
+                    "code": "psp_fetch_failed",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        # PSP items are only tagged with the coarse item_type='packaging'
+        # bucket + a sub-type in attributes.packaging_type. Filter to the
+        # slot the client asked for so a "closure" slot doesn't get
+        # offered material-class containers.
+        matched = [
+            item
+            for item in psp_items
+            if (item.attributes or {}).get("packaging_type") == expected_type
+        ]
+        matched.sort(key=lambda x: (x.name or "").lower())
         results = [
             {
-                "id": str(row["id"]),
-                "name": row["name"],
-                "internal_code": row["internal_code"],
+                "id": item.uuid,
+                "name": item.name,
+                "internal_code": item.code or item.external_sku or "",
             }
-            for row in items
+            for item in matched[:limit]
         ]
         return Response({"results": results, "slot": slot, "limit": limit})
 
