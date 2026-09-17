@@ -1936,15 +1936,33 @@ def _build_final_spec(
         (getattr(source_draft, "code", "") or "").strip()
         or (formulation.code or "").strip()
     )
-    # Prefer whatever cost the source draft already had (a director
-    # may have overridden the auto-populate at approval); fall back to
-    # a fresh compute against the pinned version so the FINAL doesn't
-    # ship empty when no draft existed to seed from.
-    source_unit_cost = (
-        getattr(source_draft, "unit_cost", None) if source_draft else None
-    )
+    # Always recompute the unit cost fresh against the pinned version
+    # at FINAL-generation time. Trial batches between the source
+    # draft and this FINAL can heal the routing cycle time on PSP
+    # (see ``Backend.Production.RoutingHealer``), and raw-material
+    # unit costs can drift with new PO prices too — the previous
+    # behaviour copied ``source_draft.unit_cost`` verbatim, so the
+    # director would sign off on a stale number.
+    #
+    # Preserves the source draft's ``margin_percent`` (director's
+    # markup intent) and re-derives ``final_price`` further down from
+    # the fresh cost. If the PSP hop fails for any reason we silent-
+    # fallback to the source draft's cost so a fresh FINAL never
+    # ships blank during a transient outage.
+    fresh_unit_cost = None
+    try:
+        fresh_unit_cost = compute_unit_cost_for_version(formulation_version)
+    except Exception:  # noqa: BLE001 — never block spec generation on a PSP hiccup.
+        logger.exception(
+            "final-spec: fresh unit-cost compute failed for version %s; "
+            "falling back to source-draft cost.",
+            getattr(formulation_version, "pk", None),
+        )
+    source_unit_cost = fresh_unit_cost
     if source_unit_cost is None:
-        source_unit_cost = compute_unit_cost_for_version(formulation_version)
+        source_unit_cost = (
+            getattr(source_draft, "unit_cost", None) if source_draft else None
+        )
 
     # Auto-seed packaging FK slots from the formulation's current
     # manual packaging picks. Reads the LIVE formulation (not the
@@ -2004,6 +2022,32 @@ def _build_final_spec(
         else _copy_or_default("cover_notes")
     )
 
+    # Derive the FINAL's price from the fresh cost + the source
+    # draft's margin. Only recomputes when we have both — falls back
+    # to the source draft's price if margin is missing (nothing to
+    # apply) or if we didn't get a fresh cost (PSP hiccup — see
+    # source_unit_cost fallback above). A blank margin here becomes
+    # the director's cue to set one before signing off.
+    resolved_margin = (
+        getattr(source_draft, "margin_percent", None) if source_draft else None
+    )
+    if (
+        source_unit_cost is not None
+        and resolved_margin is not None
+        and fresh_unit_cost is not None
+    ):
+        try:
+            from apps.proposals.services import suggest_unit_price
+            resolved_final_price = suggest_unit_price(source_unit_cost, resolved_margin)
+        except Exception:  # noqa: BLE001 — fall through to source-draft price.
+            resolved_final_price = (
+                getattr(source_draft, "final_price", None) if source_draft else None
+            )
+    else:
+        resolved_final_price = (
+            getattr(source_draft, "final_price", None) if source_draft else None
+        )
+
     sheet = SpecificationSheet.objects.create(
         organization=organization,
         formulation_version=formulation_version,
@@ -2012,12 +2056,8 @@ def _build_final_spec(
         client_email=_copy_or_default("client_email"),
         client_company=_copy_or_default("client_company"),
         unit_cost=source_unit_cost,
-        margin_percent=getattr(source_draft, "margin_percent", None)
-        if source_draft
-        else None,
-        final_price=getattr(source_draft, "final_price", None)
-        if source_draft
-        else None,
+        margin_percent=resolved_margin,
+        final_price=resolved_final_price,
         quantity=resolved_quantity,
         currency=getattr(source_draft, "currency", "GBP")
         if source_draft

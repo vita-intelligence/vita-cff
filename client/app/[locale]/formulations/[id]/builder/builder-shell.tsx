@@ -70,6 +70,7 @@ export function BuilderShell({
         workstation_group_name: stage.workstation_group_name ?? "",
         setup_time_min: stage.setup_time_min,
         cycle_time_min: stage.cycle_time_min,
+        capacity: stage.capacity,
         fixed_cost: stage.fixed_cost,
         variable_cost: stage.variable_cost,
         other_fixed_cost: stage.other_fixed_cost,

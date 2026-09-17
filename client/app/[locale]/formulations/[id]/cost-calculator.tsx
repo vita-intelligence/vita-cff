@@ -83,6 +83,10 @@ export interface CostCalculatorStage {
   readonly workstation_group_name: string;
   readonly setup_time_min: string | null;
   readonly cycle_time_min: string | null;
+  //: Units produced per cycle (batch size). Divides ``cycle_time_min``
+  //: in the per-unit cost so this preview matches PSP's authoritative
+  //: costing (``payloads.ex step_duration_seconds``). Null → 1.
+  readonly capacity: string | null;
   readonly fixed_cost: string | null;
   readonly variable_cost: string | null;
   readonly other_fixed_cost: string | null;
@@ -379,10 +383,16 @@ function deriveRouting(
       // Prefer measured throughput; fall back to declared cycle time.
       let cycleSeconds = 0;
       if (wsgCost.avg_seconds_per_unit !== null) {
+        // Historical avg from PSP is already per-unit.
         cycleSeconds = parseDecimal(wsgCost.avg_seconds_per_unit);
         source = "workstation_history";
       } else {
-        cycleSeconds = parseDecimal(stage.cycle_time_min) * 60;
+        // Authored cycle_time_min is per-CYCLE (per capacity units).
+        // Divide by capacity so this stays per-unit — matches PSP's
+        // step_duration_seconds formula (cycle_min × qty / capacity).
+        // Capacity defaults to 1 (single-unit output) when blank.
+        const capacity = parseDecimal(stage.capacity) || 1;
+        cycleSeconds = (parseDecimal(stage.cycle_time_min) * 60) / capacity;
         source = "workstation_default";
       }
 

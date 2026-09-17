@@ -1399,9 +1399,19 @@ class FormulationStage(models.Model):
         null=True,
         blank=True,
     )
-    #: Number of parallel workstations available for this operation.
-    #: Mirrors PSP's ``routing_step.capacity`` — the scheduler uses
-    #: it to cap concurrent operator time. Positive-only.
+    #: Units produced per single cycle of this operation — the
+    #: *batch size*, not machine parallelism. Encapsulator that
+    #: presses 300 caps at a time → 300 (with cycle_time_min = the
+    #: per-press time). Manual per-unit ops like bottle labelling
+    #: → 1 (with cycle_time_min = the per-bottle time).
+    #:
+    #: Total step time is ``setup_time_min + cycle_time_min × qty /
+    #: capacity``. Mirrors PSP's ``routing_step.capacity`` field
+    #: 1-for-1. Machine parallelism is derived elsewhere from the
+    #: number of active workstations in the target group.
+    #:
+    #: Nullable — treated as 1 (single-unit output) when unset, which
+    #: is the correct default for the vast majority of manual ops.
     capacity = models.DecimalField(
         _("capacity"),
         max_digits=10,

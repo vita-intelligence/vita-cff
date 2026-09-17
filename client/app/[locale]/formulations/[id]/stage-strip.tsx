@@ -1389,7 +1389,7 @@ export function StageStrip({
                   ("Blending — Vitamin C batch") when helpful. Kind
                   auto-derives from workstation name; no dropdown. */}
               <div className="flex items-start justify-between gap-3">
-                <div className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.6fr)_minmax(0,0.6fr)]">
+                <div className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.7fr)]">
                   <div>
                     <label className="text-xs font-medium text-ink-600">
                       Stage {i + 1}
@@ -1509,7 +1509,10 @@ export function StageStrip({
                   </div>
 
                   <div>
-                    <label className="text-xs font-medium text-ink-600">
+                    <label
+                      className="text-xs font-medium text-ink-600"
+                      title="Time for ONE cycle. Encapsulator making 300 caps per 3 min press → 3. Manual op on one bottle → the per-bottle time."
+                    >
                       Cycle (min)
                     </label>
                     <input
@@ -1520,6 +1523,27 @@ export function StageStrip({
                         })
                       }
                       inputMode="decimal"
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1`}
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      className="text-xs font-medium text-ink-600"
+                      title="Units produced per cycle (batch size). Encapsulator pressing 300 caps at a time → 300. Single-unit ops like bottle labelling → 1. Leave blank for 1."
+                    >
+                      Capacity (units / cycle)
+                    </label>
+                    <input
+                      value={draft.capacity}
+                      onChange={(e) =>
+                        updateDraft(draft.clientKey, {
+                          capacity: e.target.value,
+                        })
+                      }
+                      inputMode="decimal"
+                      placeholder="1"
                       disabled={!canEdit || upsert.isPending}
                       className={`${inputClass} mt-1`}
                     />
