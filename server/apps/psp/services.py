@@ -5567,6 +5567,43 @@ def _bom_lines_from(
         # the qty rides through the converter unchanged and lands
         # with a real UoM tag on PSP.
         target_symbol = _unit_symbol_for(item) or None
+        # When the local mirror carries no ``unit`` (common on PSP-
+        # mirrored raw materials — the mirror only projects
+        # attributes, not the PSP stock_uom row), reach into PSP for
+        # the item's stock_uom so we know its dimension. Load-bearing
+        # for count-dimension parts (capsule shells, bottles, closures,
+        # labels): NPD compute always emits ``mg`` on the actives
+        # branch, so without knowing the target is count we'd default
+        # to mass-normalisation and PSP's BOMLine changeset rejects
+        # the mismatch (``unit dimension (mass) doesn't match part's
+        # stock UoM (count)``).
+        target_dimension: str | None = None
+        if not target_symbol and getattr(item, "psp_source_uuid", None):
+            psp_target = _get_psp_item_cached(
+                client, organization, item.psp_source_uuid
+            )
+            stock_uom = getattr(psp_target, "stock_uom_symbol", None) or (
+                (getattr(psp_target, "stock_uom", None) or {}).get("symbol")
+                if isinstance(getattr(psp_target, "stock_uom", None), dict)
+                else None
+            )
+            if stock_uom:
+                target_symbol = str(stock_uom).strip().lower() or None
+            dim = getattr(psp_target, "stock_uom_dimension", None) or (
+                (getattr(psp_target, "stock_uom", None) or {}).get("dimension")
+                if isinstance(getattr(psp_target, "stock_uom", None), dict)
+                else None
+            )
+            if dim:
+                target_dimension = str(dim).strip().lower()
+        # Belt-and-braces: if we have a target_symbol but no dimension
+        # yet, resolve dimension via PSP's UoM catalog so downstream
+        # count-handling still kicks in for locally-mirrored items
+        # that DID carry a ``unit`` string.
+        if target_dimension is None and target_symbol:
+            info = _psp_unit_info_for(client, organization, target_symbol)
+            if isinstance(info, dict) and info.get("dimension"):
+                target_dimension = str(info["dimension"]).strip().lower()
 
         # Per-output-unit lines: manual pick with stage_ratio_mode =
         # per_unit (packaging pouches, labels, caps — 1 per pack, NOT
@@ -5631,6 +5668,42 @@ def _bom_lines_from(
                 continue
             source_qty = Decimal(str(raw_qty)) * servings
             source_symbol = "mg"
+
+            # Count-dimension target (capsule shell, bottle, closure,
+            # label, ...): NPD compute wrote the shell's per-serving
+            # PIECE count into ``mg_per_serving_cached`` as
+            # ``per_piece_mass_mg × piece_count`` (usual band-pick
+            # convention). Divide out the per-piece mass so we ship
+            # pieces, not mass. ``attributes.shell_weight_mg`` on the
+            # item is the authoritative per-piece mass; when it's
+            # missing (non-shell count items — labels, closures — that
+            # never have a shell_weight attribute) fall through to a
+            # per-serving count of 1 * servings, which matches the
+            # domain invariant "one physical piece per finished
+            # serving" for label / closure / bottle picks.
+            if target_dimension == "count":
+                per_piece_mg_raw = attrs.get("shell_weight_mg")
+                per_piece_mg: Decimal | None = None
+                if per_piece_mg_raw not in (None, ""):
+                    try:
+                        per_piece_mg = Decimal(str(per_piece_mg_raw))
+                        if per_piece_mg <= 0:
+                            per_piece_mg = None
+                    except (InvalidOperation, TypeError, ValueError):
+                        per_piece_mg = None
+                if per_piece_mg is not None:
+                    source_qty = source_qty / per_piece_mg
+                else:
+                    # Fall back to "1 piece per serving" → servings
+                    # per parent stock unit. Matches the physical
+                    # reality for label / closure / bottle picks.
+                    source_qty = Decimal("1") * servings
+                source_symbol = "pcs"
+                # Force target so the converter maps to pcs (or the
+                # item's real count symbol like "unit"/"ea") instead
+                # of defaulting to mass-base.
+                if not target_symbol:
+                    target_symbol = "pcs"
 
         qty, _sym, uom_uuid = _convert_qty_to_target(
             source_qty,
@@ -6278,6 +6351,35 @@ def _push_staged_cascade(
         (s for s in stages if s.psp_item_type == "finished_product"),
         stages[-1],
     )
+
+    # Live workstation-group snapshot from PSP.
+    #
+    # Historical bug: NPD stored the workstation_group UUID at pick
+    # time. When the PSP DB was reseeded (dev flows, disaster recovery)
+    # the stored UUIDs went stale — every subsequent routing PUT then
+    # 422'd on ``workstation_group_uuid ... not found`` and silently
+    # degraded, leaving MOs without a routing_id and invisible from
+    # vita-perf's Jobs list. Self-heal here: pull PSP's live groups
+    # ONCE per push, name-match the stage's stored group, and rewrite
+    # the stage's stored uuid to the fresh one before the routing PUT
+    # goes out. Silent-degrades on any PSP failure — the stage keeps
+    # its stored uuid and the routing PUT tries with what NPD has.
+    live_wsg_by_uuid: dict[str, str] = {}
+    live_wsg_uuid_by_name: dict[str, str] = {}
+    try:
+        for row in client.list_workstation_groups() or []:
+            uuid = str(row.get("uuid") or "").strip()
+            name = str(row.get("name") or "").strip()
+            if uuid:
+                live_wsg_by_uuid[uuid] = name
+            if name:
+                live_wsg_uuid_by_name[name.lower()] = uuid
+    except PspError:
+        logger.exception(
+            "PSP push_routing: list_workstation_groups pre-flight failed "
+            "for formulation %s. Falling back to stored uuids (may 422).",
+            formulation.pk,
+        )
     previous_semi_uuid: str | None = None
     # Track the previous stage's declared stock UoM uuid so the parent
     # stage's BOM line for the semi-finished input can be tagged with
@@ -6578,6 +6680,36 @@ def _push_staged_cascade(
             _stringify_decimal = (
                 lambda v: str(v) if v is not None else None  # noqa: E731
             )
+            # Self-heal a stale workstation_group_uuid against the
+            # snapshot we grabbed from PSP at the top of the cascade.
+            # If PSP no longer knows the stored uuid but has a live
+            # group with the same name, swap in the fresh uuid and
+            # persist it back on the stage so subsequent pushes hit
+            # the fast path.
+            group_uuid_str = str(stage.workstation_group_uuid)
+            if live_wsg_by_uuid and group_uuid_str not in live_wsg_by_uuid:
+                stored_name = (
+                    (stage.workstation_group_name or "").strip().lower()
+                )
+                fresh_uuid = (
+                    live_wsg_uuid_by_name.get(stored_name)
+                    if stored_name
+                    else None
+                )
+                if fresh_uuid and fresh_uuid != group_uuid_str:
+                    logger.info(
+                        "PSP push_routing: stage %s (%s) stored workstation_group_uuid "
+                        "%s not found on PSP — self-healing to %s "
+                        "(matched by name %r).",
+                        stage.id,
+                        stage_label,
+                        group_uuid_str,
+                        fresh_uuid,
+                        stage.workstation_group_name,
+                    )
+                    stage.workstation_group_uuid = fresh_uuid
+                    stage.save(update_fields=["workstation_group_uuid"])
+                    group_uuid_str = fresh_uuid
             try:
               client.put_routing(
                 output_uuid,
@@ -6591,7 +6723,7 @@ def _push_staged_cascade(
                 ),
                 steps=[
                     {
-                        "workstation_group_uuid": str(stage.workstation_group_uuid),
+                        "workstation_group_uuid": group_uuid_str,
                         "sort_order": 0,
                         # Prefer the operator-authored description;
                         # fall back to the stage label so shop-floor
