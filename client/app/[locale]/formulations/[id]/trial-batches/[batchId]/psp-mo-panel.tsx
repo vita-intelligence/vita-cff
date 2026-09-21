@@ -156,9 +156,19 @@ function CreateMoModal({
   // from the batch's stored values so an already-picked identity
   // stays sticky on re-open; new/never-committed batches default to
   // "sample" + no combo.
-  const [kind, setKind] = useState<"trial" | "sample">(
-    batch.kind === "trial" ? "trial" : "sample",
-  );
+  //
+  // TEMPORARY (until trial path is retested end-to-end): force
+  // ``kind = "sample"`` regardless of the batch's stored value and
+  // remove the trial option from the picker below. Trial batches
+  // exist and the BE still accepts ``kind: "trial"``, but the
+  // scientist can't opt into it from the FE until we've validated
+  // the bench-scale MO → PSP → closeout → return-to-pool loop.
+  // Restore by (a) re-adding ``["trial", "Trial"]`` to the radio
+  // options array and (b) reseeding this state from ``batch.kind``.
+  const [kind, setKind] = useState<"trial" | "sample">("sample");
+  // Silence the eslint unused-var warning while the picker only
+  // offers one option — setter is preserved for the re-enable path.
+  void setKind;
   const [packagingComboId, setPackagingComboId] = useState<string>(
     batch.packaging_combo_id ?? "",
   );
@@ -206,6 +216,19 @@ function CreateMoModal({
       setWarehouseUuid(warehouses[0].uuid);
     }
   }, [warehouseUuid, warehouses]);
+
+  // Individual-units size mode is by definition bulk output — a
+  // handful of loose capsules for QC, not a shelf-ready pack. Force
+  // ``packaging_combo_id`` to "" (No packaging) whenever the mode
+  // flips to units so a stale combo pick from a previous "Complete
+  // packs" attempt doesn't ride along on the submit. The combo
+  // picker below also hides in units mode so the constraint is
+  // visible rather than silent.
+  useEffect(() => {
+    if (sizeMode === "units" && packagingComboId !== "") {
+      setPackagingComboId("");
+    }
+  }, [sizeMode, packagingComboId]);
 
   const servingsPerPack = Math.max(1, batch.servings_per_pack ?? 1);
   // Reads the LIVE ``kind`` state (not the batch's stored value)
@@ -344,12 +367,13 @@ function CreateMoModal({
         ) : null}
 
         <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-4">
-          {/* Kind — trial (bench-scale, no packaging) vs sample
-              (customer-path packed run). Was on Plan-Batch; moved
-              here so scientists pick it once at commit-to-produce
-              time instead of twice. Batch's stored kind still seeds
-              the initial state so an already-committed batch's
-              second MO defaults to the same identity. */}
+          {/* Kind picker — temporarily locked to Sample only while
+              the Trial (bench-scale, no packaging) path is being
+              re-validated end-to-end. Radio group intentionally
+              retains a single option so the constraint is visible
+              rather than silent, and re-enabling later is one line
+              (add ``["trial", "Trial"]`` back to the array + reseed
+              the ``kind`` state from ``batch.kind``). */}
           <fieldset className="flex flex-col gap-1.5">
             <legend className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-700">
               <FlaskConical className="h-3 w-3 text-ink-500" />
@@ -358,7 +382,6 @@ function CreateMoModal({
             <div className="flex flex-wrap gap-2">
               {(
                 [
-                  ["trial", "Trial"],
                   ["sample", "Sample"],
                 ] as const
               ).map(([value, label]) => (
@@ -375,7 +398,7 @@ function CreateMoModal({
                     name="psp-mo-kind"
                     value={value}
                     checked={kind === value}
-                    onChange={() => setKind(value)}
+                    readOnly
                     className="sr-only"
                   />
                   {label}
@@ -383,17 +406,38 @@ function CreateMoModal({
               ))}
             </div>
             <p className="text-[10px] text-ink-500">
-              {kind === "trial"
-                ? `Bench-scale test — quantity below is individual ${unitPlural} (not packs). Bypasses PSP's Final Release, no packaging combo.`
-                : "Customer-sample production with a picked packaging combo. Follows the full commercial release path."}
+              Customer-sample production with a picked packaging combo.
+              Follows the full commercial release path.
             </p>
           </fieldset>
 
-          {/* Packaging combo — only when kind=sample. Fetched from
-              the formulation's ``packaging_combos`` endpoint the
-              first time the sample tab is shown. Empty state points
-              at the Builder → Routing tab where combos get defined. */}
-          {kind === "sample" ? (
+          {/* Packaging combo — only when kind=sample AND the size
+              mode isn't Individual units. Units mode is by
+              definition bulk output (a handful of loose caps for
+              QC), so the combo choice is forced to "No packaging"
+              via the effect above; we hide the picker here and
+              show a compact "No packaging (individual units)"
+              explainer so the constraint is visible rather than
+              silent. Empty state on the picker itself points at
+              the Builder → Routing tab where combos get defined. */}
+          {kind === "sample" && sizeMode === "units" ? (
+            <fieldset className="flex flex-col gap-1.5">
+              <legend className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-700">
+                <Layers className="h-3 w-3 text-ink-500" />
+                Packaging combo
+              </legend>
+              <div className="rounded-lg bg-ink-50 px-3 py-2 text-[11px] text-ink-600 ring-1 ring-inset ring-ink-200">
+                <span className="font-medium text-ink-1000">
+                  No packaging
+                </span>
+                <span className="ml-1">
+                  — locked while the quantity is individual{" "}
+                  {unitPlural}. MO produces loose bulk output for QC.
+                </span>
+              </div>
+            </fieldset>
+          ) : null}
+          {kind === "sample" && sizeMode !== "units" ? (
             <fieldset className="flex flex-col gap-1.5">
               <legend className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-700">
                 <Layers className="h-3 w-3 text-ink-500" />
