@@ -2034,6 +2034,14 @@ def create_portal_rtg_submission(
         unit_price=unit_price,
         material_cost_per_pack=material_cost_positive,
         margin_percent=margin_percent,
+        # RTG orders always invoice at 100% — the storefront flow has
+        # no trials to unlock and no FINAL-spec sign to trigger a
+        # remainder invoice, so the model default (50%) would leave
+        # the second half stranded. Sibling ``_create_line_proposal``
+        # in the cart checkout path does the same pin. ``Proposal.save``
+        # also clamps this for RTG as a safety net; setting it
+        # explicitly here keeps the audit before/after honest.
+        deposit_percent=Decimal("100"),
         cover_notes=(payload.notes or "").strip(),
         created_by=proposal_actor,
         updated_by=proposal_actor,

@@ -667,6 +667,42 @@ class Proposal(models.Model):
     def __str__(self) -> str:
         return self.code or str(self.id)
 
+    def save(self, *args, **kwargs):
+        """Clamp ``deposit_percent`` to 100 whenever the proposal is
+        a Ready-to-Go order.
+
+        RTG orders are commercially always-100%: the storefront flow
+        has no trial-batch cycle and no FINAL-spec sign, so the
+        FINAL-invoice path never fires. A 50% deposit_percent (the
+        model default, aimed at Custom quotes) leaves the second half
+        of the money stranded — finance issues an invoice for half
+        the value, the customer pays it, and the remaining balance
+        never gets asked for.
+
+        Every write path SHOULD set 100 explicitly (portal cart
+        checkout, single-SKU RTG submit, reorder submit), but a
+        model-level clamp catches any future write we forget:
+        admin-panel edit, PATCH from the general update endpoint,
+        data-migration script, test fixture. Also normalises the
+        edge where a Custom proposal has its ``template_type``
+        flipped to RTG later — deposit_percent gets re-clamped on
+        that save without a separate reconciliation step.
+
+        Clamp is silent by design (log-only, no exception) so
+        callers that pass 50 in error still see the proposal land;
+        the audit trail records the ``after=100`` value so the
+        override is traceable.
+        """
+
+        from decimal import Decimal
+
+        if self.template_type == ProposalTemplateType.READY_TO_GO.value:
+            hundred = Decimal("100")
+            current = self.deposit_percent
+            if current is None or Decimal(current) != hundred:
+                self.deposit_percent = hundred
+        return super().save(*args, **kwargs)
+
     @property
     def subtotal(self):
         """Sum of line subtotals when the proposal has any lines —
