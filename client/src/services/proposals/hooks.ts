@@ -36,6 +36,7 @@ import {
   patchProposalLine,
   sendProposalTestEmail,
   sendProposalToClient,
+  setProposalAdditionalSalesPeople,
   transitionProposalStatus,
   updateProposal,
 } from "./api";
@@ -462,6 +463,33 @@ export function useDeleteProposal(
   return useMutation<void, ApiError, string>({
     mutationFn: (proposalId) => deleteProposal(orgId, proposalId),
     onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: [rootQueryKey, "proposals", orgId],
+      });
+    },
+  });
+}
+
+
+/**
+ * Replace the proposal's ``additional_sales_people`` M2M. Argument
+ * is the full desired list of user ids; empty array clears the M2M.
+ * Success updates the cached proposal detail so the chip strip
+ * re-renders without a refetch.
+ */
+export function useSetProposalAdditionalSalesPeople(
+  orgId: string,
+  proposalId: string,
+): UseMutationResult<ProposalDto, ApiError, readonly string[]> {
+  const queryClient = useQueryClient();
+  return useMutation<ProposalDto, ApiError, readonly string[]>({
+    mutationFn: (userIds) =>
+      setProposalAdditionalSalesPeople(orgId, proposalId, userIds),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        proposalsQueryKeys.detail(orgId, proposalId),
+        updated,
+      );
       queryClient.invalidateQueries({
         queryKey: [rootQueryKey, "proposals", orgId],
       });

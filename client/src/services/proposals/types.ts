@@ -102,6 +102,18 @@ export interface ProposalDto {
   //: another endpoint.
   readonly effective_sales_person_id: string | null;
   readonly effective_sales_person_name: string;
+  //: Extra members who worked on the deal alongside the primary
+  //: owner. Purely informational — the primary ``sales_person``
+  //: still owns every other render (contract footer, PDF, PSP
+  //: payload, activity feed). Surfaced only on the proposal detail
+  //: page's "Additional sales people" section. Guaranteed to
+  //: exclude the primary ``sales_person_id``; backend refuses to
+  //: write a row that would overlap.
+  readonly additional_sales_people: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly email: string;
+  }[];
   readonly currency: string;
   readonly quantity: number;
   readonly unit_price: string | null;

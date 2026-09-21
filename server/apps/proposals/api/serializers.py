@@ -137,6 +137,12 @@ class ProposalReadSerializer(serializers.ModelSerializer):
     #: second round-trip to fetch the formulation.
     effective_sales_person_id = serializers.SerializerMethodField()
     effective_sales_person_name = serializers.SerializerMethodField()
+    #: Additional sales people who worked on the deal alongside the
+    #: primary owner. Purely informational — the primary
+    #: ``sales_person`` FK stays the singular render on every other
+    #: surface (PDF footer, contract card, PSP payload, activity
+    #: feed). Ordered by name so the FE doesn't have to re-sort.
+    additional_sales_people = serializers.SerializerMethodField()
     lines = ProposalLineReadSerializer(many=True, read_only=True)
     subtotal = serializers.SerializerMethodField()
     total_excl_vat = serializers.SerializerMethodField()
@@ -175,6 +181,7 @@ class ProposalReadSerializer(serializers.ModelSerializer):
             "sales_person_name",
             "effective_sales_person_id",
             "effective_sales_person_name",
+            "additional_sales_people",
             "currency",
             "quantity",
             "unit_price",
@@ -272,6 +279,26 @@ class ProposalReadSerializer(serializers.ModelSerializer):
         if user is None:
             return ""
         return (user.get_full_name() or user.email or "").strip()
+
+    def get_additional_sales_people(self, obj: Proposal) -> list[dict]:
+        # Ordered by best-available display name so the FE can render
+        # the chip strip without a client-side sort; falls back to
+        # email so an unnamed user still sorts predictably.
+        users = list(obj.additional_sales_people.all())
+        users.sort(
+            key=lambda u: (
+                (u.get_full_name() or u.email or "").lower(),
+                str(u.id),
+            )
+        )
+        return [
+            {
+                "id": str(u.id),
+                "name": (u.get_full_name() or "").strip(),
+                "email": (u.email or "").strip(),
+            }
+            for u in users
+        ]
 
     def get_subtotal(self, obj: Proposal) -> str | None:
         sub = obj.subtotal

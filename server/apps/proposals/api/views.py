@@ -306,6 +306,8 @@ from apps.proposals.api.serializers import (
     ProposalUpdateSerializer,
 )
 from apps.proposals.services import (
+    AdditionalSalesPersonIsPrimary,
+    AdditionalSalesPersonNotMember,
     BundleEmpty,
     BundleMixedCustomers,
     BundleRequiresLinkedCustomer,
@@ -340,6 +342,7 @@ from apps.proposals.services import (
     get_proposal,
     get_proposal_by_public_token,
     list_proposals,
+    set_additional_sales_people,
     suggest_unit_price,
     transition_status,
     update_proposal,
@@ -951,6 +954,66 @@ class ProposalCompleteRequiredFieldsView(APIView):
         except ProposalNotMissingRequiredField:
             return Response(
                 {"code": "proposal_not_missing_required_field"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(ProposalReadSerializer(updated).data)
+
+
+class ProposalAdditionalSalesPeopleView(APIView):
+    """``POST`` ``/.../proposals/<id>/additional-sales-people/``.
+
+    Replace the proposal's ``additional_sales_people`` M2M with the
+    given ``{"user_ids": [uuid, ...]}`` payload. Empty list clears
+    the M2M. The primary ``sales_person`` FK is untouched here — a
+    caller who wants to change the singular owner still PATCHes the
+    proposal detail endpoint.
+
+    Gated on ``proposals.edit`` — same cap that lets a caller set
+    the primary sales person via the general PATCH path, so the two
+    surfaces stay in step.
+    """
+
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, proposal_id: str
+    ) -> Response:
+        try:
+            proposal = get_proposal(
+                organization=self.organization, proposal_id=proposal_id
+            )
+        except ProposalNotFound as exc:
+            raise NotFound() from exc
+
+        raw = request.data if isinstance(request.data, dict) else {}
+        user_ids = raw.get("user_ids") or []
+        if not isinstance(user_ids, list):
+            return Response(
+                {"user_ids": ["expected_list"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            updated = set_additional_sales_people(
+                proposal=proposal,
+                actor=request.user,
+                user_ids=user_ids,
+            )
+        except AdditionalSalesPersonIsPrimary:
+            return Response(
+                {
+                    "code": "additional_sales_person_is_primary",
+                    "detail": (
+                        "The primary sales person can't also be listed as an "
+                        "additional co-worker on the same proposal."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except AdditionalSalesPersonNotMember:
+            return Response(
+                {"user_ids": ["additional_sales_person_not_member"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(ProposalReadSerializer(updated).data)

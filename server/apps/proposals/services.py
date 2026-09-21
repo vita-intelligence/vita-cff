@@ -268,6 +268,27 @@ class ProposalSalesPersonNotMember(Exception):
     code = "sales_person_not_member"
 
 
+class AdditionalSalesPersonNotMember(Exception):
+    """Raised when an id in the ``additional_sales_people`` list is
+    not a member of the proposal's organization. Distinct from
+    :class:`ProposalSalesPersonNotMember` so the FE can surface a
+    field-specific error on the co-worker picker rather than the
+    primary owner select."""
+
+    code = "additional_sales_person_not_member"
+
+
+class AdditionalSalesPersonIsPrimary(Exception):
+    """Raised when the caller tries to add the primary
+    ``sales_person`` to the ``additional_sales_people`` list. The
+    two roles are mutually exclusive by design — the primary is
+    the owner, the additional list is everyone ELSE who worked on
+    the deal. Enforced here so the FE can rely on the split
+    everywhere it renders."""
+
+    code = "additional_sales_person_is_primary"
+
+
 class InvalidProposalTransition(Exception):
     code = "invalid_proposal_transition"
 
@@ -1135,6 +1156,110 @@ def update_proposal(
         before=before,
         after=snapshot(proposal),
     )
+    return proposal
+
+
+@transaction.atomic
+def set_additional_sales_people(
+    *,
+    proposal: Proposal,
+    actor: Any,
+    user_ids: list[Any],
+) -> Proposal:
+    """Replace the proposal's ``additional_sales_people`` with the
+    given user id list.
+
+    Contract:
+
+    * Every id must resolve to a user with a live
+      :class:`Membership` on the proposal's organization — otherwise
+      :class:`AdditionalSalesPersonNotMember` fires so the FE can
+      surface a per-field error.
+    * The primary ``sales_person`` is refused with
+      :class:`AdditionalSalesPersonIsPrimary`. The two roles are
+      mutually exclusive by design: the primary FK stays the singular
+      "owner" that renders on the contract / PDF / PSP payload, the
+      M2M is everyone else who worked on the deal. Enforcing here
+      lets the FE (and any future integration) trust the split.
+    * Duplicates in the input are collapsed silently — same-user
+      twice is a click-fumble, not a hard error.
+    * The write is a full replace (``.set(...)``), not an append. FE
+      always sends the complete desired list; empty list clears the
+      M2M. Matches how permission surfaces write these bags in the
+      rest of the codebase.
+
+    Audit trail records the actor and the resulting id set so the
+    "who added whom" question is answerable from the log.
+    """
+
+    from django.contrib.auth import get_user_model
+
+    from apps.organizations.models import Membership
+
+    # Not mutable-gated: adding a co-worker to a signed proposal is
+    # a bookkeeping act, not a change to the offer. Contrast with
+    # ``update_proposal`` which mutates commercial fields and IS
+    # gated.
+
+    User = get_user_model()
+
+    # Collapse duplicates + drop empty entries before any DB round-
+    # trip so the FE can send a permissive list without paying for
+    # extra queries.
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in user_ids or []:
+        if raw is None:
+            continue
+        key = str(raw).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(key)
+
+    if proposal.sales_person_id and str(proposal.sales_person_id) in seen:
+        raise AdditionalSalesPersonIsPrimary()
+
+    users = list(User.objects.filter(id__in=cleaned)) if cleaned else []
+    if len(users) != len(cleaned):
+        # Some id didn't resolve — treat as membership failure since
+        # the FE's picker sources from the org's members list.
+        raise AdditionalSalesPersonNotMember()
+
+    if users:
+        member_ids = set(
+            str(pk)
+            for pk in Membership.objects.filter(
+                user_id__in=[u.id for u in users],
+                organization=proposal.organization,
+            ).values_list("user_id", flat=True)
+        )
+        if len(member_ids) != len(users):
+            raise AdditionalSalesPersonNotMember()
+
+    before_ids = sorted(
+        str(uid) for uid in proposal.additional_sales_people.values_list(
+            "id", flat=True
+        )
+    )
+    proposal.additional_sales_people.set(users)
+    after_ids = sorted(str(u.id) for u in users)
+
+    # Bump ``updated_by`` + ``updated_at`` so the activity feed sees
+    # the change. Don't touch ``updated_at`` if the set didn't
+    # actually change — avoids no-op churn on the sidebar.
+    if before_ids != after_ids:
+        proposal.updated_by = actor
+        proposal.save(update_fields=["updated_by", "updated_at"])
+        record_audit(
+            organization=proposal.organization,
+            actor=actor,
+            action="proposal.set_additional_sales_people",
+            target=proposal,
+            before={"additional_sales_people_ids": before_ids},
+            after={"additional_sales_people_ids": after_ids},
+        )
+
     return proposal
 
 

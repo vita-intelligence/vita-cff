@@ -14,6 +14,7 @@ from apps.proposals.api.pipeline_views import (
 )
 from apps.proposals.api.views import (
     ProposalActivityView,
+    ProposalAdditionalSalesPeopleView,
     ProposalAttachedSpecRenderView,
     ProposalAuditView,
     ProposalBundleCreateView,
@@ -116,6 +117,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/activity/",
         ProposalActivityView.as_view(),
         name="proposal-activity",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/additional-sales-people/",
+        ProposalAdditionalSalesPeopleView.as_view(),
+        name="proposal-additional-sales-people",
     ),
     path(
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/lines/",

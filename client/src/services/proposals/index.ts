@@ -41,6 +41,7 @@ export {
   useProposalsPage,
   useSendProposalTestEmail,
   useSendProposalToClient,
+  useSetProposalAdditionalSalesPeople,
   useTransitionProposalStatus,
   useUpdateProposal,
 } from "./hooks";

@@ -22,6 +22,12 @@ export const proposalsEndpoints = {
   //: approved content.
   completeRequiredFields: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/complete-required-fields/`,
+  //: Replace the ``additional_sales_people`` M2M. Body is
+  //: ``{"user_ids": [uuid, ...]}`` — empty list clears the M2M.
+  //: Primary ``sales_person`` FK is untouched here; that stays on
+  //: the general PATCH detail endpoint.
+  additionalSalesPeople: (orgId: string, proposalId: string) =>
+    `/api/organizations/${orgId}/proposals/${proposalId}/additional-sales-people/`,
   sendToClient: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/send-to-client/`,
   sendTestEmail: (orgId: string, proposalId: string) =>

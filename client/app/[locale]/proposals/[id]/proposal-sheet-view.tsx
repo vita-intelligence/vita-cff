@@ -54,6 +54,7 @@ import {
   useProposalActivity,
   useProposalAttachedSpec,
   useProposalAudit,
+  useSetProposalAdditionalSalesPeople,
   useTransitionProposalStatus,
   useUpdateProposal,
   type ProposalActivityEventDto,
@@ -500,6 +501,15 @@ export function ProposalSheetView({
       <div className="flex flex-wrap items-center justify-end gap-2">
         {isTerminal ? null : (
           <ProposalSalesPersonMenu
+            orgId={orgId}
+            proposal={proposal}
+            onError={setError}
+            tProposals={tProposals}
+            tErrors={tErrors}
+          />
+        )}
+        {isTerminal ? null : (
+          <ProposalAdditionalSalesPeopleMenu
             orgId={orgId}
             proposal={proposal}
             onError={setError}
@@ -2508,6 +2518,175 @@ function ProposalSalesPersonMenu({
                       </span>
                     </span>
                     {isActive ? (
+                      <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-orange-500" />
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
+/**
+ * Additional-sales-people picker. Sibling of the primary
+ * ``ProposalSalesPersonMenu`` above; edits the ``additional_sales_people``
+ * M2M that tracks co-workers who contributed to the deal without
+ * owning it. Deliberately renders nowhere except this pill on the
+ * detail page — the primary ``sales_person`` still owns every other
+ * surface (PDF footer, contract card, PSP payload, activity feed) so
+ * the render pipeline is untouched.
+ *
+ * The primary ``sales_person_id`` is filtered out of the picker so
+ * the two roles stay mutually exclusive (the backend refuses the
+ * overlap too — belt-and-braces).
+ */
+function ProposalAdditionalSalesPeopleMenu({
+  orgId,
+  proposal,
+  onError,
+  tProposals,
+  tErrors,
+}: {
+  orgId: string;
+  proposal: ProposalDto;
+  onError: (msg: string | null) => void;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+  tErrors: ReturnType<typeof useTranslations<"errors">>;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [open]);
+
+  const membersQuery = useMemberships(orgId, { enabled: open });
+  const update = useSetProposalAdditionalSalesPeople(orgId, proposal.id);
+
+  // Filter the picker to org members MINUS the primary sales_person
+  // so the two roles stay disjoint. Backend enforces the same guard;
+  // the FE filter is UX affordance (nothing to click is clearer than
+  // clicking something that then rejects).
+  const members = useMemo(() => {
+    const rows = membersQuery.data ?? [];
+    const seen = new Set<string>();
+    const out: { id: string; name: string; email: string }[] = [];
+    for (const row of rows) {
+      if (seen.has(row.user.id)) continue;
+      if (row.user.id === proposal.sales_person_id) continue;
+      seen.add(row.user.id);
+      const name =
+        (row.user.full_name && row.user.full_name.trim()) || row.user.email;
+      out.push({ id: row.user.id, name, email: row.user.email });
+    }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  }, [membersQuery.data, proposal.sales_person_id]);
+
+  const currentIds = useMemo(
+    () => new Set(proposal.additional_sales_people.map((p) => p.id)),
+    [proposal.additional_sales_people],
+  );
+
+  const pillLabel =
+    proposal.additional_sales_people.length === 0
+      ? tProposals("detail.additional_sales_people.empty")
+      : tProposals("detail.additional_sales_people.count", {
+          count: proposal.additional_sales_people.length,
+        });
+
+  const toggle = async (userId: string) => {
+    onError(null);
+    const next = new Set(currentIds);
+    if (next.has(userId)) next.delete(userId);
+    else next.add(userId);
+    try {
+      await update.mutateAsync(Array.from(next));
+    } catch (err) {
+      onError(extractApiErrorMessage(err, tErrors));
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={update.isPending}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={tProposals("detail.additional_sales_people.label")}
+        className={`inline-flex h-10 items-center gap-1.5 rounded-lg px-3 text-xs font-medium ring-1 ring-inset transition-opacity hover:opacity-90 disabled:opacity-60 ${
+          proposal.additional_sales_people.length > 0
+            ? "bg-orange-50 text-orange-800 ring-orange-200"
+            : "bg-ink-50 text-ink-600 ring-ink-200"
+        }`}
+      >
+        <UserRound className="h-3.5 w-3.5" />
+        <span className="max-w-[16rem] truncate">{pillLabel}</span>
+        <ChevronDown className="h-3 w-3" />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 z-20 mt-2 flex w-80 flex-col gap-0.5 rounded-xl bg-ink-0 p-1.5 shadow-lg ring-1 ring-ink-200"
+        >
+          <div className="flex items-center justify-between px-2 py-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+              {tProposals("detail.additional_sales_people.label")}
+            </span>
+          </div>
+          {membersQuery.isLoading ? (
+            <p className="px-2 py-3 text-xs text-ink-500">
+              {tProposals("detail.sales_person.loading")}
+            </p>
+          ) : members.length === 0 ? (
+            <p className="px-2 py-3 text-xs text-ink-500">
+              {tProposals("detail.additional_sales_people.no_teammates")}
+            </p>
+          ) : (
+            <div className="max-h-72 overflow-y-auto">
+              {members.map((member) => {
+                const isSelected = currentIds.has(member.id);
+                return (
+                  <button
+                    key={member.id}
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={isSelected}
+                    disabled={update.isPending}
+                    onClick={() => toggle(member.id)}
+                    className={`flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-ink-50 disabled:opacity-60 ${
+                      isSelected ? "bg-orange-50/60" : ""
+                    }`}
+                  >
+                    <UserRound className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-400" />
+                    <span className="flex min-w-0 flex-col">
+                      <span
+                        className={`truncate text-sm ${
+                          isSelected
+                            ? "font-semibold text-ink-1000"
+                            : "text-ink-800"
+                        }`}
+                      >
+                        {member.name}
+                      </span>
+                      <span className="truncate text-[11px] text-ink-500">
+                        {member.email}
+                      </span>
+                    </span>
+                    {isSelected ? (
                       <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-orange-500" />
                     ) : null}
                   </button>

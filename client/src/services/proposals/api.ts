@@ -201,6 +201,25 @@ export async function completeProposalRequiredFields(
   return data;
 }
 
+/**
+ * Replace the proposal's ``additional_sales_people`` M2M. Pass the
+ * full desired list of user ids — empty array clears the M2M.
+ * Backend refuses to include the primary ``sales_person`` in the
+ * list; the FE also filters it out of its picker so the two
+ * safeguards double up.
+ */
+export async function setProposalAdditionalSalesPeople(
+  orgId: string,
+  proposalId: string,
+  userIds: readonly string[],
+): Promise<ProposalDto> {
+  const { data } = await apiClient.post<ProposalDto>(
+    proposalsEndpoints.additionalSalesPeople(orgId, proposalId),
+    { user_ids: userIds },
+  );
+  return data;
+}
+
 export async function fetchProposalTransitions(
   orgId: string,
   proposalId: string,

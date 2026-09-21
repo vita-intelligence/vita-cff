@@ -225,6 +225,27 @@ class Proposal(models.Model):
             "assigned owners."
         ),
     )
+    #: Additional sales people who worked on the deal without owning
+    #: it. Purely informational — the ``sales_person`` FK above stays
+    #: the singular "owner" that every render, integration, and PSP
+    #: payload consumes today (contract footer, PSP sync, audit
+    #: exports, activity feed, index queries). This M2M is surfaced
+    #: only on the proposal detail page as a "who else worked on
+    #: this" section so co-workers get credit without any change to
+    #: the primary render pipeline. Never overlaps with
+    #: ``sales_person`` (service refuses to add the primary to this
+    #: list) — that separation is what lets us cleanly distinguish
+    #: "the owner" from "everyone who touched it".
+    additional_sales_people = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        blank=True,
+        related_name="proposals_as_additional_sales_person",
+        help_text=_(
+            "Extra members who contributed to the deal but aren't the "
+            "assigned owner. Excluded from the primary sales_person "
+            "FK so the singular 'owner' semantics stay intact."
+        ),
+    )
 
     # ------------------------------------------------------------------
     # Commercial terms. Single product line per proposal for now

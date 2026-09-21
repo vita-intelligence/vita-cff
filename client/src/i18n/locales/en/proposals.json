@@ -200,6 +200,12 @@
       "clear_override": "Use project's",
       "loading": "Loading members…",
       "empty": "No members to assign."
+    },
+    "additional_sales_people": {
+      "label": "Also worked on this",
+      "empty": "+ Add co-worker",
+      "count": "{count, plural, one {+1 co-worker} other {+# co-workers}}",
+      "no_teammates": "No other teammates available — the primary sales person is the only member in this org."
     }
   },
   "edit": {
