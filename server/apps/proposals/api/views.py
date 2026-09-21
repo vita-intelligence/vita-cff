@@ -801,11 +801,51 @@ class ProposalStatusView(APIView):
             # Separate cap so an approver isn't automatically a
             # closer.
             self.required_capability = ProposalsCapability.MANUAL_CLOSE
+        elif target == ProposalStatus.DRAFT.value and self._is_reverting_from_approved(
+            request, *args, **kwargs
+        ):
+            # Revert-from-approved wipes the director's signature +
+            # public kiosk token; whoever can grant approval should
+            # also be the one who can revoke it, so the gate lifts
+            # from ``edit`` to ``approve`` for this specific edge.
+            # The far more common ``in_review → draft`` back-button
+            # stays at ``edit`` because no signature is wiped there.
+            self.required_capability = ProposalsCapability.APPROVE
         else:
             # ``draft``, ``in_review``, ``sent`` — workflow edges
             # the sales rep with edit rights drives day-to-day.
             self.required_capability = ProposalsCapability.EDIT
         super().initial(request, *args, **kwargs)
+
+    def _is_reverting_from_approved(
+        self, request: Request, *args, **kwargs
+    ) -> bool:
+        """True when this POST is a ``approved → draft`` revert.
+
+        Runs INSIDE ``initial()``, BEFORE ``check_permissions()``, so
+        ``self.organization`` isn't set yet — resolve the org+proposal
+        directly here. Silent False on any lookup miss so the ``post``
+        body can raise a clean 404 later without this method leaking
+        "proposal exists but you can't touch it" out of the permission
+        layer.
+        """
+
+        proposal_id = kwargs.get("proposal_id")
+        org_id = kwargs.get("org_id")
+        if not proposal_id or not org_id:
+            return False
+        from apps.organizations.models import Organization
+        from apps.proposals.models import Proposal, ProposalStatus
+
+        proposal = (
+            Proposal.objects
+            .filter(id=proposal_id, organization_id=org_id)
+            .only("status")
+            .first()
+        )
+        if proposal is None:
+            return False
+        return proposal.status == ProposalStatus.APPROVED.value
 
     def post(
         self, request: Request, org_id: str, proposal_id: str
@@ -936,6 +976,7 @@ class ProposalSendToClientView(APIView):
         from apps.proposals.services import (
             ProposalEmailRecipientRequired,
             ProposalEmailSendFailed,
+            RTGSpecSheetMissing,
             send_proposal_to_client,
         )
 
@@ -985,6 +1026,21 @@ class ProposalSendToClientView(APIView):
                 {"status": ["invalid_proposal_transition"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except RTGSpecSheetMissing:
+            return Response(
+                {
+                    "code": "rtg_spec_sheet_missing",
+                    "detail": (
+                        "This RTG order has no per-customer specification "
+                        "sheet attached. Refusing to send — the shared "
+                        "template would otherwise be tainted with this "
+                        "customer's signature and leak into future orders. "
+                        "Delete and re-place the order from the portal, or "
+                        "contact engineering to reattach the clone."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except MissingRequiredFields as exc:
             return Response(
                 {
@@ -994,14 +1050,28 @@ class ProposalSendToClientView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except ProposalEmailSendFailed as exc:
-            # SMTP layer rejected the message. Surface the underlying
-            # error code so the modal can show "Couldn't send: <why>"
-            # rather than a generic banner; the status stayed at
-            # ``approved`` thanks to the atomic block in the service.
+            # SMTP layer rejected the message. Surface a stable
+            # ``code`` slug for i18n + operator triage, and stash
+            # the raw exception under ``debug`` so the modal can
+            # optionally show "Couldn't send: <why>" without the FE
+            # trying to look it up as a translation key. Historical
+            # note: this used to put ``str(exc)`` into an ``error``
+            # field, but the FE's `normalizeApiError` hoists a
+            # top-level ``error`` alias into ``ApiError.code`` (same
+            # code path Phoenix errors use), so a Python socket-error
+            # string like ``[Errno 61] Connection refused`` ended up
+            # as the FE's translation key and blew up i18n. The
+            # proposal status stayed at ``approved`` thanks to the
+            # atomic block in the service.
             return Response(
                 {
-                    "detail": ["proposal_email_send_failed"],
-                    "error": str(exc),
+                    "code": "proposal_email_send_failed",
+                    "detail": (
+                        "Couldn't reach the email server. The proposal is "
+                        "still at 'approved' — try Send again in a moment, "
+                        "or check the SMTP configuration if this persists."
+                    ),
+                    "debug": str(exc),
                 },
                 status=status.HTTP_502_BAD_GATEWAY,
             )
@@ -1070,10 +1140,20 @@ class ProposalSendTestEmailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except ProposalEmailSendFailed as exc:
+            # See sibling handler at line ~1012 — same reasoning:
+            # ``code`` stays a stable slug, raw exception is under
+            # ``debug`` so ``normalizeApiError`` on the FE doesn't
+            # hoist ``[Errno 61] Connection refused`` into
+            # ``ApiError.code`` and break i18n.
             return Response(
                 {
-                    "detail": ["proposal_email_send_failed"],
-                    "error": str(exc),
+                    "code": "proposal_email_send_failed",
+                    "detail": (
+                        "Couldn't reach the email server for the test "
+                        "send. Try again in a moment, or check the SMTP "
+                        "configuration if this persists."
+                    ),
+                    "debug": str(exc),
                 },
                 status=status.HTTP_502_BAD_GATEWAY,
             )

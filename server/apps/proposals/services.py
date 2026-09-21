@@ -307,6 +307,24 @@ class MissingRequiredFields(Exception):
         self.missing = missing
 
 
+class RTGSpecSheetMissing(Exception):
+    """Raised at Send when an RTG proposal has no per-customer
+    :class:`SpecificationSheet` cloned to it.
+
+    RTG proposals must ship with their own per-customer spec sheet —
+    the create paths (cart checkout + single-SKU portal submit) both
+    clone the SKU's FINAL template into a customer-scoped copy at
+    order time. If the FK is missing anyway, sending would either
+    fire without a spec attachment OR attach the shared template
+    (whose ``client_name=""`` marks it as un-tainted). The second
+    case would leak one buyer's signed spec into the next buyer's
+    file — a compliance disaster. So Send refuses and asks staff
+    to remediate.
+    """
+
+    code = "rtg_spec_sheet_missing"
+
+
 # ---------------------------------------------------------------------------
 # Cost math
 # ---------------------------------------------------------------------------
@@ -1167,7 +1185,20 @@ _LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
         }
     ),
     ProposalStatus.APPROVED.value: frozenset(
-        {ProposalStatus.SENT.value, ProposalStatus.REJECTED.value}
+        {
+            ProposalStatus.SENT.value,
+            ProposalStatus.REJECTED.value,
+            # Revert edge: sales can pull an approved proposal back to
+            # draft BEFORE it's sent to the client (e.g. the director
+            # approved a version with a typo in the delivery address).
+            # ``transition_status`` wipes both signature slots + the
+            # public kiosk token when this edge fires so the draft
+            # doesn't carry stale evidence and the customer link goes
+            # dead. Once the proposal is at ``sent`` the customer may
+            # already be reading it, so the revert edge is deliberately
+            # unavailable from ``sent`` — that path is manual reject.
+            ProposalStatus.DRAFT.value,
+        }
     ),
     ProposalStatus.SENT.value: frozenset(
         {ProposalStatus.ACCEPTED.value, ProposalStatus.REJECTED.value}
@@ -1751,6 +1782,24 @@ def transition_status(
     ):
         proposal.public_token = uuid.uuid4()
 
+    # Revert-to-draft from approved: wipe both signature slots + the
+    # public kiosk token so (a) the proposal doesn't display "director
+    # approved" over a document that's back in flux, and (b) anyone
+    # who kept the old kiosk URL can't reach it — a fresh token is
+    # minted on re-approval above. Prep signature also cleared: the
+    # act of reverting means the whole approval chain restarts.
+    if (
+        from_status == ProposalStatus.APPROVED.value
+        and to_status == ProposalStatus.DRAFT.value
+    ):
+        proposal.director_user = None
+        proposal.director_signed_at = None
+        proposal.director_signature_image = ""
+        proposal.prepared_by_user = None
+        proposal.prepared_by_signed_at = None
+        proposal.prepared_by_signature_image = ""
+        proposal.public_token = None
+
     # Staff-driven manual reject: stamp the same audit columns the
     # kiosk path writes via :func:`capture_customer_rejection_on_proposal`
     # so the downstream surfaces (rejection panel on the proposal
@@ -2266,6 +2315,23 @@ def send_proposal_to_client(
 
     if proposal.status != ProposalStatus.APPROVED.value:
         raise InvalidProposalTransition()
+
+    # Compliance guard: RTG proposals must carry a per-customer
+    # cloned spec sheet before Send. Both the header FK
+    # (``Proposal.specification_sheet``) and every line FK
+    # (``ProposalLine.specification_sheet``) are checked; the
+    # create paths write both, so a proposal with either populated
+    # is fine. A proposal with NEITHER means the clone step never
+    # ran — sending would risk attaching the SKU's shared template
+    # to this customer's signature and leaking it into every
+    # subsequent buyer's file.
+    if proposal.template_type == ProposalTemplateType.READY_TO_GO.value:
+        header_has_spec = proposal.specification_sheet_id is not None
+        line_has_spec = proposal.lines.filter(
+            specification_sheet__isnull=False
+        ).exists()
+        if not (header_has_spec or line_has_spec):
+            raise RTGSpecSheetMissing()
 
     # Shared render + send path. Raises on empty recipient or SMTP
     # failure; the surrounding ``@transaction.atomic`` rolls back the

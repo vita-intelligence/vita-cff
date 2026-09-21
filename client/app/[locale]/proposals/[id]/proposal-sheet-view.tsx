@@ -404,24 +404,52 @@ export function ProposalSheetView({
         const hasRecipient = Boolean(
           (proposal.customer_email || "").trim(),
         );
-        return (
-          <span
-            title={
-              hasRecipient
-                ? undefined
-                : tProposals("detail.actions.send_disabled_no_email")
-            }
+        // Revert-to-draft is director-only: it wipes the director
+        // signature + prepared_by signature + the public kiosk
+        // token, so whoever can grant approval should also be the
+        // one who can revoke it. Backend enforces the same via
+        // ``ProposalStatusView.initial`` — the UI check here is for
+        // affordance, not security.
+        const revertButton = canApprove ? (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              if (
+                window.confirm(
+                  tProposals("detail.actions.revert_to_draft_confirm"),
+                )
+              ) {
+                void handleTransition("draft");
+              }
+            }}
+            className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
           >
-            <Button
-              type="button"
-              onClick={() => setSendToClientOpen(true)}
-              isDisabled={!hasRecipient}
-              className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+            <Undo2 className="mr-1.5 h-4 w-4" />
+            {tProposals("detail.actions.revert_to_draft")}
+          </Button>
+        ) : null;
+        return (
+          <div className="flex gap-2">
+            {revertButton}
+            <span
+              title={
+                hasRecipient
+                  ? undefined
+                  : tProposals("detail.actions.send_disabled_no_email")
+              }
             >
-              <Send className="mr-1.5 h-4 w-4" />
-              {tProposals("detail.actions.send_to_client")}
-            </Button>
-          </span>
+              <Button
+                type="button"
+                onClick={() => setSendToClientOpen(true)}
+                isDisabled={!hasRecipient}
+                className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Send className="mr-1.5 h-4 w-4" />
+                {tProposals("detail.actions.send_to_client")}
+              </Button>
+            </span>
+          </div>
         );
       }
       default:

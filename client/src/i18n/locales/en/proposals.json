@@ -114,7 +114,9 @@
       "mark_sent": "Mark as sent to client",
       "send_to_client": "Send to client",
       "send_disabled_no_email": "Add a customer email to the proposal before sending.",
-      "reject_on_behalf": "Reject on behalf of client"
+      "reject_on_behalf": "Reject on behalf of client",
+      "revert_to_draft": "Revert to draft",
+      "revert_to_draft_confirm": "Revert this approved proposal back to draft? This wipes the director's signature and closes the kiosk link. You'll need to send it for review and approve it again before sending to the client."
     },
     "reject_on_behalf": {
       "title": "Reject this proposal on behalf of the client?",

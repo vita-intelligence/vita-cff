@@ -201,6 +201,174 @@ class TestApproveCapability:
         assert proposal.status == ProposalStatus.IN_REVIEW.value
 
 
+class TestRevertFromApproved:
+    """The ``approved → draft`` revert wipes signature evidence + the
+    public kiosk token, so it's gated on the ``approve`` capability
+    (whoever grants approval should also be the one who revokes it)
+    and it's not available once the proposal reaches ``sent`` (the
+    customer may already be reading it — that path is manual reject).
+
+    Bypasses the shared ``_approved_proposal_with_lines`` helper /
+    ``ProposalFactory`` because both funnel through
+    :func:`apps.formulations.services.save_version` which currently
+    fails a completeness gate on freshly-factoried formulations.
+    These tests build state manually at model level to sidestep that
+    unrelated brittleness.
+    """
+
+    def _fully_approved(self, org, owner):
+        """Build a proposal in ``approved`` with real signature evidence
+        + a live kiosk token that the revert should wipe."""
+
+        from uuid import uuid4
+
+        from apps.formulations.models import FormulationVersion
+        from apps.formulations.tests.factories import FormulationFactory
+        from apps.proposals.models import Proposal
+        from django.utils import timezone
+
+        formulation = FormulationFactory(organization=org)
+        version = FormulationVersion.objects.create(
+            formulation=formulation, version_number=1, created_by=owner,
+        )
+        now = timezone.now()
+        proposal = Proposal.objects.create(
+            organization=org,
+            formulation_version=version,
+            code=f"PROP-{uuid4().hex[:6]}",
+            status=ProposalStatus.APPROVED.value,
+            customer_name="Alex Buyer",
+            customer_email="alex@buyer.test",
+            reference="REF-001",
+            invoice_address="1 Buyer Street",
+            currency="GBP",
+            quantity=1,
+            sales_person=owner,
+            prepared_by_user=owner,
+            prepared_by_signed_at=now,
+            prepared_by_signature_image=_TINY_PNG,
+            director_user=owner,
+            director_signed_at=now,
+            director_signature_image=_TINY_PNG,
+            public_token=uuid4(),
+            created_by=owner,
+            updated_by=owner,
+        )
+        proposal.lines.create(
+            formulation_version=version,
+            product_code="LINE-001",
+            description="Test line",
+            quantity=1,
+            unit_price="10.00",
+            display_order=0,
+        )
+        return proposal
+
+    def test_editor_without_approve_cannot_revert(
+        self, api_client: APIClient
+    ) -> None:
+        owner = UserFactory()
+        editor = UserFactory(password=DEFAULT_TEST_PASSWORD)
+        org = create_organization(user=owner, name="Revert Edit-Only Co")
+        MembershipFactory(
+            user=editor,
+            organization=org,
+            permissions={"proposals": ["view", "edit"]},
+        )
+        proposal = self._fully_approved(org, owner)
+        _login(api_client, editor)
+
+        response = api_client.post(
+            _status_url(str(org.id), str(proposal.id)),
+            {"status": ProposalStatus.DRAFT.value},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+        proposal.refresh_from_db()
+        assert proposal.status == ProposalStatus.APPROVED.value
+        # Signature evidence + kiosk token untouched.
+        assert proposal.director_signature_image
+        assert proposal.public_token is not None
+
+    def test_approver_can_revert_and_evidence_is_wiped(
+        self, api_client: APIClient
+    ) -> None:
+        owner = UserFactory()
+        director = UserFactory(password=DEFAULT_TEST_PASSWORD)
+        org = create_organization(user=owner, name="Revert Director Co")
+        MembershipFactory(
+            user=director,
+            organization=org,
+            permissions={"proposals": ["view", "edit", "approve"]},
+        )
+        proposal = self._fully_approved(org, owner)
+        _login(api_client, director)
+
+        response = api_client.post(
+            _status_url(str(org.id), str(proposal.id)),
+            {"status": ProposalStatus.DRAFT.value},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+
+        proposal.refresh_from_db()
+        assert proposal.status == ProposalStatus.DRAFT.value
+        # Whole signature chain wiped — a fresh in_review + approve
+        # is required before the kiosk link comes back to life.
+        assert proposal.director_signature_image == ""
+        assert proposal.director_signed_at is None
+        assert proposal.director_user_id is None
+        assert proposal.prepared_by_signature_image == ""
+        assert proposal.prepared_by_signed_at is None
+        assert proposal.prepared_by_user_id is None
+        assert proposal.public_token is None
+
+    def test_revert_from_sent_is_rejected(
+        self, api_client: APIClient
+    ) -> None:
+        # No revert edge from ``sent`` — the customer may already be
+        # reading the kiosk link, so the only exit is a manual reject.
+        from uuid import uuid4
+
+        from apps.formulations.models import FormulationVersion
+        from apps.formulations.tests.factories import FormulationFactory
+        from apps.proposals.models import Proposal
+
+        owner = UserFactory()
+        director = UserFactory(password=DEFAULT_TEST_PASSWORD)
+        org = create_organization(user=owner, name="Sent Revert Co")
+        MembershipFactory(
+            user=director,
+            organization=org,
+            permissions={"proposals": ["view", "edit", "approve"]},
+        )
+        formulation = FormulationFactory(organization=org)
+        version = FormulationVersion.objects.create(
+            formulation=formulation, version_number=1, created_by=owner,
+        )
+        proposal = Proposal.objects.create(
+            organization=org,
+            formulation_version=version,
+            code=f"PROP-{uuid4().hex[:6]}",
+            status=ProposalStatus.SENT.value,
+            currency="GBP",
+            quantity=1,
+            created_by=owner,
+            updated_by=owner,
+        )
+        _login(api_client, director)
+
+        response = api_client.post(
+            _status_url(str(org.id), str(proposal.id)),
+            {"status": ProposalStatus.DRAFT.value},
+            format="json",
+        )
+        # 400 with ``invalid_proposal_transition`` — the state machine
+        # rejects the edge, not the permission layer.
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
 class TestManualCloseCapability:
     def test_editor_without_manual_close_cannot_close(
         self, api_client: APIClient

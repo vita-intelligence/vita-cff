@@ -120,6 +120,18 @@ function extractFieldErrors(data: unknown): ApiFieldErrors {
   return result;
 }
 
+/** True when ``value`` is a plausible machine slug — the shape a
+ * backend uses for stable, translatable error codes. Rejects free-
+ * text so a leaked ``str(exception)`` doesn't get promoted into
+ * ``ApiError.code`` and fed to next-intl. Length capped so a giant
+ * blob (e.g. an HTML snippet) can't slip through by containing only
+ * safe chars.
+ */
+function isMachineSlug(value: string): boolean {
+  if (!value || value.length > 80) return false;
+  return /^[a-z0-9][a-z0-9_.-]*$/i.test(value);
+}
+
 export function normalizeApiError(error: unknown): ApiError {
   if (error instanceof ApiError) return error;
 
@@ -135,10 +147,19 @@ export function normalizeApiError(error: unknown): ApiError {
     // PSP's 4xx bodies verbatim, and those use ``error``. Preferring
     // ``code`` when both are present keeps the Django-native behaviour
     // stable.
+    //
+    // Only accept the ``error`` alias when it LOOKS like a machine
+    // slug (snake_case-ish, no whitespace, no punctuation). A backend
+    // that leaks a raw exception string here — e.g. ``[Errno 61]
+    // Connection refused`` from a Python socket error surfaced via
+    // ``str(exc)`` — would otherwise land as ``ApiError.code``, get
+    // fed into ``t('errors.codes.<code>')``, and blow up i18n with
+    // ``MISSING_MESSAGE`` warnings. Codes are always slugs; anything
+    // else belongs in ``detail`` / ``debug``.
     const codeAlias =
       typeof payload?.code === "string"
         ? payload.code
-        : typeof payload?.error === "string"
+        : typeof payload?.error === "string" && isMachineSlug(payload.error)
           ? (payload.error as string)
           : undefined;
     return new ApiError({
