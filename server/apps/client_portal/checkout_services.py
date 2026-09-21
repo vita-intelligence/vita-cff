@@ -203,8 +203,8 @@ def _create_line_proposal(
     # blank UNIT COST / MARGIN % on every storefront quote because
     # the raw materials on most RTG SKUs aren't costed line-by-line
     # in the ingredient catalogue.
-    template_sheet = _find_template_final_sheet(formulation)
-    material_cost = _resolve_material_cost(version, template_sheet)
+    template_sheet = find_template_final_sheet(formulation)
+    material_cost = resolve_material_cost_per_pack(version, template_sheet)
     material_cost_positive = (
         material_cost if material_cost and material_cost > 0 else None
     )
@@ -262,12 +262,13 @@ def _create_line_proposal(
     # The clone inherits the pre-signed template's approved status
     # (prep + director signatures) so sales / the kiosk can render
     # both docs together at Send time.
-    cloned_sheet = _clone_final_sheet_for_checkout(
+    cloned_sheet = clone_final_sheet_for_customer_order(
         formulation=formulation,
         formulation_version=version,
         proposal=proposal,
         actor=proposal_actor,
-        payload=payload,
+        client_name=payload.name or "",
+        client_company=payload.company or "",
         combo=combo,
         template=template_sheet,
     )
@@ -290,7 +291,7 @@ def _create_line_proposal(
     return proposal
 
 
-def _resolve_material_cost(
+def resolve_material_cost_per_pack(
     version: FormulationVersion,
     sheet: SpecificationSheet | None,
 ) -> Decimal:
@@ -304,6 +305,13 @@ def _resolve_material_cost(
     the one that actually feeds the customer's quote — the raw-
     material roll-up is only useful as a fallback for SKUs where
     the director hasn't yet signed a costed spec.
+
+    Public because both portal RTG entry points
+    (:func:`place_portal_checkout` and
+    :func:`apps.cff_submissions.services.create_portal_rtg_submission`)
+    pin this onto ``Proposal.material_cost_per_pack`` + ``margin_percent``
+    at create time so the sales finance table renders numbers on the
+    first open instead of empty cells.
     """
 
     if sheet is not None:
@@ -494,7 +502,7 @@ _SHEET_CONTENT_FIELDS: tuple[str, ...] = (
 )
 
 
-def _find_template_final_sheet(formulation: Formulation) -> SpecificationSheet | None:
+def find_template_final_sheet(formulation: Formulation) -> SpecificationSheet | None:
     """Latest untainted FINAL sheet on any version of this formulation.
 
     RTG SKUs are expected to have exactly one FINAL template — the
@@ -542,17 +550,33 @@ def _next_checkout_sheet_code(*, organization, base: str) -> str:
         idx += 1
 
 
-def _clone_final_sheet_for_checkout(
+def clone_final_sheet_for_customer_order(
     *,
     formulation: Formulation,
     formulation_version: FormulationVersion,
     proposal: Proposal,
     actor,
-    payload: CheckoutInput,
+    client_name: str = "",
+    client_email: str = "",
+    client_company: str = "",
     combo: PackagingCombo | None = None,
     template: SpecificationSheet | None = None,
 ) -> SpecificationSheet | None:
-    """Fresh customer-specific FINAL sheet for a portal checkout.
+    """Fresh customer-specific FINAL sheet for a portal RTG order.
+
+    Called from BOTH the cart checkout path
+    (:func:`place_portal_checkout`) and the single-SKU RTG submit
+    path (:func:`apps.cff_submissions.services.create_portal_rtg_submission`)
+    so every RTG portal order lands with its own signed spec sheet
+    stamped with the buyer's identity — a shared template with two
+    customers' signatures would race on customer-accept and leak
+    one buyer's signed spec into another buyer's file.
+
+    Client-identity kwargs override the proposal's denormalized
+    ``customer_*`` fields; leave them blank to fall back to what the
+    proposal already stored. Both call sites currently populate the
+    proposal from the modal payload, so passing blanks (and letting
+    the fallback fire) is the norm.
 
     When ``combo`` is passed we resolve its items into the sheet's
     four packaging slots (lid / container / label / antitemper) so
@@ -571,7 +595,7 @@ def _clone_final_sheet_for_checkout(
     """
 
     if template is None:
-        template = _find_template_final_sheet(formulation)
+        template = find_template_final_sheet(formulation)
     if template is None:
         return None
 
@@ -583,11 +607,11 @@ def _clone_final_sheet_for_checkout(
             organization=formulation.organization,
             base=(template.code or formulation.code or "").strip(),
         ),
-        # Client identity from the checkout modal (mirrors the
-        # proposal header we already wrote above).
-        client_name=payload.name or proposal.customer_name,
-        client_email=proposal.customer_email,
-        client_company=payload.company or proposal.customer_company,
+        # Client identity — prefer explicit kwargs, fall back to
+        # what the proposal already denormalized from the modal.
+        client_name=client_name or proposal.customer_name,
+        client_email=client_email or proposal.customer_email,
+        client_company=client_company or proposal.customer_company,
         # Final price on the sheet mirrors the proposal-level unit
         # price so a printed sheet matches the quote number.
         final_price=proposal.unit_price,

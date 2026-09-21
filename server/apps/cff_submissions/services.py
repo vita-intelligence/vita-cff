@@ -1991,6 +1991,29 @@ def create_portal_rtg_submission(
         exc.code = "no_staff_actor"  # type: ignore[attr-defined]
         raise exc
 
+    # Look up the FINAL template early so we can pin material cost
+    # + margin onto the Proposal header + line at create time, then
+    # pass the same template into the clone helper to avoid a second
+    # DB round-trip. Mirrors `_create_line_proposal` in the cart
+    # checkout path so both RTG entry points populate the finance
+    # table identically on first render.
+    from apps.client_portal.checkout_services import (
+        clone_final_sheet_for_customer_order,
+        find_template_final_sheet,
+        resolve_material_cost_per_pack,
+    )
+
+    template_sheet = find_template_final_sheet(formulation)
+    material_cost = resolve_material_cost_per_pack(
+        approved_version, template_sheet
+    )
+    material_cost_positive = (
+        material_cost if material_cost and material_cost > 0 else None
+    )
+    margin_percent = (
+        template_sheet.margin_percent if template_sheet is not None else None
+    )
+
     proposal = Proposal.objects.create(
         organization=formulation.organization,
         formulation_version=approved_version,
@@ -2009,16 +2032,41 @@ def create_portal_rtg_submission(
         currency=currency,
         quantity=max(1, quantity),
         unit_price=unit_price,
+        material_cost_per_pack=material_cost_positive,
+        margin_percent=margin_percent,
         cover_notes=(payload.notes or "").strip(),
         created_by=proposal_actor,
         updated_by=proposal_actor,
     )
+    # Clone the RTG SKU's FINAL template into a customer-scoped
+    # copy, stamped with THIS buyer's identity + the packaging
+    # combo they picked. Without this the ProposalLine below
+    # would land with a NULL spec FK and the kiosk would either
+    # refuse to Send or (worse) attach the untainted template to
+    # the customer's signature — leaking one buyer's signed spec
+    # into every subsequent buyer's file. Both RTG entry points
+    # route through the same helper so per-order isolation stays
+    # consistent.
+    cloned_sheet = clone_final_sheet_for_customer_order(
+        formulation=formulation,
+        formulation_version=approved_version,
+        proposal=proposal,
+        actor=proposal_actor,
+        combo=combo_choice,
+        template=template_sheet,
+    )
+    if cloned_sheet is not None:
+        proposal.specification_sheet = cloned_sheet
+        proposal.save(update_fields=["specification_sheet"])
+
     ProposalLine.objects.create(
         proposal=proposal,
         formulation_version=approved_version,
+        specification_sheet=cloned_sheet,
         product_code=formulation.code or "",
         description=line_description,
         quantity=max(1, quantity),
+        unit_cost=material_cost_positive,
         unit_price=unit_price,
         display_order=0,
         selected_packaging_combo=combo_choice,

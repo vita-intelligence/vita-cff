@@ -5339,8 +5339,8 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             # packaging combos AND the sheet's own packaging slots are
             # all blank. Storefront checkout now clones the FINAL sheet
             # with the customer's chosen combo baked into the four FKs
-            # (see :func:`apps.client_portal.checkout_services`
-            # ._clone_final_sheet_for_checkout) — those per-order clones
+            # (see :func:`apps.client_portal.checkout_services
+            # .clone_final_sheet_for_customer_order`) — those per-order clones
             # must render the concrete packaging table, not the "chosen
             # per order — see proposal" placeholder that RTG template
             # sheets still carry.

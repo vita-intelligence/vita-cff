@@ -128,6 +128,47 @@ def _make_rtg_sku(
     return formulation
 
 
+def _make_rtg_sku_lite(*, org=None):
+    """Minimal RTG SKU fixture that skips ``save_version``.
+
+    The full :func:`_make_rtg_sku` calls ``formulations.services.save_version``,
+    which enforces a completeness gate (``FormulationBuilderIncomplete``)
+    that a bare :class:`FormulationFactory` row can't satisfy. For tests
+    that only need "there is a published RTG formulation with an
+    approved version", we build the version row directly via the ORM
+    and pin the ``approved_version_number`` — same end state, no gate.
+
+    Returns ``(org, formulation, version)``.
+    """
+
+    from apps.formulations.models import FormulationVersion
+
+    if org is None:
+        org = OrganizationFactory()
+    Membership.objects.get_or_create(
+        organization=org, user=org.created_by,
+    )
+    formulation: Formulation = FormulationFactory(
+        organization=org,
+        project_type=ProjectType.READY_TO_GO,
+        name="Vitamin C 500mg Capsule",
+        is_rtg_published=True,
+        rtg_moq=100,
+        rtg_base_price=Decimal("6.50"),
+        rtg_currency_code="GBP",
+        rtg_short_description="Clean Vit C.",
+        rtg_packaging_options=["60ct bottle", "120ct bottle"],
+    )
+    version = FormulationVersion.objects.create(
+        formulation=formulation,
+        version_number=1,
+        created_by=org.created_by,
+    )
+    formulation.approved_version_number = version.version_number
+    formulation.save(update_fields=["approved_version_number", "updated_at"])
+    return org, formulation, version
+
+
 # ---------------------------------------------------------------------------
 # publish_to_rtg_catalog
 # ---------------------------------------------------------------------------
@@ -327,6 +368,101 @@ class TestCreatePortalRTGSubmission:
                 ),
             )
         assert getattr(exc_info.value, "code", "") == "rtg_sku_not_found"
+
+    def test_clones_per_customer_spec_when_template_exists(self):
+        """Regression: an RTG portal submit must clone the SKU's FINAL
+        template into a customer-scoped copy, stamped with THIS buyer's
+        identity — otherwise the kiosk would either send without a
+        spec attached or leak the shared template into every customer's
+        signed file.
+        """
+
+        from apps.specifications.models import (
+            SpecificationDocumentKind,
+            SpecificationSheet,
+            SpecificationStatus,
+        )
+
+        org, formulation, version = _make_rtg_sku_lite(org=None)
+        # Seed the FINAL template that the RTG SKU is expected to
+        # carry — client_name="" marks it as the untainted master.
+        # Costed so we can assert cost + margin get pinned onto
+        # the proposal header + line (empty-cell regression the
+        # sales finance table hit before the fix).
+        template = SpecificationSheet.objects.create(
+            organization=org,
+            formulation_version=version,
+            code="RTG-VITC-FINAL",
+            document_kind=SpecificationDocumentKind.FINAL,
+            status=SpecificationStatus.APPROVED,
+            client_name="",
+            unit_cost=Decimal("2.10"),
+            margin_percent=Decimal("35.00"),
+            created_by=org.created_by,
+            updated_by=org.created_by,
+        )
+
+        customer = _make_customer(org=org)
+        account = _make_client_account(customer=customer)
+
+        submission = create_portal_rtg_submission(
+            client_account=account,
+            payload=PortalRTGSubmissionInput(
+                rtg_formulation_id=str(formulation.id),
+                quantity=200,
+                packaging="60ct bottle",
+                delivery_address="10 Downing Street",
+            ),
+        )
+        proposal = Proposal.objects.get(pk=submission.drafted_proposal_id)
+
+        # Header + line both point at the clone.
+        assert proposal.specification_sheet_id is not None
+        assert proposal.specification_sheet_id != template.id
+        line = proposal.lines.get()
+        assert line.specification_sheet_id == proposal.specification_sheet_id
+
+        clone = proposal.specification_sheet
+        # Customer identity is denormalized onto the clone.
+        assert clone.client_name == customer.name
+        assert clone.client_email == customer.email
+        assert clone.client_company == customer.company
+        # Template's client_name stays blank — never tainted.
+        template.refresh_from_db()
+        assert template.client_name == ""
+        # Code is suffixed so two orders of the same SKU don't collide.
+        assert clone.code.startswith("RTG-VITC-FINAL-ORDER-")
+        # Cost + margin pinned from the template so the sales finance
+        # table renders numbers on first open. `_line.unit_cost` mirrors
+        # `Proposal.material_cost_per_pack` — same source of truth.
+        assert proposal.material_cost_per_pack == Decimal("2.10")
+        assert proposal.margin_percent == Decimal("35.00")
+        assert line.unit_cost == Decimal("2.10")
+
+    def test_missing_template_still_creates_proposal(self):
+        """Absent-template case: the SKU has no FINAL master yet. The
+        proposal is still created (sales notices the missing sheet on
+        the row) rather than blocking the whole order on a staff
+        configuration gap. The Send guard will refuse to ship it later.
+        """
+
+        org, formulation, _version = _make_rtg_sku_lite(org=None)
+        customer = _make_customer(org=org)
+        account = _make_client_account(customer=customer)
+
+        submission = create_portal_rtg_submission(
+            client_account=account,
+            payload=PortalRTGSubmissionInput(
+                rtg_formulation_id=str(formulation.id),
+                quantity=200,
+                packaging="60ct bottle",
+                delivery_address="10 Downing Street",
+            ),
+        )
+        proposal = Proposal.objects.get(pk=submission.drafted_proposal_id)
+        assert proposal.status == ProposalStatus.DRAFT
+        assert proposal.specification_sheet_id is None
+        assert proposal.lines.get().specification_sheet_id is None
 
 
 # ---------------------------------------------------------------------------
