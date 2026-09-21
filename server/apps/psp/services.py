@@ -9140,12 +9140,24 @@ def mirror_psp_item(
         # rebuild from the flat fields we captured on the wire.
         attributes = _flatten_psp_attributes(psp_item)
 
+        # Resolve the local ``internal_code`` once here so both the
+        # refresh + create paths share collision handling. PSP has
+        # been observed emitting the same ``MA#####`` code for
+        # unrelated items (fallout of the equipment→items merge);
+        # without this, the UNIQUE (catalogue, internal_code)
+        # constraint would 500 on the second pick.
+        base_code = psp_item.code or psp_item.external_sku or ""
+        resolved_code = _resolve_mirror_internal_code(
+            catalogue=catalogue,
+            base_code=base_code,
+            psp_uuid=psp_item.uuid,
+            own_id=existing.id if existing else None,
+        )
+
         if existing is not None:
             before = snapshot(existing)
             existing.name = psp_item.name or existing.name
-            existing.internal_code = (
-                psp_item.code or psp_item.external_sku or existing.internal_code
-            )
+            existing.internal_code = resolved_code or existing.internal_code
             existing.attributes = attributes
             if psp_item.selling_price is not None:
                 existing.base_price = psp_item.selling_price
@@ -9178,8 +9190,10 @@ def mirror_psp_item(
             # the local ``internal_code``, so the BOM's CODE column
             # matches what PSP's own UI prints. Fall back to
             # ``external_sku`` when PSP has no numbering format
-            # configured (older backends before PR #48).
-            internal_code=psp_item.code or psp_item.external_sku or "",
+            # configured (older backends before PR #48). Suffixed
+            # with the PSP uuid short if that code already belongs
+            # to a different mirror row (see ``_resolve_mirror_internal_code``).
+            internal_code=resolved_code,
             unit="",
             base_price=psp_item.selling_price,
             attributes=attributes,
@@ -9194,6 +9208,71 @@ def mirror_psp_item(
             after=snapshot(item),
         )
         return item
+
+
+def _resolve_mirror_internal_code(
+    *,
+    catalogue: Any,
+    base_code: str,
+    psp_uuid: Any,
+    own_id: Any = None,
+) -> str:
+    """Return a ``catalogues.Item.internal_code`` for a PSP mirror row
+    that won't trip the ``UNIQUE (catalogue, internal_code)`` constraint.
+
+    PSP is known to emit the same ``MA#####`` code for unrelated
+    items when its numbering counters collide (surfaced after the
+    equipment→items schema merge). Without this guard the mirror
+    upsert 500'd every time a scientist picked an item whose PSP
+    code was already taken in the local mirror by a different
+    ``psp_source_uuid``.
+
+    On collision we suffix ``-<short psp uuid>`` so both mirror rows
+    coexist. The suffix is deliberately visible in the BOM CODE
+    column so operators can spot the underlying PSP numbering bug
+    and clean it up on the source side.
+
+    Empty ``base_code`` returns ``""`` — the partial UNIQUE
+    constraint ignores empty strings, so no disambiguation needed.
+    """
+
+    from apps.catalogues.models import Item
+
+    if not base_code:
+        return ""
+
+    clash = Item.objects.filter(catalogue=catalogue, internal_code=base_code)
+    if own_id is not None:
+        clash = clash.exclude(id=own_id)
+    if not clash.exists():
+        return base_code
+
+    short = str(psp_uuid).replace("-", "")[:8]
+    disambiguated = f"{base_code}-{short}"
+
+    logger.warning(
+        "PSP mirror internal_code collision: base=%r resolved=%r "
+        "psp_uuid=%s catalogue=%s — PSP is emitting duplicate codes "
+        "for different items.",
+        base_code,
+        disambiguated,
+        psp_uuid,
+        catalogue.id,
+    )
+
+    # Bounded retries for the pathological case where the suffixed
+    # form itself collides (another mirror row already used it).
+    # After 3 attempts we fall through to the full-uuid form which
+    # is guaranteed unique.
+    for i in range(3):
+        candidate = disambiguated if i == 0 else f"{disambiguated}-{i}"
+        q = Item.objects.filter(catalogue=catalogue, internal_code=candidate)
+        if own_id is not None:
+            q = q.exclude(id=own_id)
+        if not q.exists():
+            return candidate
+
+    return f"{base_code}-{str(psp_uuid).replace('-', '')}"
 
 
 def _flatten_psp_attributes(psp_item: PspItem) -> dict:

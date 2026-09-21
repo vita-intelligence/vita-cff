@@ -531,6 +531,113 @@ class TestMirrorPspItem:
         assert refreshed.name == "New name"
         assert refreshed.attributes["use_as"] == "colour"
 
+    def test_colliding_psp_code_disambiguates_instead_of_500(self):
+        """Regression: PSP has been observed emitting the same
+        ``MA#####`` code for unrelated items (equipment→items merge
+        fallout). Two different PSP uuids landing with the same
+        code must NOT hit the UNIQUE (catalogue, internal_code)
+        constraint — the second pick suffixes ``-<short psp uuid>``
+        instead. Both mirror rows coexist; the collision is logged.
+        """
+
+        from apps.catalogues.models import Item
+
+        org = self._seed_org_with_psp()
+        first_uuid = "aaaaaaaa-1111-1111-1111-111111111111"
+        second_uuid = "bbbbbbbb-2222-2222-2222-222222222222"
+
+        class _Client:
+            def __init__(self, cfg): ...
+
+            def get_item(self, uuid):
+                if str(uuid) == first_uuid:
+                    return _stub_psp_item(
+                        first_uuid,
+                        name="Malic Acid",
+                        code="MA00860",
+                    )
+                return _stub_psp_item(
+                    second_uuid,
+                    name="Stand-Up Pouches (170 x 270mm)",
+                    code="MA00860",  # same code as first — the bug trigger
+                )
+
+        psp._TEST_CLIENT = _Client
+        try:
+            first = psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=first_uuid,
+            )
+            second = psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=second_uuid,
+            )
+        finally:
+            psp._TEST_CLIENT = None
+
+        # First pick keeps the plain code; second pick disambiguates.
+        assert first.internal_code == "MA00860"
+        assert second.internal_code.startswith("MA00860-")
+        assert first.pk != second.pk
+        assert str(first.psp_source_uuid) == first_uuid
+        assert str(second.psp_source_uuid) == second_uuid
+        # Both mirror rows coexist in the same catalogue.
+        assert (
+            Item.objects.filter(
+                catalogue__organization=org,
+                catalogue__slug__isnull=False,
+            )
+            .filter(psp_source_uuid__in=[first_uuid, second_uuid])
+            .count()
+            == 2
+        )
+
+    def test_repick_of_colliding_item_is_still_idempotent(self):
+        """After the disambiguation lands, a re-pick of the same
+        PSP uuid must reuse its existing mirror row (with the
+        already-suffixed code) rather than mint a new suffix."""
+
+        org = self._seed_org_with_psp()
+        first_uuid = "aaaaaaaa-1111-1111-1111-111111111111"
+        second_uuid = "bbbbbbbb-2222-2222-2222-222222222222"
+
+        class _Client:
+            def __init__(self, cfg): ...
+
+            def get_item(self, uuid):
+                if str(uuid) == first_uuid:
+                    return _stub_psp_item(
+                        first_uuid, name="Malic Acid", code="MA00860"
+                    )
+                return _stub_psp_item(
+                    second_uuid, name="Pouch", code="MA00860"
+                )
+
+        psp._TEST_CLIENT = _Client
+        try:
+            psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=first_uuid,
+            )
+            second_a = psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=second_uuid,
+            )
+            second_b = psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=second_uuid,
+            )
+        finally:
+            psp._TEST_CLIENT = None
+
+        assert second_a.pk == second_b.pk
+        assert second_a.internal_code == second_b.internal_code
+
     def test_not_configured_raises(self):
         org = OrganizationFactory()  # no PSP config
         with pytest.raises(psp.PspNotConfigured):
