@@ -4546,6 +4546,18 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         "npd_proposal_uuid": str(proposal.id),
         "npd_proposal_code": (getattr(proposal, "code", "") or "").strip(),
         "npd_proposal_url": _proposal_app_url(organization, proposal),
+        # Customer identity — same shape as the formulation-sync payload
+        # so PSP's ``NpdSync.resolve_customer`` can find-or-create the
+        # real customer shell + link the CO's ``customer_id`` FK. RTG
+        # SKUs have no ``formulation.customer`` (catalog items belong to
+        # no one until sold), so pre-fix the proposal-merge landed COs
+        # against the "NPD Placeholder" customer and never told PSP who
+        # actually ordered. Custom formulations always had a customer
+        # attached at ``save_version`` time via ``sync_customer_order_to_psp``,
+        # so this block is idempotent for Custom + Reorder (PSP sees
+        # the same customer it already resolved) and is the ONLY source
+        # of customer identity for RTG.
+        **_customer_identity(getattr(proposal, "customer", None)),
         # Primary formulation identity — powers PSP's CO display name
         # on the /projects kanban. See the block-comment above the
         # payload for why sending these is load-bearing on RTG.
