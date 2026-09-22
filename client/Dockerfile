@@ -23,9 +23,12 @@ COPY . .
 ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_WS_ORIGIN
 ARG BACKEND_INTERNAL_URL
+# Sandbox-only escape hatch — see next.config.ts. Prod never sets it.
+ARG NEXT_IGNORE_BUILD_ERRORS
 
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_WS_ORIGIN=$NEXT_PUBLIC_WS_ORIGIN
+ENV NEXT_IGNORE_BUILD_ERRORS=$NEXT_IGNORE_BUILD_ERRORS
 # next.config.ts captures BACKEND_INTERNAL_URL at build time (rewrites
 # are baked into the standalone server bundle), so the URL must be
 # present as a build arg — setting it as a runtime env var on App

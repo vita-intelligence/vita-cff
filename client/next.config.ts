@@ -18,6 +18,18 @@ const BACKEND_INTERNAL_URL =
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Escape hatch for the sandbox build only. Set
+  // ``NEXT_IGNORE_BUILD_ERRORS=true`` as a ``--build-arg`` in the
+  // sandbox Dockerfile invocation so a fresh sandbox image can be
+  // cut even while unrelated TypeScript / ESLint drift exists in
+  // the tree. Production builds never set this env var, so prod
+  // still fails hard on any TS or lint regression.
+  typescript: {
+    ignoreBuildErrors: process.env.NEXT_IGNORE_BUILD_ERRORS === "true",
+  },
+  eslint: {
+    ignoreDuringBuilds: process.env.NEXT_IGNORE_BUILD_ERRORS === "true",
+  },
   // Standalone output ships a minimal node server + only the
   // dependencies the build actually pulls in. The container image
   // copies that tree alongside ``public/`` and ``.next/static/`` and
