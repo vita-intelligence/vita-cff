@@ -215,6 +215,8 @@ class Command(BaseCommand):
         no_sku = 0
         no_match = 0
         vendor_inserts: dict[str, int] = {}  # ven_code -> psp vendor id
+        vendor_approved_flag: dict[str, bool] = {}  # ven_code -> approved?
+        approved_item_inserts = 0
         price_upserts = 0
         term_upserts = 0
 
@@ -269,27 +271,59 @@ class Command(BaseCommand):
                     # lookup by MRPEasy code for the rest of this run.
                     psp_vendor_id = vendor_inserts.get(ven_code)
                     if psp_vendor_id is None:
-                        vendor_name = (term.vendor_title or ven_code).strip()
+                        # Prefer the standalone MrpeasyVendor row
+                        # (has the `(UnApproved)` suffix + full
+                        # title) — fall back to the vendor snapshot
+                        # embedded on the purchase term if the
+                        # vendor list didn't include this code.
+                        mrp_vendor = vendors_by_code.get(ven_code)
+                        if mrp_vendor is not None:
+                            vendor_name = mrp_vendor.clean_title or ven_code
+                            approved = mrp_vendor.approved
+                        else:
+                            vendor_name = (
+                                term.vendor_title or ven_code
+                            ).strip()
+                            approved = "(unapproved)" not in vendor_name.lower()
+                        approval_status = "approved" if approved else "pending"
+
                         if dry_run:
                             psp_vendor_id = -1  # sentinel — no writes
                             self.stdout.write(
                                 f"  [dry-run] UPSERT vendor "
-                                f"code={ven_code!r} name={vendor_name!r}"
+                                f"code={ven_code!r} name={vendor_name!r} "
+                                f"approval={approval_status}"
                             )
                         else:
                             with psp.cursor() as cur:
                                 cur.execute(
                                     "INSERT INTO vendors "
                                     "  (company_id, name, "
+                                    "   approval_status, approved_at, "
                                     "   inserted_at, updated_at) "
-                                    "VALUES (%s, %s, NOW(), NOW()) "
+                                    "VALUES (%s, %s, %s, "
+                                    "        CASE WHEN %s THEN NOW() END, "
+                                    "        NOW(), NOW()) "
                                     "ON CONFLICT (company_id, name) "
-                                    "DO UPDATE SET updated_at = NOW() "
+                                    "DO UPDATE SET "
+                                    "  approval_status = EXCLUDED.approval_status, "
+                                    "  approved_at = COALESCE(EXCLUDED.approved_at, vendors.approved_at), "
+                                    "  updated_at = NOW() "
                                     "RETURNING id",
-                                    (company_id, vendor_name),
+                                    (
+                                        company_id,
+                                        vendor_name,
+                                        approval_status,
+                                        approved,
+                                    ),
                                 )
                                 psp_vendor_id = cur.fetchone()[0]
                         vendor_inserts[ven_code] = psp_vendor_id
+
+                        # Cache approval flag on the cache row so
+                        # the ``vendor_approved_items`` writer below
+                        # can decide without a second lookup.
+                        vendor_approved_flag[ven_code] = approved
 
                     price = term.price
                     currency = _symbol_to_iso(
@@ -350,10 +384,11 @@ class Command(BaseCommand):
                                 "  (company_id, vendor_id, item_id, "
                                 "   price, currency_code, "
                                 "   lead_time_days, min_quantity, "
+                                "   min_quantity_uom, "
                                 "   vendor_part_no, "
                                 "   priority, "
                                 "   inserted_at, updated_at) "
-                                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, "
+                                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
                                 "        COALESCE(%s, 1), "
                                 "        NOW(), NOW()) "
                                 "ON CONFLICT "
@@ -363,6 +398,7 @@ class Command(BaseCommand):
                                 "  currency_code = EXCLUDED.currency_code, "
                                 "  lead_time_days = EXCLUDED.lead_time_days, "
                                 "  min_quantity = EXCLUDED.min_quantity, "
+                                "  min_quantity_uom = EXCLUDED.min_quantity_uom, "
                                 "  vendor_part_no = EXCLUDED.vendor_part_no, "
                                 "  priority = EXCLUDED.priority, "
                                 "  updated_at = NOW()",
@@ -374,12 +410,125 @@ class Command(BaseCommand):
                                     currency,
                                     lead,
                                     moq,
+                                    term.unit,
                                     term.vendor_product_code,
                                     term.priority,
                                 ),
                             )
+
+                            # Approved suppliers get their supply
+                            # list mirrored into vendor_approved_items
+                            # — pending vendors DO NOT so the PSP
+                            # RBAC gate stays honest ("approved for
+                            # POs"). Cache the approval flag by
+                            # vendor code so we don't re-derive it
+                            # from the title on every term row.
+                            if vendor_approved_flag.get(ven_code):
+                                cur.execute(
+                                    "INSERT INTO vendor_approved_items "
+                                    "  (company_id, vendor_id, item_id, "
+                                    "   approved_at, "
+                                    "   inserted_at, updated_at) "
+                                    "VALUES (%s, %s, %s, NOW(), "
+                                    "        NOW(), NOW()) "
+                                    "ON CONFLICT (vendor_id, item_id) "
+                                    "DO NOTHING",
+                                    (
+                                        company_id,
+                                        psp_vendor_id,
+                                        psp_item_id,
+                                    ),
+                                )
+                                if cur.rowcount:
+                                    approved_item_inserts += 1
                         price_upserts += 1
                         term_upserts += 1
+
+            # ---------------------------------------------------
+            # PO history backfill — hits ``vendor_item_prices`` so
+            # PSP's cost calc has real quantities + last-paid dates
+            # to draw from, WITHOUT synthesising fake POs.
+            #
+            # Aggregation shape is per ``(vendor_code, item_code)``
+            # rather than per PO line so we write ONE row per
+            # (vendor, item) — sum of quantities across every PO
+            # line, most recent arrival date.
+            # ---------------------------------------------------
+            self.stdout.write(
+                self.style.NOTICE(
+                    "[mrpeasy-pull] fetching PO history…"
+                )
+            )
+            history: dict[tuple[str, str], dict[str, Any]] = {}
+            po_count = 0
+            for po in client.iter_all_purchase_orders():
+                po_count += 1
+                if not po.vendor_code or not po.lines:
+                    continue
+                # Use arrival_date when set (item actually landed);
+                # fall back to created_at so cancelled / draft POs
+                # still contribute a signal.
+                when = po.arrival_date or po.created_at
+                for line in po.lines:
+                    if not line.item_code or line.quantity is None:
+                        continue
+                    key = (po.vendor_code, line.item_code)
+                    agg = history.setdefault(
+                        key,
+                        {"qty": Decimal(0), "when": None},
+                    )
+                    agg["qty"] += line.quantity
+                    if when and (agg["when"] is None or when > agg["when"]):
+                        agg["when"] = when
+            self.stdout.write(
+                self.style.NOTICE(
+                    f"[mrpeasy-pull] POs crawled: {po_count}, "
+                    f"aggregated (vendor,item) pairs: {len(history)}"
+                )
+            )
+
+            # Push aggregates into vendor_item_prices — one UPDATE
+            # per (vendor, item). Rows we didn't already create in
+            # the terms pass are quietly skipped (no vendor_id to
+            # write to). We reuse the same PSP transaction, so if
+            # anything below fails the whole run rolls back cleanly.
+            history_updates = 0
+            history_no_price_row = 0
+            with psp.cursor() as cur:
+                for (ven_code, item_code), agg in history.items():
+                    psp_vendor_id = vendor_inserts.get(ven_code)
+                    if psp_vendor_id is None or psp_vendor_id < 0:
+                        # Dry-run sentinel OR vendor never surfaced
+                        # in the terms pass (no active supply for
+                        # any matched item). Nothing to update.
+                        continue
+                    when = agg["when"]  # ISO date str or None
+                    if dry_run:
+                        self.stdout.write(
+                            f"  [dry-run] UPDATE vendor_item_prices "
+                            f"vendor={ven_code!r} item={item_code!r} "
+                            f"qty+={agg['qty']} last_paid_at={when}"
+                        )
+                        continue
+
+                    cur.execute(
+                        "UPDATE vendor_item_prices vip "
+                        "  SET qty_purchased = COALESCE(vip.qty_purchased, 0) + %s, "
+                        "      last_paid_at = GREATEST( "
+                        "         vip.last_paid_at, "
+                        "         COALESCE(%s::timestamp, vip.last_paid_at)), "
+                        "      updated_at = NOW() "
+                        "  FROM items i "
+                        " WHERE vip.item_id = i.id "
+                        "   AND i.external_sku = %s "
+                        "   AND vip.vendor_id = %s "
+                        "   AND vip.company_id = i.company_id",
+                        (agg["qty"], when, item_code, psp_vendor_id),
+                    )
+                    if cur.rowcount:
+                        history_updates += cur.rowcount
+                    else:
+                        history_no_price_row += 1
 
             if dry_run:
                 psp.rollback()
@@ -396,6 +545,9 @@ class Command(BaseCommand):
                 f"[mrpeasy-pull] done — "
                 f"matched={matched} no_sku={no_sku} no_match={no_match} "
                 f"vendors={len(vendor_inserts)} "
-                f"prices={price_upserts} terms={term_upserts}"
+                f"approved_items={approved_item_inserts} "
+                f"prices={price_upserts} terms={term_upserts} "
+                f"history_updates={history_updates} "
+                f"history_no_row={history_no_price_row}"
             )
         )

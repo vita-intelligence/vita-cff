@@ -124,11 +124,75 @@ class MrpeasyVendor:
     address columns but the purchase-terms sync only needs the
     matching key (``code``), the human name, and the numeric
     ``vendor_id`` (target of any future deep link).
+
+    Approval status is smuggled inside the vendor ``title`` in
+    MRPEasy — vendors NOT approved to trade with have their
+    display name suffixed with ``(UnApproved)`` /
+    ``(Unapproved)``. :attr:`approved` unpacks that suffix so the
+    sync layer doesn't have to re-parse the title downstream.
+    :attr:`clean_title` is the same title with the suffix
+    stripped, ready to use as the human name in PSP.
     """
 
     code: str
     title: str
     vendor_id: int | None = None
+
+    @property
+    def approved(self) -> bool:
+        # MRPEasy has two typographic variants of the unapproved
+        # tag in the wild — normalise before comparing.
+        haystack = self.title.lower()
+        return "(unapproved)" not in haystack
+
+    @property
+    def clean_title(self) -> str:
+        # Strip the trailing ``(Approved)`` / ``(Unapproved)`` /
+        # ``(UnApproved)`` suffix + surrounding whitespace so the
+        # PSP display name doesn't carry MRPEasy's workflow flag.
+        import re
+
+        return re.sub(
+            r"\s*\((approved|unapproved)\)\s*$",
+            "",
+            self.title,
+            flags=re.IGNORECASE,
+        ).strip()
+
+
+@dataclass(frozen=True)
+class MrpeasyPurchaseOrderLine:
+    """One line inside :class:`MrpeasyPurchaseOrder`.``lines``.
+
+    Sourced from the ``products`` array on the PO row — MRPEasy
+    inlines line items on every ``/purchase-orders`` response so
+    the client doesn't need a per-PO detail call.
+    """
+
+    item_code: str
+    item_title: str
+    quantity: Decimal | None
+    unit_price: Decimal | None
+    unit: str | None
+
+
+@dataclass(frozen=True)
+class MrpeasyPurchaseOrder:
+    """One ``Purchase Order`` row returned by
+    ``GET /purchase-orders``. Only carries the fields the
+    history-backfill sync uses — enough to attribute qty +
+    price to a (vendor, item) pair with a plausible
+    ``last_paid_at``.
+    """
+
+    code: str
+    po_id: int | None
+    vendor_code: str | None
+    vendor_title: str | None
+    arrival_date: str | None
+    created_at: str | None
+    currency_symbol: str | None
+    lines: tuple[MrpeasyPurchaseOrderLine, ...]
 
 
 @dataclass(frozen=True)
@@ -278,6 +342,12 @@ class MockMrpeasyClient:
         this method or push fixtures into a subclass. Keeps the mock
         deterministic without carrying a global vendor registry."""
         return []
+
+    def iter_all_purchase_orders(self, page_size: int = 100):
+        """Empty by default — tests that need PO history push
+        fixtures into a subclass. Same rationale as
+        :meth:`list_all_vendors`."""
+        return iter(())
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +605,32 @@ class HttpMrpeasyClient:
                 return
             start += capped
 
+    def iter_all_purchase_orders(self, page_size: int = 100):
+        """Yield every :class:`MrpeasyPurchaseOrder` in the tenant.
+
+        Same ``Range: items=<a>-<b>`` pagination as the other
+        iterators. MRPEasy inlines the PO ``products`` array on
+        the listing response, so a single crawl gives us both the
+        header + all line rows without a per-PO detail call.
+        """
+
+        capped = max(1, min(int(page_size), 100))
+        start = 0
+        while True:
+            end = start + capped - 1
+            payload = self._request(
+                "purchase-orders",
+                extra_headers={"Range": f"items={start}-{end}"},
+            )
+            if not isinstance(payload, list) or not payload:
+                return
+            for row in payload:
+                if isinstance(row, dict):
+                    yield _build_purchase_order(row)
+            if len(payload) < capped:
+                return
+            start += capped
+
     def list_all_vendors(self, page_size: int = 100) -> list["MrpeasyVendor"]:
         """Return every vendor in the tenant catalogue.
 
@@ -708,6 +804,97 @@ def _build_vendor(row: dict[str, Any]) -> MrpeasyVendor:
         code=str(row.get("code") or ""),
         title=str(row.get("title") or row.get("name") or ""),
         vendor_id=vendor_id,
+    )
+
+
+def _build_purchase_order(row: dict[str, Any]) -> MrpeasyPurchaseOrder:
+    """Project an MRPEasy PO row + inlined ``products`` array
+    down to :class:`MrpeasyPurchaseOrder`.
+
+    Date fields need special care — ``created`` arrives as a
+    Unix epoch integer (or string of one) on this tenant's REST
+    v1 response, while ``arrival_date`` uses ISO ``YYYY-MM-DD``.
+    Both land normalised to ISO strings so the SQL layer can
+    cast to ``timestamp`` / ``date`` without shape-matching.
+    """
+    import datetime as _dt
+
+    def _to_decimal(raw: Any) -> Decimal | None:
+        if raw is None or raw == "":
+            return None
+        try:
+            return Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            return None
+
+    def _to_int(raw: Any) -> int | None:
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, str) and raw.strip().isdigit():
+            return int(raw.strip())
+        return None
+
+    def _to_iso_date(raw: Any) -> str | None:
+        # Accept: unix epoch int, epoch as digit-string, or an
+        # already-formatted ISO date. Anything else degrades to
+        # None so the aggregation just skips this signal instead
+        # of raising.
+        if raw is None or raw == "":
+            return None
+        if isinstance(raw, int) or (
+            isinstance(raw, str) and raw.strip().lstrip("-").isdigit()
+        ):
+            try:
+                epoch = int(raw)
+                return (
+                    _dt.datetime.fromtimestamp(epoch, tz=_dt.timezone.utc)
+                    .date()
+                    .isoformat()
+                )
+            except (OverflowError, ValueError, OSError):
+                return None
+        if isinstance(raw, str):
+            return raw.strip() or None
+        return None
+
+    lines: list[MrpeasyPurchaseOrderLine] = []
+    for prod in row.get("products") or []:
+        if not isinstance(prod, dict):
+            continue
+        lines.append(
+            MrpeasyPurchaseOrderLine(
+                item_code=str(prod.get("item_code") or ""),
+                item_title=str(prod.get("item_title") or ""),
+                quantity=_to_decimal(prod.get("quantity")),
+                unit_price=_to_decimal(prod.get("item_price")),
+                unit=(
+                    str(prod.get("unit")).strip()
+                    if prod.get("unit")
+                    else None
+                ),
+            )
+        )
+    return MrpeasyPurchaseOrder(
+        code=str(row.get("code") or ""),
+        po_id=_to_int(row.get("po_id") or row.get("id")),
+        vendor_code=(
+            str(row.get("vendor_code")).strip()
+            if row.get("vendor_code")
+            else None
+        ),
+        vendor_title=(
+            str(row.get("vendor_title")).strip()
+            if row.get("vendor_title")
+            else None
+        ),
+        arrival_date=_to_iso_date(row.get("arrival_date")),
+        created_at=_to_iso_date(row.get("created")),
+        currency_symbol=(
+            str(row.get("currency")).strip()
+            if row.get("currency")
+            else None
+        ),
+        lines=tuple(lines),
     )
 
 
