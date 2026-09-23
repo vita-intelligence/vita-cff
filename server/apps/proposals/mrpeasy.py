@@ -74,6 +74,61 @@ class MrpeasyItem:
     title: str
     selling_price: Decimal | None
     product_id: int | None = None
+    #: Average unit cost across recent POs (``avg_cost``). Distinct
+    #: from ``selling_price`` (outbound list) and from the per-vendor
+    #: ``purchase_terms[].price`` (the real "next PO" price). Kept
+    #: because the price-hint UI likes a single number for the
+    #: fallback case where an item has no active purchase terms.
+    avg_cost: Decimal | None = None
+    #: Every purchase term MRPEasy has on file for this item — one
+    #: entry per approved vendor + tier. Populated from the item
+    #: row's embedded ``purchase_terms`` array. Empty list when the
+    #: item is either self-manufactured or has no vendor set up.
+    purchase_terms: tuple[MrpeasyPurchaseTerm, ...] = ()
+
+
+@dataclass(frozen=True)
+class MrpeasyPurchaseTerm:
+    """One row inside an item's embedded ``purchase_terms`` list.
+
+    MRPEasy stores multiple purchase terms per item (one per
+    vendor + tier) inline on the item row itself — there is no
+    separate ``/purchase-terms`` endpoint. The list is what the
+    UI shows on the item's Purchase tab and what the sync into
+    PSP writes into ``vendors``, ``vendor_item_prices``, and
+    ``vendor_item_purchase_terms``.
+
+    ``currency`` arrives as the vendor's ISO currency SYMBOL
+    (``£``, ``$``, ``€``, …), not the ISO code — the sync layer
+    is responsible for normalising to ``GBP`` / ``USD`` / ``EUR``
+    before writing to PSP.
+    """
+
+    vendor_id: int | None
+    vendor_code: str
+    vendor_title: str
+    vendor_product_code: str | None
+    price: Decimal | None
+    currency_symbol: str | None
+    lead_time_days: int | None
+    min_quantity: Decimal | None
+    unit: str | None
+    priority: int | None
+
+
+@dataclass(frozen=True)
+class MrpeasyVendor:
+    """One ``Vendor`` row returned by ``GET /vendors``.
+
+    Slim projection — MRPEasy exposes dozens of contact and
+    address columns but the purchase-terms sync only needs the
+    matching key (``code``), the human name, and the numeric
+    ``vendor_id`` (target of any future deep link).
+    """
+
+    code: str
+    title: str
+    vendor_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -211,6 +266,18 @@ class MockMrpeasyClient:
                 if cleaned in row.code.lower() or cleaned in row.title.lower()
             ]
         return rows[:limit]
+
+    def iter_all_items(self, page_size: int = 100):
+        """Yield every fixture item — the mock equivalent of the real
+        client's paginated crawl."""
+        for row in _MOCK_ITEMS.values():
+            yield row
+
+    def list_all_vendors(self, page_size: int = 100) -> list["MrpeasyVendor"]:
+        """Empty by default — tests that need vendor rows can patch
+        this method or push fixtures into a subclass. Keeps the mock
+        deterministic without carrying a global vendor registry."""
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +492,79 @@ class HttpMrpeasyClient:
 
         return collected
 
+    # ---------------------------------------------------------------
+    # Bulk read paths — used by mrpeasy_pull_purchase_terms to hydrate
+    # PSP's vendor / vendor_item_prices tables from the MRPEasy tenant.
+    # Kept off the per-request price-hint code path (which stays a
+    # single filtered lookup); these methods knowingly page through
+    # the entire tenant catalogue.
+    # ---------------------------------------------------------------
+
+    def iter_all_items(self, page_size: int = 100):
+        """Yield every :class:`MrpeasyItem` in the tenant catalogue.
+
+        Pagination uses ``Range: items=<start>-<end>`` — probed
+        against a real tenant, MRPEasy silently ignores ``?limit=``
+        + ``?offset=`` and always returns the first page. The Range
+        header, however, cleanly walks the catalogue. Confusingly
+        the *unit* is always ``items`` regardless of endpoint —
+        both ``/items`` and ``/vendors`` respond to
+        ``Range: items=100-199`` with the second page.
+
+        The generator shape keeps memory flat for tenants with
+        thousands of SKUs — the caller decides whether to buffer
+        into a list or stream straight into the DB writer.
+        """
+
+        capped = max(1, min(int(page_size), 100))
+        start = 0
+        while True:
+            end = start + capped - 1
+            payload = self._request(
+                "items",
+                extra_headers={"Range": f"items={start}-{end}"},
+            )
+            if not isinstance(payload, list) or not payload:
+                return
+            for row in payload:
+                if isinstance(row, dict):
+                    yield _build_item(row)
+            # Short page = end of catalogue, no need to prove-it-empty
+            # with another round trip.
+            if len(payload) < capped:
+                return
+            start += capped
+
+    def list_all_vendors(self, page_size: int = 100) -> list["MrpeasyVendor"]:
+        """Return every vendor in the tenant catalogue.
+
+        Same ``Range: items=<start>-<end>`` pagination as
+        :meth:`iter_all_items` — the unit stays ``items`` even on
+        ``/vendors``, which was one of the surprises when wiring
+        the sync. Vendors are almost always a small set (<1k rows)
+        so a materialised list is fine — callers zip it against
+        the items iterator to resolve ``item.vendor_code`` into a
+        full vendor row.
+        """
+
+        capped = max(1, min(int(page_size), 100))
+        collected: list[MrpeasyVendor] = []
+        start = 0
+        while True:
+            end = start + capped - 1
+            payload = self._request(
+                "vendors",
+                extra_headers={"Range": f"items={start}-{end}"},
+            )
+            if not isinstance(payload, list) or not payload:
+                return collected
+            for row in payload:
+                if isinstance(row, dict):
+                    collected.append(_build_vendor(row))
+            if len(payload) < capped:
+                return collected
+            start += capped
+
 
 def _build_item(row: dict[str, Any]) -> MrpeasyItem:
     """Project an MRPEasy item dict down to the
@@ -473,11 +613,101 @@ def _build_item(row: dict[str, Any]) -> MrpeasyItem:
         product_id = raw_product_id
     elif isinstance(raw_product_id, str) and raw_product_id.strip().isdigit():
         product_id = int(raw_product_id.strip())
+    # Vendor + cost data for the purchase-terms sync. Cost lives
+    # on ``avg_cost`` (recent-PO average) — MRPEasy has no
+    # single-value ``cost`` field on the item row. Per-vendor
+    # pricing / lead time / MOQ arrives embedded on the item as
+    # ``purchase_terms: list[{...}]`` — one entry per active
+    # supplier. Legacy items with no vendor set up return an
+    # empty list, which the sync should treat as "leave alone".
+    raw_avg = row.get("avg_cost")
+    avg_cost: Decimal | None = None
+    if raw_avg is not None and raw_avg != "":
+        try:
+            avg_cost = Decimal(str(raw_avg))
+        except (InvalidOperation, ValueError):
+            avg_cost = None
+
+    terms: list[MrpeasyPurchaseTerm] = []
+    raw_terms = row.get("purchase_terms")
+    if isinstance(raw_terms, list):
+        for term in raw_terms:
+            if not isinstance(term, dict):
+                continue
+            terms.append(_build_purchase_term(term))
     return MrpeasyItem(
         code=str(row.get("code") or row.get("part_number") or ""),
         title=str(name),
         selling_price=selling_price,
         product_id=product_id,
+        avg_cost=avg_cost,
+        purchase_terms=tuple(terms),
+    )
+
+
+def _build_purchase_term(term: dict[str, Any]) -> MrpeasyPurchaseTerm:
+    """Coerce one MRPEasy ``purchase_terms[]`` row into
+    :class:`MrpeasyPurchaseTerm`. Numeric fields land as
+    ``Decimal`` where present so the DB writer never has to
+    stringify-then-parse; string-typed values that fail to
+    parse degrade to ``None`` rather than raising.
+    """
+
+    def _to_decimal(raw: Any) -> Decimal | None:
+        if raw is None or raw == "":
+            return None
+        try:
+            return Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            return None
+
+    def _to_int(raw: Any) -> int | None:
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, str) and raw.strip().isdigit():
+            return int(raw.strip())
+        return None
+
+    vendor_code = str(term.get("vendor_code") or "").strip()
+    return MrpeasyPurchaseTerm(
+        vendor_id=_to_int(term.get("vendor_id")),
+        vendor_code=vendor_code,
+        vendor_title=str(term.get("vendor_title") or "").strip(),
+        vendor_product_code=(
+            str(term.get("vendor_product_code")).strip()
+            if term.get("vendor_product_code")
+            else None
+        ),
+        price=_to_decimal(term.get("price")),
+        currency_symbol=(
+            str(term.get("currency")).strip()
+            if term.get("currency")
+            else None
+        ),
+        lead_time_days=_to_int(term.get("lead_time")),
+        min_quantity=_to_decimal(term.get("min_quantity")),
+        unit=(
+            str(term.get("unit")).strip() if term.get("unit") else None
+        ),
+        priority=_to_int(term.get("priority")),
+    )
+
+
+def _build_vendor(row: dict[str, Any]) -> MrpeasyVendor:
+    """Project an MRPEasy vendor row down to
+    :class:`MrpeasyVendor`. Matching key is ``code``.
+    """
+
+    raw_vendor_id = row.get("vendor_id")
+    vendor_id: int | None = None
+    if isinstance(raw_vendor_id, int):
+        vendor_id = raw_vendor_id
+    elif isinstance(raw_vendor_id, str) and raw_vendor_id.strip().isdigit():
+        vendor_id = int(raw_vendor_id.strip())
+    return MrpeasyVendor(
+        code=str(row.get("code") or ""),
+        title=str(row.get("title") or row.get("name") or ""),
+        vendor_id=vendor_id,
     )
 
 
