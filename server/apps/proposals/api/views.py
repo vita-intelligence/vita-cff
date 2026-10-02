@@ -321,9 +321,12 @@ from apps.proposals.services import (
     ProposalAcknowledgementsRequired,
     ProposalCodeConflict,
     ProposalLineNotFound,
+    DraftFollowUpExists,
+    ProposalAlreadyCloned,
     ProposalNotFound,
     ProposalNotMissingRequiredField,
     ProposalNotMutable,
+    ProposalNotRejected,
     ProposalPublicLinkNotEnabled,
     ProposalSalesPersonNotMember,
     SignatureRequired,
@@ -332,8 +335,10 @@ from apps.proposals.services import (
     add_proposal_line,
     capture_customer_signature_on_attached_spec,
     capture_customer_signature_on_proposal,
+    clone_rejected_proposal,
     complete_required_fields,
     compute_material_cost_per_pack,
+    compute_savings_at_scale,
     create_proposal,
     create_proposal_bundle,
     delete_proposal,
@@ -540,6 +545,21 @@ class ProposalListCreateView(APIView):
                 {"code": ["proposal_code_conflict"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except DraftFollowUpExists as exc:
+            # The last rejection on this formulation already has an
+            # in-flight retry. Return the existing draft's id/code
+            # so the FE can route the operator there instead of
+            # creating a parallel sibling that neither entry point
+            # knew about.
+            return Response(
+                {
+                    "code": "draft_follow_up_exists",
+                    "follow_up_id": str(exc.follow_up_id),
+                    "follow_up_code": exc.follow_up_code,
+                    "follow_up_status": exc.follow_up_status,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(
             ProposalReadSerializer(proposal).data,
             status=status.HTTP_201_CREATED,
@@ -603,6 +623,20 @@ class ProposalBundleCreateView(APIView):
             return Response(
                 {"sheets": ["specification_sheet_not_approved"]},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        except DraftFollowUpExists as exc:
+            # Same guard as the direct-create path: ``/signed/`` can't
+            # fan out a sibling retry when a draft follow-up already
+            # exists on this formulation. FE surfaces an "open the
+            # existing draft" prompt from the 409.
+            return Response(
+                {
+                    "code": "draft_follow_up_exists",
+                    "follow_up_id": str(exc.follow_up_id),
+                    "follow_up_code": exc.follow_up_code,
+                    "follow_up_status": exc.follow_up_status,
+                },
+                status=status.HTTP_409_CONFLICT,
             )
         return Response(
             ProposalReadSerializer(proposal).data,
@@ -696,6 +730,52 @@ class ProposalDetailView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ProposalSavingsAtScaleView(APIView):
+    """``GET`` ``/.../proposals/<id>/savings-at-scale/``.
+
+    Returns a progression of cost per unit at increasing order sizes
+    (base × 1 / ×2 / ×5 / ×10 / ×25 / ×50 of the quoted qty), with
+    ingredients + labour broken out. Powers the proposal page's
+    "savings at scale" panel so the sales team can show customers
+    how price scales with volume.
+
+    Ingredients ride PSP's tier-aware ``suggest_costs`` so volume
+    breaks on vendor purchase terms (``vendor_item_purchase_terms``
+    with multiple rows per vendor-item differing by min_quantity)
+    land on the right tier automatically. Labour amortises setup
+    time across the tier qty so bigger runs show lower per-unit
+    labour.
+
+    Silent-degrade on any PSP outage — rows that couldn't be priced
+    come back with ``null`` ingredients/labour so the FE table stays
+    aligned.
+    """
+
+    permission_classes = (HasProposalsPermission,)
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        # Reachable from every surface that can read a proposal.
+        self.required_capability_any = (
+            ProposalsCapability.VIEW,
+            ProposalsCapability.VIEW_APPROVALS,
+            ProposalsCapability.VIEW_SIGNED,
+        )
+        super().initial(request, *args, **kwargs)
+
+    def get(
+        self, request: Request, org_id: str, proposal_id: str
+    ) -> Response:
+        try:
+            proposal = get_proposal(
+                organization=self.organization, proposal_id=proposal_id
+            )
+        except ProposalNotFound as exc:
+            raise NotFound() from exc
+
+        payload = compute_savings_at_scale(proposal=proposal)
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class ProposalAttachedSpecRenderView(APIView):
@@ -899,6 +979,88 @@ class ProposalStatusView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(ProposalReadSerializer(updated).data)
+
+
+class ProposalCloneView(APIView):
+    """``POST`` ``/.../proposals/<id>/clone/`` — fresh retry proposal.
+
+    Target: the "proposal was rejected but the deal is still live"
+    case. Sales rep clicks "Create a new proposal" on the rejected
+    row, we spin up a DRAFT clone with the same formulation + lines
+    + customer + pricing, and link the two with
+    ``previous_rejected_proposal`` so the retry page can render a
+    rejection-reason banner.
+
+    Capability: ``edit`` — same gate as creating any other proposal.
+    """
+
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, proposal_id: str
+    ) -> Response:
+        try:
+            proposal = get_proposal(
+                organization=self.organization, proposal_id=proposal_id
+            )
+        except ProposalNotFound as exc:
+            raise NotFound() from exc
+
+        try:
+            new_proposal = clone_rejected_proposal(
+                proposal=proposal, actor=request.user
+            )
+        except ProposalNotRejected:
+            return Response(
+                {"code": "proposal_not_rejected"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except ProposalAlreadyCloned as exc:
+            # Surface the existing follow-up's id/code so the FE can
+            # redirect the operator to the retry row instead of
+            # showing a generic error.
+            return Response(
+                {
+                    "code": "proposal_already_cloned",
+                    "follow_up_id": str(exc.follow_up_id),
+                    "follow_up_code": exc.follow_up_code,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        except DraftFollowUpExists as exc:
+            # Formulation-wide invariant — the clone of a DIFFERENT
+            # rejected row on the same formulation would collide
+            # with an existing in-flight retry draft. Treat the
+            # same as a double-clone attempt from the FE's POV:
+            # surface the existing draft so the operator jumps to
+            # it instead of raising a sibling.
+            return Response(
+                {
+                    "code": "draft_follow_up_exists",
+                    "follow_up_id": str(exc.follow_up_id),
+                    "follow_up_code": exc.follow_up_code,
+                    "follow_up_status": exc.follow_up_status,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        except FormulationVersionNotApproved:
+            # Scientists must have an approved version on the
+            # formulation before sales can quote a retry. Surface
+            # as 409 so the FE renders a hint instead of a silent 500.
+            return Response(
+                {"code": "formulation_version_not_approved"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except CustomerNotInOrg:
+            return Response(
+                {"code": "customer_not_in_org"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(
+            ProposalReadSerializer(new_proposal).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class ProposalCompleteRequiredFieldsView(APIView):
@@ -1843,6 +2005,153 @@ def _public_kiosk_identity(request: Request, token: str):
         return None
 
 
+def _customer_safe_price_progression(proposal) -> list[dict]:
+    """Return the customer-facing volume savings progression.
+
+    Reuses :func:`compute_savings_at_scale` to get the system-
+    computed per-tier cost, applies the proposal line's current
+    margin to derive **price per unit**, and emits a stripped
+    payload with ONLY the fields a customer may legitimately see:
+
+      * ``quantity`` — the tier qty
+      * ``multiplier`` — ×1 / ×2 / ×5 / ×10 / ×25 / ×50
+      * ``price_per_unit`` — price with the proposal's margin applied
+      * ``total_price`` — ``price_per_unit × quantity``
+      * ``savings_per_unit_vs_quoted`` — reduction vs the quoted tier
+      * ``savings_total_vs_quoted`` — total reduction at this qty
+
+    Internal fields (ingredients_per_unit, labour_per_unit,
+    total_per_unit cost, source badges, breakdowns, vendor names,
+    etc.) are **explicitly dropped** — never surface them on a
+    portal payload. Returns an empty list on any failure so the
+    portal degrades gracefully.
+    """
+
+    try:
+        from apps.proposals.services import compute_savings_at_scale
+    except Exception:  # pragma: no cover - defensive import guard
+        return []
+
+    try:
+        data = compute_savings_at_scale(proposal=proposal)
+    except Exception:
+        return []
+
+    rows = data.get("rows") if isinstance(data, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return []
+
+    # Determine the margin to apply. Prefer the proposal line's
+    # derived margin (cost + price the operator set); fall back to
+    # 30% so a line with blanks still produces a sensible curve.
+    from decimal import Decimal, InvalidOperation
+
+    def _d(value):
+        if value is None or value == "":
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError):
+            return None
+
+    line = proposal.lines.order_by("display_order", "id").first()
+    tier_overrides = (
+        line.tier_margin_overrides if line is not None else {}
+    ) or {}
+
+    # Default margin precedence (highest wins):
+    #   1. The sales team's typed default margin — persisted as
+    #      ``tier_margin_overrides["1"]`` so the exact typed value
+    #      flows to the portal without roundtrip drift.
+    #   2. Margin derived from (unit_cost, unit_price) on the line.
+    #      Lossy because both are stored at 4 decimals, so 33%
+    #      recovers as 32.9965% — but acceptable fallback for lines
+    #      that predate the tier-overrides persistence.
+    #   3. 30% as the ultimate fallback.
+    default_margin = Decimal("0.30")
+    typed_base = _d(tier_overrides.get("1"))
+    if typed_base is not None and 0 <= typed_base < 100:
+        default_margin = typed_base / Decimal("100")
+    elif line is not None:
+        cost = _d(line.unit_cost)
+        price = _d(line.unit_price)
+        if cost is not None and price is not None and price > 0 and cost > 0:
+            derived = (price - cost) / price
+            if 0 <= derived < 1:
+                default_margin = derived
+
+    def _margin_for_multiplier(mult) -> Decimal:
+        """Pick the right margin for a tier. Explicit per-tier
+        override wins; falls back to the default margin picked
+        above (which itself may have come from the ``"1"`` entry
+        of tier overrides)."""
+        if mult is None:
+            return default_margin
+        override_raw = tier_overrides.get(str(mult))
+        override = _d(override_raw)
+        if override is not None and 0 <= override < 100:
+            return override / Decimal("100")
+        return default_margin
+
+    base_price_per_unit: Decimal | None = None
+    out: list[dict] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        qty_val = raw.get("quantity")
+        try:
+            qty_int = int(qty_val)
+        except (TypeError, ValueError):
+            continue
+        if qty_int <= 0:
+            continue
+
+        system_cost_per_unit = _d(raw.get("total_per_unit"))
+        multiplier = raw.get("multiplier")
+        margin_fraction = _margin_for_multiplier(multiplier)
+        one_minus_margin = Decimal("1") - margin_fraction
+        price_per_unit: Decimal | None = None
+        if system_cost_per_unit is not None and one_minus_margin > 0:
+            price_per_unit = system_cost_per_unit / one_minus_margin
+        total_price = (
+            price_per_unit * Decimal(qty_int)
+            if price_per_unit is not None
+            else None
+        )
+
+        if multiplier == 1 and price_per_unit is not None:
+            base_price_per_unit = price_per_unit
+
+        savings_per_unit = Decimal("0")
+        if (
+            base_price_per_unit is not None
+            and price_per_unit is not None
+        ):
+            diff = base_price_per_unit - price_per_unit
+            if diff > 0:
+                savings_per_unit = diff
+        savings_total = savings_per_unit * Decimal(qty_int)
+
+        def _fmt(value: Decimal | None) -> str | None:
+            if value is None:
+                return None
+            return str(value.quantize(Decimal("0.0001")))
+
+        out.append(
+            {
+                "quantity": qty_int,
+                "multiplier": multiplier
+                if isinstance(multiplier, int)
+                else None,
+                "price_per_unit": _fmt(price_per_unit),
+                "total_price": _fmt(total_price),
+                "savings_per_unit_vs_quoted": _fmt(savings_per_unit),
+                "savings_total_vs_quoted": _fmt(savings_total),
+            }
+        )
+    return out
+
+
 def _render_public_proposal_payload(proposal) -> dict:
     """Shape the proposal kiosk JSON for the ``/p/proposal/<token>``
     page. Returns the proposal's top-level fields needed to paint
@@ -1978,12 +2287,21 @@ def _render_public_proposal_payload(proposal) -> dict:
         else (proposal.created_at if proposal.status != "draft" else None)
     )
 
+    # Customer-facing volume-savings progression. Reuses the same
+    # service that powers the internal "savings at scale" panel but
+    # strips every cost / breakdown field — the portal payload MUST
+    # only expose numbers the customer can see without leaking
+    # Vita's cost structure. See
+    # ``_customer_safe_price_progression`` for the field whitelist.
+    price_progression = _customer_safe_price_progression(proposal)
+
     return {
         "id": str(proposal.id),
         "code": proposal.code,
         "status": proposal.status,
         "template_type": proposal.template_type,
         "formulation_id": formulation_id,
+        "price_progression": price_progression,
         # Timestamps for the web-site portal's Summary sidebar
         # ("Sent" / "Last update"). ``sent_at`` derives from the
         # status transition row above; ``updated_at`` is the raw
@@ -2043,6 +2361,20 @@ def _render_public_proposal_payload(proposal) -> dict:
             proposal.customer_signed_at.isoformat()
             if proposal.customer_signed_at is not None
             else None
+        ),
+        # Rejection confirmation — echo the customer's own typed
+        # reason back on the Declined view so they see what they
+        # submitted. Safe to expose (the customer wrote it).
+        "customer_rejected_at": (
+            proposal.customer_rejected_at.isoformat()
+            if proposal.customer_rejected_at is not None
+            else None
+        ),
+        "customer_rejection_reason": (
+            proposal.customer_rejection_reason or ""
+        ),
+        "customer_rejection_categories": (
+            list(proposal.customer_rejection_categories or [])
         ),
         "has_signature": bool(proposal.customer_signature_image),
         # Customer-facing ack state — drives the kiosk's three

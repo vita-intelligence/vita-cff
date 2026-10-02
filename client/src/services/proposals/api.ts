@@ -16,6 +16,7 @@ import type {
   ProposalAuditDto,
   ProposalDto,
   ProposalLineDto,
+  ProposalSavingsAtScaleDto,
   ProposalStatusRequestDto,
   ProposalTransitionDto,
   UpdateProposalLineRequestDto,
@@ -182,6 +183,69 @@ export async function transitionProposalStatus(
 }
 
 /**
+ * Clone a rejected proposal. Returns the new DRAFT row — the UI
+ * typically routes to its detail page. The backend 409s with
+ * ``proposal_not_rejected`` when called against a non-rejected
+ * source, so this isn't a general "duplicate proposal" shortcut.
+ */
+export async function cloneRejectedProposal(
+  orgId: string,
+  proposalId: string,
+): Promise<ProposalDto> {
+  const { data } = await apiClient.post<ProposalDto>(
+    proposalsEndpoints.clone(orgId, proposalId),
+    {},
+  );
+  return data;
+}
+
+/** Follow-up metadata the retry-coordination 409s carry so the FE
+ *  can offer "open the existing draft" instead of a dead-end error.
+ *  Covers both ``proposal_already_cloned`` (clicked retry twice on
+ *  the same rejected row) and ``draft_follow_up_exists`` (a draft
+ *  retry already exists on the formulation — happens when there
+ *  are multiple rejected proposals and the user tries to retry
+ *  more than one). */
+export interface RetryBlockedPayload {
+  readonly code: "proposal_already_cloned" | "draft_follow_up_exists";
+  readonly follow_up_id: string;
+  readonly follow_up_code: string;
+  readonly follow_up_status?: string;
+}
+
+/** Pull ``code`` + follow-up metadata out of an API error if it's
+ *  one of the retry-coordination 409s. Returns ``null`` for every
+ *  other error so callers chain their generic error handling after. */
+export function extractRetryBlocked(err: unknown): RetryBlockedPayload | null {
+  if (!err || typeof err !== "object") return null;
+  const data = (err as { response?: { data?: unknown } }).response?.data;
+  if (!data || typeof data !== "object") return null;
+  const d = data as {
+    code?: unknown;
+    follow_up_id?: unknown;
+    follow_up_code?: unknown;
+    follow_up_status?: unknown;
+  };
+  if (typeof d.code !== "string") return null;
+  if (
+    d.code !== "proposal_already_cloned" &&
+    d.code !== "draft_follow_up_exists"
+  ) {
+    return null;
+  }
+  if (typeof d.follow_up_id !== "string" || typeof d.follow_up_code !== "string") {
+    return null;
+  }
+  return {
+    code: d.code,
+    follow_up_id: d.follow_up_id,
+    follow_up_code: d.follow_up_code,
+    follow_up_status:
+      typeof d.follow_up_status === "string" ? d.follow_up_status : undefined,
+  };
+}
+
+/**
  * Fill required-for-sent fields on a proposal that's already in
  * ``approved``. The backend whitelists the keys and only accepts
  * values for fields it currently reports as missing, so the
@@ -282,6 +346,16 @@ export async function fetchCostPreview(
 ): Promise<CostPreviewDto> {
   const { data } = await apiClient.get<CostPreviewDto>(
     proposalsEndpoints.costPreview(orgId, versionId, marginPercent),
+  );
+  return data;
+}
+
+export async function fetchProposalSavingsAtScale(
+  orgId: string,
+  proposalId: string,
+): Promise<ProposalSavingsAtScaleDto> {
+  const { data } = await apiClient.get<ProposalSavingsAtScaleDto>(
+    proposalsEndpoints.savingsAtScale(orgId, proposalId),
   );
   return data;
 }

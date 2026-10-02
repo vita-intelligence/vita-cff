@@ -60,6 +60,12 @@ interface StageDraft {
   stage_key: StageKey;
   workstation_group_uuid: string | null;
   workstation_group_name: string;
+  /** PSP routing-template this stage was hydrated from. Non-null
+   *  means the Stages tab locks workstation + hides Add/Remove/Move.
+   *  Threaded through to PSP on sync so each snapshot stamps
+   *  provenance. */
+  source_routing_template_uuid: string | null;
+  source_routing_step_uuid: string | null;
   operation_description: string;
   setup_time_min: string;
   cycle_time_min: string;
@@ -267,6 +273,8 @@ function toDraft(stage: FormulationStageDto): StageDraft {
     stage_key: stage.stage_key,
     workstation_group_uuid: stage.workstation_group_uuid,
     workstation_group_name: stage.workstation_group_name,
+    source_routing_template_uuid: stage.source_routing_template_uuid ?? null,
+    source_routing_step_uuid: stage.source_routing_step_uuid ?? null,
     operation_description: stage.operation_description ?? "",
     setup_time_min: stage.setup_time_min ?? "",
     cycle_time_min: stage.cycle_time_min ?? "",
@@ -294,6 +302,24 @@ function toDraft(stage: FormulationStageDto): StageDraft {
 }
 
 
+/** Compose the auto name for a template-sourced non-finished stage.
+ *  Takes the raw step label stored on the stage and prefixes the
+ *  product name — idempotent, so re-saving an already-composed name
+ *  doesn't produce "Super Capsules Super Capsules Weighing". */
+function composeTemplateStageName(
+  productName: string,
+  rawLabel: string,
+): string {
+  const prefix = productName.trim();
+  const raw = rawLabel.trim();
+  if (!prefix) return raw;
+  if (!raw) return prefix;
+  if (raw === prefix) return prefix;
+  if (raw.toLowerCase().startsWith(prefix.toLowerCase() + " ")) return raw;
+  return `${prefix} ${raw}`;
+}
+
+
 function draftToInput(
   draft: StageDraft,
   index: number,
@@ -305,13 +331,21 @@ function draftToInput(
   // Editing lives on Setup; this override closes the loop server-side
   // so a divergent legacy value gets rewritten on the next save.
   const isFinished = draft.psp_item_type === "finished_product";
+  const isTemplateStep = !!draft.source_routing_step_uuid;
   const finishedName = productName.trim();
   const resolvedName = isFinished && finishedName
     ? finishedName
-    : draft.name.trim() || `Stage ${index + 1}`;
+    : isTemplateStep && finishedName
+      ? composeTemplateStageName(finishedName, draft.name)
+      : draft.name.trim() || `Stage ${index + 1}`;
   const resolvedPspName = isFinished && finishedName
     ? finishedName
-    : draft.psp_item_name.trim();
+    : isTemplateStep && finishedName
+      ? composeTemplateStageName(
+          finishedName,
+          draft.psp_item_name || draft.name,
+        )
+      : draft.psp_item_name.trim();
   return {
     id: draft.id,
     sort_order: index,
@@ -339,6 +373,8 @@ function draftToInput(
     psp_item_product_family_uuid: draft.psp_item_product_family_uuid,
     psp_finished_product_spec: draft.psp_finished_product_spec,
     servings_per_output_unit: emptyToNull(draft.servings_per_output_unit),
+    source_routing_template_uuid: draft.source_routing_template_uuid,
+    source_routing_step_uuid: draft.source_routing_step_uuid,
   };
 }
 
@@ -642,6 +678,14 @@ export function StageStrip({
   const [drafts, setDrafts] = useState<StageDraft[]>(() =>
     formulation.stages.map(toDraft),
   );
+  /** True when the current stage set was hydrated from a PSP routing
+   *  template. Flips every structural control (Add / Remove / Move)
+   *  off and locks the workstation picker — the routing template is
+   *  the source of truth for the shape of the flow, and tweaks live
+   *  in the per-stage numeric fields. */
+  const isTemplateSourced = drafts.some(
+    (d) => !!d.source_routing_template_uuid,
+  );
   const [pickerOpened, setPickerOpened] = useState(false);
   const upsert = useUpsertStages(orgId, formulation.id);
   const pullPspBom = usePullPspBom(orgId, formulation.id);
@@ -904,6 +948,8 @@ export function StageStrip({
         stage_key: "custom",
         workstation_group_uuid: null,
         workstation_group_name: "",
+        source_routing_template_uuid: null,
+        source_routing_step_uuid: null,
         operation_description: "",
         setup_time_min: "",
         cycle_time_min: "",
@@ -1194,17 +1240,19 @@ export function StageStrip({
                 Apply template
               </Button>
             ) : null}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={addStage}
-              isDisabled={upsert.isPending}
-              className="gap-1.5"
-            >
-              <Plus className="h-4 w-4" />
-              Add stage
-            </Button>
+            {!isTemplateSourced ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={addStage}
+                isDisabled={upsert.isPending}
+                className="gap-1.5"
+              >
+                <Plus className="h-4 w-4" />
+                Add stage
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="primary"
@@ -1411,6 +1459,25 @@ export function StageStrip({
                           Locked to the Setup product name.
                         </p>
                       </>
+                    ) : draft.source_routing_step_uuid ? (
+                      // Template-sourced stage — name is composed
+                      // "<product> <step label>" client-side (and
+                      // force-synced on save via ``draftToInput``) so
+                      // both surfaces stay in sync. Locked read-only.
+                      <>
+                        <input
+                          value={composeTemplateStageName(
+                            resolveFormulationDisplayName(formulation),
+                            draft.name,
+                          )}
+                          disabled
+                          className={`${inputClass} mt-1 cursor-not-allowed bg-ink-50`}
+                          title="Composed from the Setup product name + the routing-template step label."
+                        />
+                        <p className="mt-1 text-[11px] text-ink-500">
+                          Auto: product name + template step.
+                        </p>
+                      </>
                     ) : (
                       <input
                         value={draft.name}
@@ -1429,66 +1496,85 @@ export function StageStrip({
                     <label className="text-xs font-medium text-ink-600">
                       Operation (workstation)
                     </label>
-                    <select
-                      value={draft.workstation_group_uuid ?? ""}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        const picked = wsOptions.find(
-                          (w) => w.uuid === v,
-                        );
-                        // When the operator picks a workstation,
-                        // auto-mirror its name into the stage name
-                        // if the stage name is still the untouched
-                        // default ("Stage 1", "Stage 2", ...). Once
-                        // the operator has typed anything else we
-                        // leave it alone.
-                        const looksLikeDefault =
-                          !draft.name.trim() ||
-                          /^Stage \d+$/.test(draft.name.trim());
-                        updateDraft(draft.clientKey, {
-                          workstation_group_uuid: v || null,
-                          workstation_group_name: picked?.name ?? "",
-                          name:
-                            looksLikeDefault && picked?.name
-                              ? picked.name
-                              : draft.name,
-                          // Kind auto-derives from the workstation
-                          // name via a simple substring match. Falls
-                          // back to ``custom`` for anything unknown.
-                          stage_key: inferStageKey(
-                            picked?.name ?? "",
-                          ),
-                        });
-                      }}
-                      onFocus={() => setPickerOpened(true)}
-                      disabled={!canEdit || upsert.isPending}
-                      className={`${inputClass} mt-1`}
-                    >
-                      <option value="">
-                        {draft.workstation_group_name ||
-                          "Pick an operation…"}
-                      </option>
-                      {wsOptions.map((w) => (
-                        <option key={w.uuid} value={w.uuid}>
-                          {w.name}
-                          {w.kind === "passive_processing"
-                            ? " · passive"
-                            : ""}
-                        </option>
-                      ))}
-                    </select>
-                    {pickerOpened && wsQuery.isLoading ? (
-                      <p className="mt-1 text-xs text-ink-500">
-                        Loading operations from PSP…
-                      </p>
-                    ) : null}
-                    {pickerOpened &&
-                    !wsQuery.isLoading &&
-                    wsOptions.length === 0 ? (
-                      <p className="mt-1 text-xs text-ink-500">
-                        No operations set up on PSP yet.
-                      </p>
-                    ) : null}
+                    {draft.source_routing_step_uuid ? (
+                      <>
+                        <input
+                          value={
+                            draft.workstation_group_name ||
+                            "— template-locked —"
+                          }
+                          disabled
+                          className={`${inputClass} mt-1 cursor-not-allowed bg-ink-50`}
+                          title="Set by the routing template. Edit on PSP → Production → Routing templates."
+                        />
+                        <p className="mt-1 text-[11px] text-ink-500">
+                          Locked by routing template.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <select
+                          value={draft.workstation_group_uuid ?? ""}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            const picked = wsOptions.find(
+                              (w) => w.uuid === v,
+                            );
+                            // When the operator picks a workstation,
+                            // auto-mirror its name into the stage name
+                            // if the stage name is still the untouched
+                            // default ("Stage 1", "Stage 2", ...). Once
+                            // the operator has typed anything else we
+                            // leave it alone.
+                            const looksLikeDefault =
+                              !draft.name.trim() ||
+                              /^Stage \d+$/.test(draft.name.trim());
+                            updateDraft(draft.clientKey, {
+                              workstation_group_uuid: v || null,
+                              workstation_group_name: picked?.name ?? "",
+                              name:
+                                looksLikeDefault && picked?.name
+                                  ? picked.name
+                                  : draft.name,
+                              // Kind auto-derives from the workstation
+                              // name via a simple substring match. Falls
+                              // back to ``custom`` for anything unknown.
+                              stage_key: inferStageKey(
+                                picked?.name ?? "",
+                              ),
+                            });
+                          }}
+                          onFocus={() => setPickerOpened(true)}
+                          disabled={!canEdit || upsert.isPending}
+                          className={`${inputClass} mt-1`}
+                        >
+                          <option value="">
+                            {draft.workstation_group_name ||
+                              "Pick an operation…"}
+                          </option>
+                          {wsOptions.map((w) => (
+                            <option key={w.uuid} value={w.uuid}>
+                              {w.name}
+                              {w.kind === "passive_processing"
+                                ? " · passive"
+                                : ""}
+                            </option>
+                          ))}
+                        </select>
+                        {pickerOpened && wsQuery.isLoading ? (
+                          <p className="mt-1 text-xs text-ink-500">
+                            Loading operations from PSP…
+                          </p>
+                        ) : null}
+                        {pickerOpened &&
+                        !wsQuery.isLoading &&
+                        wsOptions.length === 0 ? (
+                          <p className="mt-1 text-xs text-ink-500">
+                            No operations set up on PSP yet.
+                          </p>
+                        ) : null}
+                      </>
+                    )}
                   </div>
 
                   <div>
@@ -1550,7 +1636,7 @@ export function StageStrip({
                   </div>
                 </div>
 
-                {canEdit ? (
+                {canEdit && !isTemplateSourced ? (
                   <div className="flex flex-col items-center gap-1">
                     <button
                       type="button"
@@ -1642,12 +1728,26 @@ export function StageStrip({
                             | "finished_product",
                         })
                       }
-                      disabled={!canEdit || upsert.isPending}
+                      disabled={
+                        !canEdit ||
+                        upsert.isPending ||
+                        !!draft.source_routing_step_uuid
+                      }
+                      title={
+                        draft.source_routing_step_uuid
+                          ? "Set by the routing template — the last step is finished_product, earlier steps are semi_finished."
+                          : undefined
+                      }
                       className={`${inputClass} mt-1`}
                     >
                       <option value="semi_finished">Semi-finished</option>
                       <option value="finished_product">Finished product</option>
                     </select>
+                    {draft.source_routing_step_uuid ? (
+                      <p className="mt-1 text-[11px] text-ink-500">
+                        Locked by routing template.
+                      </p>
+                    ) : null}
                   </div>
                   <div>
                     <div className="flex items-center justify-between gap-2">
@@ -1700,6 +1800,24 @@ export function StageStrip({
                       />
                       <p className="mt-1 text-[11px] text-ink-500">
                         Locked to the Setup product name.
+                      </p>
+                    </>
+                  ) : draft.source_routing_step_uuid ? (
+                    // Template-sourced stage — PSP item name mirrors
+                    // the composed stage name ("<product> <step
+                    // label>") so NPD + PSP labels stay in sync.
+                    <>
+                      <input
+                        value={composeTemplateStageName(
+                          resolveFormulationDisplayName(formulation),
+                          draft.psp_item_name || draft.name,
+                        )}
+                        disabled
+                        className={`${inputClass} mt-1 cursor-not-allowed bg-ink-50`}
+                        title="Composed from the Setup product name + the routing-template step label."
+                      />
+                      <p className="mt-1 text-[11px] text-ink-500">
+                        Auto: product name + template step.
                       </p>
                     </>
                   ) : (

@@ -15,6 +15,12 @@ export const proposalsEndpoints = {
     `/api/organizations/${orgId}/proposals/${proposalId}/`,
   status: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/status/`,
+  //: Clone a rejected proposal into a fresh DRAFT retry row.
+  //: Carries lines + customer + pricing forward and links the two
+  //: via ``previous_rejected_proposal`` so the new detail page can
+  //: show a rejection-reason banner.
+  clone: (orgId: string, proposalId: string) =>
+    `/api/organizations/${orgId}/proposals/${proposalId}/clone/`,
   //: Narrow patch for filling required-for-sent fields that were left
   //: blank when the director approved the proposal. Backend rejects
   //: any key outside its whitelist or any key that isn't currently
@@ -67,6 +73,12 @@ export const proposalsEndpoints = {
     `/api/organizations/${orgId}/proposals/${proposalId}/lines/`,
   lineDetail: (orgId: string, proposalId: string, lineId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/lines/${lineId}/`,
+  //: Volume progression — ingredients + labour cost per unit at
+  //: 6 breakpoints (base × 1 / ×2 / ×5 / ×10 / ×25 / ×50 of the
+  //: quoted qty). Powers the proposal page's "savings at scale"
+  //: panel.
+  savingsAtScale: (orgId: string, proposalId: string) =>
+    `/api/organizations/${orgId}/proposals/${proposalId}/savings-at-scale/`,
   costPreview: (orgId: string, versionId: string, marginPercent?: string) => {
     const base = `/api/organizations/${orgId}/formulation-versions/${versionId}/cost-preview/`;
     if (!marginPercent) return base;

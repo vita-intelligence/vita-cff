@@ -25,12 +25,45 @@ from typing import Any
 from apps.formulations.models import Formulation, ProjectStatus, ProjectType
 from apps.label_design.constants import LabelDesignStatus
 from apps.label_design.models import LabelDesign
-from apps.proposals.models import Proposal
+from apps.proposals.models import Proposal, ProposalStatus
 from apps.specifications.models import (
     SpecificationDocumentKind,
     SpecificationSheet,
     SpecificationStatus,
 )
+
+
+def _newest_live_decline(proposals: list[Proposal]) -> Proposal | None:
+    """Newest customer-declined proposal, UNLESS a non-rejected
+    proposal has been raised after it.
+
+    Mirrors
+    :func:`apps.client_portal.api.product_detail_views._first_declined_proposal`
+    so the dashboard chip, the project-page cancellation banner, and
+    the roadmap sweep all agree on "did the decline survive the
+    retry?". Without the shared guard, a sales rep clones a rejected
+    proposal into a fresh retry → the project card chip stays red
+    ("Declined") while the detail page roadmap flows forward against
+    the retry.
+    """
+
+    rejected = [
+        p for p in proposals
+        if getattr(p, "customer_rejected_at", None) is not None
+    ]
+    if not rejected:
+        return None
+    newest_decline = max(rejected, key=lambda p: p.customer_rejected_at)
+    newest_at = newest_decline.customer_rejected_at
+    for p in proposals:
+        if p.status == ProposalStatus.REJECTED.value:
+            continue
+        created_at = getattr(p, "created_at", None)
+        if created_at is None:
+            continue
+        if created_at > newest_at:
+            return None
+    return newest_decline
 
 
 def _has_project_voiding_payment(formulation_id: Any) -> bool:
@@ -334,10 +367,8 @@ def resolve_stage(
     # Declined wins over voided when both apply (the customer's own
     # action is the more meaningful signal to them).
     has_signed = any(p.customer_signed_at is not None for p in proposals)
-    if not has_signed and any(
-        getattr(p, "customer_rejected_at", None) is not None
-        for p in proposals
-    ):
+    declined_newest = _newest_live_decline(proposals)
+    if not has_signed and declined_newest is not None:
         return ("proposal_declined", None)
     if _has_project_voiding_payment(formulation.id):
         return ("project_cancelled", None)

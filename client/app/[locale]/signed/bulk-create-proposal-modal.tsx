@@ -133,6 +133,26 @@ export function BulkCreateProposalModal({
       close();
       router.push(`/proposals/${created.id}`);
     } catch (err) {
+      //: ``draft_follow_up_exists`` — the formulation already has
+      //: an in-flight retry (DRAFT / IN_REVIEW) off a prior
+      //: rejection. Offer to open the existing draft instead of
+      //: creating a parallel sibling (the PROP-0003 / PROP-0004
+      //: fan-out trap).
+      const topLevel = extractTopLevelCode(err);
+      if (topLevel && topLevel.code === "draft_follow_up_exists") {
+        const confirmed = window.confirm(
+          `A retry draft already exists for this project — ${topLevel.follow_up_code} (${topLevel.follow_up_status}). Open it instead?\n\nIf this draft isn't what you want, Cancel here, delete that draft, then try again.`,
+        );
+        if (confirmed && topLevel.follow_up_id) {
+          close();
+          router.push(`/proposals/${topLevel.follow_up_id}`);
+          return;
+        }
+        setError(
+          `A retry draft already exists — open ${topLevel.follow_up_code} or delete it before creating a new one.`,
+        );
+        return;
+      }
       //: Map the two custom BE codes to human-friendly messages —
       //: everything else (400 field errors, network) falls through to
       //: the generic translator.
@@ -289,4 +309,34 @@ function extractBundleCode(err: unknown): string | null {
   const first = sheets[0];
   if (typeof first !== "string") return null;
   return first;
+}
+
+/** Pull a top-level ``code`` + follow-up metadata out of a 409
+ *  body. Used for ``draft_follow_up_exists`` (the retry
+ *  coordination guard) which is scoped to the whole formulation,
+ *  not to the ``sheets`` field. */
+function extractTopLevelCode(err: unknown): {
+  readonly code: string;
+  readonly follow_up_id: string | null;
+  readonly follow_up_code: string | null;
+  readonly follow_up_status: string | null;
+} | null {
+  if (!err || typeof err !== "object") return null;
+  const data = (err as { response?: { data?: unknown } }).response?.data;
+  if (!data || typeof data !== "object") return null;
+  const d = data as {
+    code?: unknown;
+    follow_up_id?: unknown;
+    follow_up_code?: unknown;
+    follow_up_status?: unknown;
+  };
+  if (typeof d.code !== "string") return null;
+  return {
+    code: d.code,
+    follow_up_id: typeof d.follow_up_id === "string" ? d.follow_up_id : null,
+    follow_up_code:
+      typeof d.follow_up_code === "string" ? d.follow_up_code : null,
+    follow_up_status:
+      typeof d.follow_up_status === "string" ? d.follow_up_status : null,
+  };
 }

@@ -438,6 +438,42 @@ class Proposal(models.Model):
             "without explaining."
         ),
     )
+    #: Structured rejection categories (checkbox ticks) alongside the
+    #: free-text reason. Required on the portal reject flow — at
+    #: least one key must be present. Enables analytics on "why do
+    #: our customers decline": aggregate counts by category over
+    #: time, cross-reference with price band / lead time / project
+    #: type, etc. See :data:`apps.proposals.constants.PROPOSAL_REJECTION_CATEGORIES`
+    #: for the registry.
+    customer_rejection_categories = models.JSONField(
+        _("customer rejection categories"),
+        default=list,
+        blank=True,
+        help_text=_(
+            "List of category keys the customer ticked on the "
+            "portal decline form (e.g. ['price', 'lead_time']). "
+            "Empty on operator-driven rejections; populated by the "
+            "kiosk path."
+        ),
+    )
+    # Link back to the previous proposal this one was cloned from —
+    # populated by ``clone_rejected_proposal`` so the new quote
+    # surfaces "last time the customer declined because X" context
+    # to the sales person. SET_NULL on delete so hard-deleting old
+    # history doesn't block retries.
+    previous_rejected_proposal = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="follow_up_proposals",
+        help_text=_(
+            "If this proposal was created as a retry after a prior "
+            "proposal was rejected, link back to that rejected row. "
+            "The detail page renders the previous rejection reason "
+            "as a banner so sales can address it in this quote."
+        ),
+    )
 
     # Acknowledgement tickboxes from the proposal's docx template.
     # Three required boxes the customer ticks in the kiosk before
@@ -850,6 +886,20 @@ class ProposalLine(models.Model):
             "the pricing table. Scientists drag to reorder; zeroes "
             "break ties by ``created_at``."
         ),
+    )
+
+    #: Per-tier margin overrides authored on the savings-at-scale
+    #: panel. Shape ``{"<multiplier>": "<margin %>"}`` — e.g.
+    #: ``{"2": "35.00", "10": "40.00"}`` means "when the customer
+    #: orders ×2 of the quoted qty, apply 35% margin; at ×10, 40%".
+    #: Missing multipliers fall back to the line's derived margin
+    #: (``unit_price - unit_cost / unit_price``). Both the internal
+    #: progression and the customer portal payload read from this
+    #: field so the two surfaces always render the same prices.
+    tier_margin_overrides = models.JSONField(
+        _("tier margin overrides"),
+        default=dict,
+        blank=True,
     )
 
     created_at = models.DateTimeField(default=timezone.now, editable=False)

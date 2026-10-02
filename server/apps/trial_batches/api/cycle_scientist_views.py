@@ -378,10 +378,23 @@ def _stage_predicate(qs, stage: str):
     ``closed`` — genuinely closed as defined above.
     """
 
+    # "Scientist has a click to make on the CYCLE" = an awaiting slot
+    # with no batch linked yet (the Create-batch click lives on the
+    # kanban card). A slot that's ``AWAITING_SCIENTIST`` AND already
+    # has a batch is in a transitional state: the batch exists but
+    # the slot hasn't advanced to ``IN_PRODUCTION`` yet because the
+    # PSP Manufacturing Order hasn't been created. That next click
+    # ("Create MO on PSP") lives on the batch detail page, not on
+    # the kanban — so from the cycle-list perspective, that cycle
+    # belongs in ``in_flight``, not ``needs_click``. Without this
+    # narrowing, the SQL predicate counted "awaiting"-anything (so
+    # the badge read 1) while the Python post-filter dropped the
+    # cycle (empty body) — the mismatch the user hit.
     has_awaiting = Exists(
         TrialBatchSlot.objects.filter(
             cycle_id=OuterRef("pk"),
             status=TrialBatchSlotStatus.AWAITING_SCIENTIST,
+            trial_batch__isnull=True,
         )
     )
     has_any_active = Exists(

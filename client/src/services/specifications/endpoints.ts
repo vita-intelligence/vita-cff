@@ -32,6 +32,8 @@ export const specificationsEndpoints = {
     `/api/organizations/${orgId}/specifications/${sheetId}/public-link/`,
   refreshPricing: (orgId: string, sheetId: string) =>
     `/api/organizations/${orgId}/specifications/${sheetId}/refresh-pricing/`,
+  costBreakdown: (orgId: string, sheetId: string) =>
+    `/api/organizations/${orgId}/specifications/${sheetId}/cost-breakdown/`,
   regenerate: (orgId: string, sheetId: string) =>
     `/api/organizations/${orgId}/specifications/${sheetId}/regenerate/`,
   status: (orgId: string, sheetId: string) =>

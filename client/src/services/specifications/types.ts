@@ -35,6 +35,66 @@ export const ALLOWED_TRANSITIONS: Readonly<
   rejected: ["draft"],
 };
 
+/** One ingredient row in the spec-sheet cost breakdown. Same shape
+ *  as the proposal panel's ingredient row — kept parallel so the
+ *  FE can reuse rendering components. */
+export interface SpecCostIngredientRowDto {
+  readonly item_name: string;
+  readonly item_code: string | null;
+  readonly mg_per_pack: string | null;
+  readonly kg_needed: string | null;
+  readonly unit_cost: string | null;
+  readonly uom_symbol: string | null;
+  readonly source: string;
+  readonly vendor_name: string | null;
+  readonly currency_code: string | null;
+  readonly line_cost_per_unit: string | null;
+}
+
+export interface SpecCostLabourRowDto {
+  readonly stage_name: string;
+  readonly workstation_group_name: string;
+  readonly basis:
+    | "routing_fixed"
+    | "machine_rate"
+    | "labour_only"
+    | "none"
+    | string;
+  readonly setup_time_min: string | null;
+  readonly cycle_time_min: string | null;
+  readonly capacity: string | null;
+  readonly fixed_cost: string | null;
+  readonly variable_cost: string | null;
+  /** Machine running cost per hour (from WSG / equipment). */
+  readonly hourly_rate: string | null;
+  /** Operator wage per hour that fed into this stage's cost. */
+  readonly labour_hourly_rate: string | null;
+  /** Where the labour rate came from:
+   *  - ``session`` — HR kiosk-session average (reality)
+   *  - ``fallback`` — WSG's `default_labour_rate_hourly` (admin)
+   *  - ``none`` — no labour signal, labour cost = 0 */
+  readonly labour_source: "session" | "fallback" | "none" | string;
+  readonly wage_cost_total: string | null;
+  readonly labour_minutes_total: string | null;
+  readonly labour_hours_total: string | null;
+  readonly stage_cost_total: string | null;
+  readonly cost_per_unit: string | null;
+}
+
+export interface SpecCostBreakdownDto {
+  readonly psp_configured: boolean;
+  /** Standard production batch used for the per-unit math (fixed
+   *  costs amortise against this). Not surfaced in the UI — the
+   *  director sees "per unit" without needing a qty concept. */
+  readonly qty: number;
+  readonly currency_code: string;
+  readonly ingredient_rows: readonly SpecCostIngredientRowDto[];
+  readonly labour_rows: readonly SpecCostLabourRowDto[];
+  readonly ingredients_per_unit: string | null;
+  readonly labour_per_unit: string | null;
+  readonly total_per_unit: string | null;
+}
+
 export interface SpecificationSheetDto {
   readonly id: string;
   readonly code: string;

@@ -40,13 +40,16 @@ import { useCustomers, type CustomerDto } from "@/services/customers";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 
 import { ProposalCommentsBubble } from "./proposal-comments-bubble";
+import { ProposalSavingsAtScalePanel } from "./proposal-savings-at-scale-panel";
 import { SendToClientModal } from "./send-to-client-modal";
-import { Link } from "@/i18n/navigation";
+import { Link, useRouter } from "@/i18n/navigation";
 import { apiClient, ApiError } from "@/lib/api";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   proposalsEndpoints,
   useAddProposalLine,
+  extractRetryBlocked,
+  useCloneRejectedProposal,
   useCompleteProposalRequiredFields,
   useDeleteProposalLine,
   usePatchProposalLine,
@@ -65,6 +68,7 @@ import {
   type ProposalStatus,
   type UpdateProposalRequestDto,
 } from "@/services/proposals";
+import { rejectionCategoryLabel } from "@/services/proposals/rejection-categories";
 import {
   useFormulationVersions,
   useInfiniteFormulations,
@@ -578,6 +582,39 @@ export function ProposalSheetView({
         <RejectionPanel proposal={proposal} tProposals={tProposals} />
       ) : null}
 
+      {/* Retry CTA — spin up a fresh DRAFT clone when the current
+          proposal is rejected. Separate card from the rejection
+          banner so the "move on" affordance stays visible even if
+          the rejection was staff-marked (no customer timestamp)
+          and the banner above collapsed. */}
+      {proposal.status === "rejected" && hasProposalsCap("edit") ? (
+        // Direct follow-up of THIS proposal wins the label — most
+        // specific signal. Fall back to any sibling retry in flight
+        // on the same formulation so a project with multiple
+        // declines doesn't keep offering "Create a new proposal"
+        // on the older rejected rows.
+        proposal.follow_up_proposal ? (
+          <ExistingRetryCard
+            followUp={proposal.follow_up_proposal}
+            kind="direct"
+          />
+        ) : proposal.active_project_retry ? (
+          <ExistingRetryCard
+            followUp={proposal.active_project_retry}
+            kind="sibling"
+          />
+        ) : (
+          <RetryProposalCard orgId={orgId} proposal={proposal} />
+        )
+      ) : null}
+
+      {/* Previously-rejected banner — shown on the fresh retry
+          proposal so sales sees what the customer declined last
+          time while editing this one. */}
+      {proposal.previous_rejected ? (
+        <PreviouslyRejectedBanner proposal={proposal} />
+      ) : null}
+
       <LinkedResourcesPanel proposal={proposal} tProposals={tProposals} />
 
       <ProposalLinesPanel
@@ -586,6 +623,25 @@ export function ProposalSheetView({
         lines={proposal.lines}
         locked={isTerminal}
       />
+
+      {proposal.lines[0] ? (
+        <ProposalSavingsAtScalePanel
+          orgId={orgId}
+          proposalId={proposalId}
+          currencyCode={proposal.currency}
+          line={proposal.lines[0]}
+          // Margin edits lock the moment the proposal leaves
+          // ``draft`` — same gate the spec sheet uses on its
+          // pricing fields. The commercial economics are frozen
+          // once the quote enters the review / approval ceremony;
+          // allowing margin tweaks at ``in_review`` would let the
+          // director approve a different price than what the
+          // reviewer saw. If sales needs to change the margin,
+          // the status flips back to ``draft`` first (``Revert
+          // to draft`` button on the detail header).
+          canEdit={proposal.status === "draft"}
+        />
+      ) : null}
 
       <InternalApprovalsPanel proposal={proposal} tProposals={tProposals} />
 
@@ -1312,7 +1368,7 @@ function ProposalLinesPanel({
             {tProposals("lines.subtitle")}
           </p>
         </div>
-        {locked ? null : (
+        {locked || lines.length >= 1 ? null : (
           <Button
             type="button"
             variant="outline"
@@ -1325,7 +1381,10 @@ function ProposalLinesPanel({
         )}
       </header>
 
-      {addOpen && !locked ? (
+      {/* One product per proposal — the Add button hides once the
+          proposal has a line, and the backend should enforce the
+          same cap (see proposal_lines viewset). */}
+      {addOpen && !locked && lines.length === 0 ? (
         <AddLineForm
           orgId={orgId}
           onCancel={() => setAddOpen(false)}
@@ -1546,12 +1605,15 @@ function LineSpecPicker({
     // being iterated on shouldn't be bindable to a customer-facing
     // proposal line. The backend mirrors this rule and refuses
     // unapproved sheet bindings.
+    // Show every sheet on this line's formulation — even
+    // non-director-signed ones — so the picker never silently
+    // "forgets" a spec after a proposal rejection auto-reverts it
+    // to DRAFT. The option is marked ``disabled`` + chip-tagged
+    // with the status below so the sales rep understands why they
+    // can't attach it yet (vs. an empty dropdown that reads as
+    // "there's no spec at all").
     const scoped = line.formulation_id
-      ? specs.filter(
-          (s) =>
-            s.formulation_id === line.formulation_id &&
-            SHEET_DIRECTOR_SIGNED.has(s.status),
-        )
+      ? specs.filter((s) => s.formulation_id === line.formulation_id)
       : [];
     const boundId = line.specification_sheet_id;
     if (boundId && !scoped.some((s) => s.id === boundId)) {
@@ -1627,11 +1689,17 @@ function LineSpecPicker({
               "create.spec_status.approved",
           )}`;
         }
+        // Non-director-signed specs (draft / in_review / rejected)
+        // are listed so the operator knows the spec exists — but
+        // they can't be attached to a quote yet, so disable the
+        // option. The backend ``_resolve_quotable_sheet`` enforces
+        // the same gate.
+        const isNotDirectorSigned = !SHEET_DIRECTOR_SIGNED.has(sheet.status);
         return (
           <option
             key={sheet.id}
             value={sheet.id}
-            disabled={isBusyElsewhere}
+            disabled={isBusyElsewhere || isNotDirectorSigned}
           >
             {baseLabel}
             {kindTag}
@@ -3430,15 +3498,249 @@ function RejectionPanel({
         </div>
       </header>
       <div className="mt-3 text-sm text-ink-1000">
+        {proposal.customer_rejection_categories.length > 0 ? (
+          <div className="mb-3 flex flex-wrap gap-1.5">
+            {proposal.customer_rejection_categories.map((key) => (
+              <span
+                key={key}
+                className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-semibold text-danger ring-1 ring-inset ring-danger/30"
+              >
+                {rejectionCategoryLabel(key)}
+              </span>
+            ))}
+          </div>
+        ) : null}
         {reason ? (
           <blockquote className="whitespace-pre-wrap border-l-2 border-danger/40 bg-ink-0 px-3 py-2 italic text-ink-700 ring-1 ring-inset ring-danger/10">
             {reason}
           </blockquote>
-        ) : (
+        ) : proposal.customer_rejection_categories.length === 0 ? (
           <p className="text-ink-500">
             {tProposals("detail.rejection.no_reason")}
           </p>
-        )}
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+
+/**
+ * "The customer declined — want to try again?" card. Posts to the
+ * clone endpoint, carries lines/customer/pricing forward, routes
+ * the sales rep straight to the fresh DRAFT so they can address
+ * whatever got flagged in the rejection reason.
+ *
+ * Only renders when the current proposal is at ``status=rejected``
+ * AND the viewer has the ``proposals.edit`` capability — a viewer
+ * who can read a rejected quote shouldn't be able to re-open the
+ * commercial loop.
+ */
+function RetryProposalCard({
+  orgId,
+  proposal,
+}: {
+  orgId: string;
+  proposal: ProposalDto;
+}) {
+  const router = useRouter();
+  const tErrors = useTranslations("errors");
+  const cloneMutation = useCloneRejectedProposal(orgId);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleClone = async () => {
+    setError(null);
+    try {
+      const next = await cloneMutation.mutateAsync(proposal.id);
+      router.push(`/proposals/${next.id}`);
+    } catch (err) {
+      // Retry coordination: a draft retry already exists either on
+      // this rejected row (``proposal_already_cloned``) or on
+      // another rejected sibling in the same formulation
+      // (``draft_follow_up_exists``). Offer to open the existing
+      // draft instead of landing the user on a dead-end error.
+      const blocked = extractRetryBlocked(err);
+      if (blocked) {
+        const label =
+          blocked.code === "draft_follow_up_exists"
+            ? `A retry draft already exists for this project — ${blocked.follow_up_code}${
+                blocked.follow_up_status ? ` (${blocked.follow_up_status})` : ""
+              }. Open it instead?`
+            : `A retry was already created from this proposal — ${blocked.follow_up_code}. Open it?`;
+        if (window.confirm(label)) {
+          router.push(`/proposals/${blocked.follow_up_id}`);
+          return;
+        }
+        setError(
+          `${blocked.follow_up_code} is already in flight — open it or delete it before creating another retry.`,
+        );
+        return;
+      }
+      setError(
+        extractApiErrorMessage(err, tErrors) ||
+          "Could not create a retry proposal.",
+      );
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border border-primary/30 bg-primary/5 p-5 shadow-sm md:p-6">
+      <header className="flex items-center gap-2 border-b border-primary/20 pb-3">
+        <RefreshCw className="h-5 w-5 text-primary" />
+        <div className="flex flex-col">
+          <h2 className="text-sm font-semibold text-ink-1000">
+            Keep this deal moving
+          </h2>
+          <p className="text-[11px] text-ink-600">
+            Spin up a fresh draft with the same lines, pricing, and
+            customer. Edit whatever the customer asked for, then send
+            the new quote.
+          </p>
+        </div>
+      </header>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={handleClone}
+          disabled={cloneMutation.isPending}
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {cloneMutation.isPending ? (
+            <RefreshCw className="h-4 w-4 animate-spin" />
+          ) : (
+            <Plus className="h-4 w-4" />
+          )}
+          Create a new proposal
+        </button>
+        <p className="text-[11px] text-ink-500">
+          Status, signatures, and the public link reset. The new
+          proposal starts as draft so you can tweak before sending.
+        </p>
+      </div>
+      {error ? (
+        <p className="mt-3 text-xs text-danger">{error}</p>
+      ) : null}
+    </section>
+  );
+}
+
+
+/**
+ * Replaces :component:`RetryProposalCard` on a rejected row that
+ * already has a follow-up. Prevents sales from clicking "Create a
+ * new proposal" twice and fanning out parallel retries off one
+ * dead quote — the backend 409s on a second clone, this card is
+ * what sales sees before that happens.
+ */
+function ExistingRetryCard({
+  followUp,
+  kind,
+}: {
+  followUp: { id: string; code: string; status: string };
+  //: ``direct`` → the retry was cloned specifically from this
+  //: proposal. ``sibling`` → the retry is on the same project but
+  //: was raised off a different rejected sibling (e.g. you're on
+  //: PROP-0002, retry PROP-0005 is in flight as a follow-up of
+  //: PROP-0004). Different copy so the operator understands why
+  //: they can't start a fresh retry here.
+  kind: "direct" | "sibling";
+}) {
+  const subtitle =
+    kind === "direct"
+      ? "You already created a follow-up proposal from this declined row. Edit the retry below instead of starting another one."
+      : "Another rejected proposal on this project already has a retry in flight. One retry per project at a time — edit that one, or close it out before starting a new one here.";
+  return (
+    <section className="rounded-2xl border border-primary/30 bg-primary/5 p-5 shadow-sm md:p-6">
+      <header className="flex items-center gap-2 border-b border-primary/20 pb-3">
+        <RefreshCw className="h-5 w-5 text-primary" />
+        <div className="flex flex-col">
+          <h2 className="text-sm font-semibold text-ink-1000">
+            Retry already in flight
+          </h2>
+          <p className="text-[11px] text-ink-600">{subtitle}</p>
+        </div>
+      </header>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Link
+          href={`/proposals/${followUp.id}`}
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 hover:bg-orange-600"
+        >
+          <ExternalLink className="h-4 w-4" />
+          Open {followUp.code}
+        </Link>
+        <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-700">
+          {followUp.status.replace("_", " ")}
+        </span>
+      </div>
+    </section>
+  );
+}
+
+
+/**
+ * Banner shown at the top of a DRAFT retry proposal, carrying the
+ * previous rejection forward so the sales rep can address whatever
+ * killed the prior round. Renders a quick link back to the rejected
+ * source + the customer's declined-reason verbatim.
+ *
+ * Collapses to nothing when ``previous_rejected`` is null (the
+ * common case — most proposals are fresh, not retries).
+ */
+function PreviouslyRejectedBanner({
+  proposal,
+}: {
+  proposal: ProposalDto;
+}) {
+  const format = useFormatter();
+  const previous = proposal.previous_rejected;
+  if (!previous) return null;
+  const reason = (previous.rejection_reason || "").trim();
+  return (
+    <section className="rounded-2xl border border-warning/40 bg-warning/5 p-5 shadow-sm md:p-6">
+      <header className="flex items-center gap-2 border-b border-warning/30 pb-3">
+        <ShieldAlert className="h-5 w-5 text-warning" />
+        <div className="flex flex-col">
+          <h2 className="text-sm font-semibold text-ink-1000">
+            Replaces a rejected proposal
+          </h2>
+          <p className="text-[11px] text-ink-600">
+            {previous.rejected_at
+              ? `Declined on ${format.dateTime(new Date(previous.rejected_at), {
+                  dateStyle: "medium",
+                })} — `
+              : ""}
+            <Link
+              href={`/proposals/${previous.id}`}
+              className="font-medium text-primary underline-offset-2 hover:underline"
+            >
+              Open {previous.code}
+            </Link>
+          </p>
+        </div>
+      </header>
+      <div className="mt-3 text-sm text-ink-1000">
+        {previous.rejection_categories.length > 0 ? (
+          <div className="mb-3 flex flex-wrap gap-1.5">
+            {previous.rejection_categories.map((key) => (
+              <span
+                key={key}
+                className="rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-semibold text-warning ring-1 ring-inset ring-warning/30"
+              >
+                {rejectionCategoryLabel(key)}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {reason ? (
+          <blockquote className="whitespace-pre-wrap border-l-2 border-warning/50 bg-ink-0 px-3 py-2 italic text-ink-700 ring-1 ring-inset ring-warning/20">
+            {reason}
+          </blockquote>
+        ) : previous.rejection_categories.length === 0 ? (
+          <p className="text-ink-500">
+            The customer declined without giving a reason — ask sales
+            what they were after before resending.
+          </p>
+        ) : null}
       </div>
     </section>
   );

@@ -12,6 +12,7 @@ import type {
   PaginatedSpecificationsDto,
   RenderedSheetContext,
   SetPackagingRequestDto,
+  SpecCostBreakdownDto,
   SpecificationSheetDto,
   TransitionStatusRequestDto,
   UpdateSpecificationRequestDto,
@@ -51,6 +52,16 @@ export async function fetchSpecificationsPage(
   const { data } = await apiClient.get<PaginatedSpecificationsDto>(
     specificationsEndpoints.list(orgId),
     { params },
+  );
+  return data;
+}
+
+export async function fetchSpecCostBreakdown(
+  orgId: string,
+  sheetId: string,
+): Promise<SpecCostBreakdownDto> {
+  const { data } = await apiClient.get<SpecCostBreakdownDto>(
+    specificationsEndpoints.costBreakdown(orgId, sheetId),
   );
   return data;
 }

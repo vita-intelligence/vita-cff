@@ -837,26 +837,45 @@ class ProposalRejectView(PortalAPIView):
     def post(self, request: Request, proposal_id: str) -> Response:
         from apps.proposals.services import (
             InvalidProposalTransition,
+            RejectionCategoriesRequired,
+            RejectionCategoryInvalid,
             capture_customer_rejection_on_proposal,
         )
 
         proposal = _load_owned_proposal(request, proposal_id)
         data = request.data if isinstance(request.data, dict) else {}
         reason = str(data.get("reason") or "")
+        raw_categories = data.get("categories")
+        categories = raw_categories if isinstance(raw_categories, list) else []
 
         try:
             updated = capture_customer_rejection_on_proposal(
-                proposal=proposal, reason=reason,
+                proposal=proposal, reason=reason, categories=categories,
             )
         except InvalidProposalTransition:
             return _err("invalid_proposal_transition", status.HTTP_400_BAD_REQUEST)
+        except RejectionCategoriesRequired:
+            return _err(
+                "rejection_categories_required", status.HTTP_400_BAD_REQUEST
+            )
+        except RejectionCategoryInvalid as exc:
+            return Response(
+                {
+                    "code": "rejection_category_invalid",
+                    "invalid_keys": exc.invalid_keys,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         record_portal_event(
             organization=updated.organization,
             proposal=updated,
             client_account=request.user,
             kind=PortalEvent.Kind.PROPOSAL_REJECTED,
-            metadata={"reason": reason} if reason else None,
+            metadata={
+                "reason": reason,
+                "categories": updated.customer_rejection_categories,
+            },
             request=request,
         )
 

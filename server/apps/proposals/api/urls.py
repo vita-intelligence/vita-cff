@@ -18,6 +18,7 @@ from apps.proposals.api.views import (
     ProposalAttachedSpecRenderView,
     ProposalAuditView,
     ProposalBundleCreateView,
+    ProposalCloneView,
     ProposalCompleteRequiredFieldsView,
     ProposalCostPreviewView,
     ProposalDetailView,
@@ -26,6 +27,7 @@ from apps.proposals.api.views import (
     ProposalListCreateView,
     ProposalPdfDownloadView,
     ProposalRenderView,
+    ProposalSavingsAtScaleView,
     ProposalSendTestEmailView,
     ProposalSendToClientView,
     ProposalStatusView,
@@ -77,6 +79,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/status/",
         ProposalStatusView.as_view(),
         name="proposal-status",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/clone/",
+        ProposalCloneView.as_view(),
+        name="proposal-clone",
     ),
     path(
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/complete-required-fields/",
@@ -132,6 +139,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/lines/<uuid:line_id>/",
         ProposalLineDetailView.as_view(),
         name="proposal-line-detail",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/savings-at-scale/",
+        ProposalSavingsAtScaleView.as_view(),
+        name="proposal-savings-at-scale",
     ),
     path(
         "organizations/<uuid:org_id>/formulation-versions/<uuid:version_id>/cost-preview/",

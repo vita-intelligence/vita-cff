@@ -515,10 +515,20 @@ export async function fetchItemPrices(
   orgId: string,
   formulationId: string,
   itemUuids: readonly string[],
+  qtyPerItem?: Readonly<Record<string, string | number>>,
 ): Promise<ItemPricesResponseDto> {
+  const body: {
+    item_uuids: readonly string[];
+    qty_per_item?: Record<string, string>;
+  } = { item_uuids: itemUuids };
+  if (qtyPerItem && Object.keys(qtyPerItem).length > 0) {
+    body.qty_per_item = Object.fromEntries(
+      Object.entries(qtyPerItem).map(([uuid, qty]) => [uuid, String(qty)]),
+    );
+  }
   const { data } = await apiClient.post<ItemPricesResponseDto>(
     formulationsEndpoints.itemPrices(orgId, formulationId),
-    { item_uuids: itemUuids },
+    body,
   );
   return data;
 }

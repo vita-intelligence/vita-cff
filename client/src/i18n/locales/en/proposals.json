@@ -70,6 +70,8 @@
     "specification_sheet_none": "No bundled spec — proposal stands alone",
     "specification_sheet_hint": "Only sheets attached to the picked formulation are listed. Pick one to bundle or leave blank.",
     "spec_status": {
+      "draft": "Draft",
+      "in_review": "In review",
       "approved": "Approved",
       "sent": "Sent",
       "accepted": "Accepted",
@@ -265,6 +267,10 @@
     "add_margin": "Margin %",
     "add_price_hint": "Unit price appears once cost + margin are filled.",
     "add_price_derived": "Unit price: {price}"
+  },
+  "savings_at_scale": {
+    "title": "Savings at scale",
+    "subtitle": "Cost per unit drops as volume grows — setup time amortises across more units, and vendors unlock better pricing at higher purchase tiers."
   },
   "missing": {
     "title": "A few details are missing",

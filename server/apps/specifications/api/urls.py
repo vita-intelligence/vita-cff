@@ -7,6 +7,7 @@ from apps.specifications.api.views import (
     PublicSpecificationAcceptView,
     PublicSpecificationPdfView,
     PublicSpecificationRenderView,
+    SpecificationCostBreakdownView,
     SpecificationDetailView,
     SpecificationListCreateView,
     SpecificationPackagingOptionsView,
@@ -72,6 +73,13 @@ urlpatterns = [
         "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/refresh-pricing/",
         SpecificationRefreshPricingView.as_view(),
         name="specification-refresh-pricing",
+    ),
+    # Per-unit ingredient + labour breakdown. Powers the director
+    # approval modal's "here's why the cost is £X" transparency.
+    path(
+        "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/cost-breakdown/",
+        SpecificationCostBreakdownView.as_view(),
+        name="specification-cost-breakdown",
     ),
     path(
         "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/regenerate/",

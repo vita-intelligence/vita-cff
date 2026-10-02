@@ -521,12 +521,14 @@ export function itemPricesQueryKey(
   orgId: string,
   formulationId: string,
   sortedUuids: readonly string[],
+  qtyFingerprint?: string,
 ) {
-  return [
+  const base = [
     ...formulationsQueryKeys.overview(orgId, formulationId),
     "item-prices",
     sortedUuids.join(","),
   ] as const;
+  return qtyFingerprint ? ([...base, qtyFingerprint] as const) : base;
 }
 
 
@@ -534,15 +536,33 @@ export function useItemPrices(
   orgId: string,
   formulationId: string,
   itemUuids: readonly string[],
-  options: { enabled?: boolean } = {},
+  options: {
+    enabled?: boolean;
+    /** Optional per-item ordered-qty map for tier-aware vendor pricing.
+     *  Powers the proposal "savings at scale" panel — pass a map at
+     *  each breakpoint quantity and PSP returns the matching tier. */
+    qtyPerItem?: Readonly<Record<string, string | number>>;
+  } = {},
 ): UseQueryResult<ItemPricesResponseDto, ApiError> {
   //: Sort so a set with the same members but different insertion
   //: order shares the cache. Non-empty check keeps the query
   //: disabled when there's nothing PSP-linked to price.
   const sortedUuids = [...itemUuids].sort();
+  const qtyFingerprint = options.qtyPerItem
+    ? Object.entries(options.qtyPerItem)
+        .map(([k, v]) => `${k}:${v}`)
+        .sort()
+        .join("|")
+    : undefined;
   return useQuery<ItemPricesResponseDto, ApiError>({
-    queryKey: itemPricesQueryKey(orgId, formulationId, sortedUuids),
-    queryFn: () => fetchItemPrices(orgId, formulationId, sortedUuids),
+    queryKey: itemPricesQueryKey(
+      orgId,
+      formulationId,
+      sortedUuids,
+      qtyFingerprint,
+    ),
+    queryFn: () =>
+      fetchItemPrices(orgId, formulationId, sortedUuids, options.qtyPerItem),
     enabled: (options.enabled ?? true) && sortedUuids.length > 0,
     //: Prices don't change while the user edits so 30 s of cache is
     //: plenty; each fresh uuid set gets its own key anyway.

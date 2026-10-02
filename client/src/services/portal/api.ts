@@ -205,10 +205,13 @@ export async function fetchProposal(id: string): Promise<unknown> {
 }
 
 
-export async function rejectProposal(id: string, reason: string): Promise<unknown> {
+export async function rejectProposal(
+  id: string,
+  payload: { reason: string; categories: readonly string[] },
+): Promise<unknown> {
   const { data } = await apiClient.post(
     `/api/portal/proposals/${id}/reject/`,
-    { reason },
+    payload,
   );
   return data;
 }

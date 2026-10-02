@@ -49,7 +49,10 @@ export default async function SettingsStageTemplatesPage({
         <ProtectedHeader user={currentUser} />
 
         <SettingsShell activeTab="stage-templates" allowedTabs={allowedTabs}>
-          <StageTemplatesTab orgId={organization!.id} />
+          <StageTemplatesTab
+            orgId={organization!.id}
+            pspBaseUrl={organization!.psp_base_url || null}
+          />
         </SettingsShell>
 
         <footer className="mt-auto flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">

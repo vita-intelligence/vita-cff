@@ -374,6 +374,13 @@ export interface FormulationStageDto {
    *  PSP's per-1-parent-unit BOM convention on push. Default 1 keeps
    *  the (accidentally-working) legacy behavior. */
   readonly servings_per_output_unit: string;
+  /** PSP routing-template this stage was hydrated from, if any.
+   *  Non-null = the Stages tab locks workstation / step order and
+   *  hides the Add/Remove/Move controls. The sync cascade forwards
+   *  this to PSP as ``source_template_uuid`` so each snapshot stamps
+   *  provenance back to the template it came from. */
+  readonly source_routing_template_uuid: string | null;
+  readonly source_routing_step_uuid: string | null;
   readonly notes: string;
 }
 
@@ -415,6 +422,10 @@ export interface UpsertStageInput {
   /** How many finished-good servings equal 1 stock-unit of this
    *  stage's PSP output. Optional; server defaults to 1 when omitted. */
   readonly servings_per_output_unit?: string | null;
+  /** PSP routing-template provenance threaded through on every save
+   *  so re-apply + resync keeps the link. See FormulationStageDto. */
+  readonly source_routing_template_uuid?: string | null;
+  readonly source_routing_step_uuid?: string | null;
   readonly notes?: string;
 }
 

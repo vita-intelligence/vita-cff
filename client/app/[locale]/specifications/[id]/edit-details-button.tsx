@@ -13,6 +13,7 @@ import {
   type SpecificationSheetDto,
   type UpdateSpecificationRequestDto,
 } from "@/services/specifications";
+import { SpecCostBreakdownBlock } from "./cost-breakdown-block";
 
 
 const INPUT_CLASS =
@@ -154,7 +155,7 @@ export function EditDetailsButton({
       </Modal.Trigger>
       <Modal.Backdrop>
         <Modal.Container size="lg">
-          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+          <Modal.Dialog className="w-full max-w-4xl overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
             <form onSubmit={handleSubmit} style={{ display: "contents" }}>
               <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
                 <Modal.Heading className="text-base font-semibold text-ink-1000">
@@ -310,6 +311,21 @@ export function EditDetailsButton({
                       })()}
                     </span>
                   </div>
+                </fieldset>
+
+                {/* Cost breakdown — ingredients + labour tables so the
+                    scientist / director sees exactly what rolls up
+                    into the unit cost before saving a number. */}
+                <fieldset className="rounded-xl border border-ink-100 p-4">
+                  <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
+                    Cost breakdown
+                  </legend>
+                  <SpecCostBreakdownBlock
+                    orgId={orgId}
+                    sheetId={sheet.id}
+                    enabled={isOpen}
+                    sheetCurrency={form.currency ?? sheet.currency ?? "GBP"}
+                  />
                 </fieldset>
 
                 {/* Client-negotiated product properties — shelf life,

@@ -1230,160 +1230,130 @@ def _normalise_template_stages(raw: Any) -> list[dict[str, Any]]:
     return normalised
 
 
-class StageTemplateListView(APIView):
-    """``GET`` list + ``POST`` create for the org's stage templates.
+def _psp_template_to_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """Shape a PSP routing-template row for the NPD FE. Mirrors the
+    legacy ``_stage_template_payload`` shape as closely as possible
+    so the existing picker UI needs minimal rewiring: top-level
+    ``id`` (used as the apply-token), ``name``, ``stages`` list.
+    """
 
-    ``GET`` is open to anyone with ``VIEW`` so scientists see the
-    picker options. ``POST`` requires ``MANAGE_STAGE_TEMPLATES`` — the
-    reshape right sits with the workspace admin, not every operator.
+    steps = row.get("steps")
+    stages: list[dict[str, Any]] = []
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            stages.append(
+                {
+                    "name": (step.get("operation_description") or "").strip()
+                    or (step.get("workstation_group_name") or "").strip()
+                    or "Stage",
+                    "stage_key": "custom",
+                    "workstation_group_uuid": step.get(
+                        "workstation_group_uuid"
+                    )
+                    or None,
+                    "workstation_group_name": step.get(
+                        "workstation_group_name"
+                    )
+                    or "",
+                    "operation_description": step.get("operation_description")
+                    or "",
+                    "setup_time_min": step.get("setup_time_min"),
+                    "cycle_time_min": step.get("cycle_time_min"),
+                    "capacity": step.get("capacity"),
+                    "fixed_cost": step.get("fixed_cost"),
+                    "variable_cost": step.get("variable_cost"),
+                    "sort_order": step.get("sort_order"),
+                    "source_routing_step_uuid": step.get("uuid"),
+                }
+            )
+    return {
+        "id": row.get("uuid"),
+        "uuid": row.get("uuid"),
+        "name": row.get("name") or "",
+        "description": row.get("notes") or "",
+        "dosage_form": "",
+        "is_seeded": False,
+        "is_psp_template": True,
+        "stages": stages,
+        "other_fixed_cost": row.get("other_fixed_cost"),
+        "other_variable_cost": row.get("other_variable_cost"),
+        "other_variable_cost_basis": row.get("other_variable_cost_basis"),
+    }
+
+
+class StageTemplateListView(APIView):
+    """``GET`` lists PSP's routing templates — the picker source for
+    the formulation builder. NPD no longer owns an editable template
+    catalog; the single source of truth is PSP's
+    ``/production/routings`` settings surface.
+
+    Any POST hits a 405 — the editor was moved to PSP. The old
+    ``FormulationStageTemplate`` Django table remains in the DB for
+    one release so a rollback is cheap; its rows are no longer read.
     """
 
     permission_classes = (HasFormulationsPermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
-        self.required_capability = (
-            FormulationsCapability.MANAGE_STAGE_TEMPLATES
-            if request.method == "POST"
-            else FormulationsCapability.VIEW
-        )
+        self.required_capability = FormulationsCapability.VIEW
         super().initial(request, *args, **kwargs)
 
     def get(self, request: Request, org_id: str) -> Response:
-        from apps.formulations.models import FormulationStageTemplate
+        from apps.psp.services import list_psp_routing_templates
 
-        rows = FormulationStageTemplate.objects.filter(
-            organization=self.organization
-        ).order_by("name")
+        rows = list_psp_routing_templates(organization=self.organization)
         return Response(
-            {"items": [_stage_template_payload(row) for row in rows]},
+            {
+                "items": [_psp_template_to_payload(row) for row in rows],
+            },
             status=status.HTTP_200_OK,
         )
 
     def post(self, request: Request, org_id: str) -> Response:
-        from apps.formulations.models import FormulationStageTemplate
-
-        raw = request.data if isinstance(request.data, dict) else {}
-        name = str(raw.get("name") or "").strip()
-        if not name:
-            return Response(
-                {"error": "invalid_payload", "detail": "name is required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            stages = _normalise_template_stages(raw.get("stages") or [])
-        except ValueError as exc:
-            return Response(
-                {"error": "invalid_stages", "detail": str(exc)},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if FormulationStageTemplate.objects.filter(
-            organization=self.organization, name=name
-        ).exists():
-            return Response(
-                {
-                    "error": "duplicate_name",
-                    "detail": "A template with this name already exists.",
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        template = FormulationStageTemplate.objects.create(
-            organization=self.organization,
-            name=name[:200],
-            description=str(raw.get("description") or "")[:2000],
-            dosage_form=str(raw.get("dosage_form") or "")[:32],
-            stages_json=stages,
-            is_seeded=False,
-            created_by=request.user,
-            updated_by=request.user,
-        )
         return Response(
-            _stage_template_payload(template),
-            status=status.HTTP_201_CREATED,
+            {
+                "error": "method_moved",
+                "detail": (
+                    "Routing templates are managed on PSP"
+                    " (/production/routings). NPD mirrors them read-only."
+                ),
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
 
 
 class StageTemplateDetailView(APIView):
-    """``PATCH`` update + ``DELETE`` for a single template. Both
-    require ``MANAGE_STAGE_TEMPLATES``. Deleting a seeded template is
-    allowed — admins should be free to prune the reference set when
-    they want a leaner picker.
+    """Legacy PATCH / DELETE endpoints — frozen. The reusable catalog
+    lives on PSP now; mutations against the old NPD-owned table
+    return 405 with a note pointing to the PSP settings surface.
     """
 
     permission_classes = (HasFormulationsPermission,)
-    required_capability = FormulationsCapability.MANAGE_STAGE_TEMPLATES
+    required_capability = FormulationsCapability.VIEW
 
-    def _get(self, template_id: str) -> Any:
-        from apps.formulations.models import FormulationStageTemplate
-
-        row = FormulationStageTemplate.objects.filter(
-            organization=self.organization, id=template_id
-        ).first()
-        if row is None:
-            raise NotFound()
-        return row
+    def _moved(self) -> Response:
+        return Response(
+            {
+                "error": "method_moved",
+                "detail": (
+                    "Routing templates are managed on PSP"
+                    " (/production/routings). NPD mirrors them read-only."
+                ),
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
     def patch(
         self, request: Request, org_id: str, template_id: str
     ) -> Response:
-        from apps.formulations.models import FormulationStageTemplate
-
-        row = self._get(template_id)
-        raw = request.data if isinstance(request.data, dict) else {}
-
-        if "name" in raw:
-            name = str(raw.get("name") or "").strip()
-            if not name:
-                return Response(
-                    {
-                        "error": "invalid_payload",
-                        "detail": "name cannot be blank",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            if (
-                FormulationStageTemplate.objects.filter(
-                    organization=self.organization, name=name
-                )
-                .exclude(id=row.id)
-                .exists()
-            ):
-                return Response(
-                    {
-                        "error": "duplicate_name",
-                        "detail": (
-                            "A template with this name already exists."
-                        ),
-                    },
-                    status=status.HTTP_409_CONFLICT,
-                )
-            row.name = name[:200]
-        if "description" in raw:
-            row.description = str(raw.get("description") or "")[:2000]
-        if "dosage_form" in raw:
-            row.dosage_form = str(raw.get("dosage_form") or "")[:32]
-        if "stages" in raw:
-            try:
-                row.stages_json = _normalise_template_stages(
-                    raw.get("stages") or []
-                )
-            except ValueError as exc:
-                return Response(
-                    {"error": "invalid_stages", "detail": str(exc)},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        row.updated_by = request.user
-        row.save()
-        return Response(_stage_template_payload(row), status=status.HTTP_200_OK)
+        return self._moved()
 
     def delete(
         self, request: Request, org_id: str, template_id: str
     ) -> Response:
-        row = self._get(template_id)
-        row.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return self._moved()
 
 
 def _resolve_workstations_by_name(
@@ -1438,9 +1408,15 @@ def _resolve_workstations_by_name(
 
 class FormulationApplyStageTemplateView(APIView):
     """``POST`` ``/.../formulations/<id>/apply-stage-template/`` —
-    wholesale-replace the formulation's stages with the template's
-    ``stages_json``. Delegates to ``set_formulation_stages`` so the
-    existing invariants (exactly-one-finished promotion, orphan-line
+    wholesale-replace the formulation's stages with a PSP routing
+    template's steps. The ``template_id`` on the payload is a PSP
+    routing-template UUID; one NPD stage is created per PSP step,
+    stamping ``source_routing_template_uuid`` + ``source_routing_
+    step_uuid`` so the UI can lock workstation + flow fields and
+    the sync cascade can thread provenance back on push.
+
+    Delegates to ``set_formulation_stages`` so the existing
+    invariants (exactly-one-finished promotion, orphan-line
     reassignment on stage delete) all fire the same way as a normal
     save.
     """
@@ -1451,7 +1427,7 @@ class FormulationApplyStageTemplateView(APIView):
     def post(
         self, request: Request, org_id: str, formulation_id: str
     ) -> Response:
-        from apps.formulations.models import FormulationStageTemplate
+        from apps.psp.services import list_psp_routing_templates
 
         try:
             formulation = get_formulation(
@@ -1461,32 +1437,26 @@ class FormulationApplyStageTemplateView(APIView):
             raise NotFound() from exc
 
         raw = request.data if isinstance(request.data, dict) else {}
-        template_id = str(raw.get("template_id") or "").strip()
-        if not template_id:
+        template_uuid = str(raw.get("template_id") or "").strip()
+        if not template_uuid:
             return Response(
                 {"error": "invalid_payload", "detail": "template_id required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        template = (
-            FormulationStageTemplate.objects.filter(
-                organization=self.organization, id=template_id
-            ).first()
+
+        catalog = list_psp_routing_templates(organization=self.organization)
+        template = next(
+            (
+                row
+                for row in catalog
+                if str(row.get("uuid") or "").strip() == template_uuid
+            ),
+            None,
         )
         if template is None:
             raise NotFound()
 
-        stages = template.stages_json or []
-        # Auto-resolve any missing workstation_group_uuid on apply by
-        # matching the stage name against PSP's workstation catalog.
-        # Templates authored before the workstation picker landed have
-        # ``workstation_group_uuid: null`` — but the stage NAMES
-        # ("Blending", "Encapsulation") already match PSP workstation
-        # names exactly. Rather than force the operator to hand-pick
-        # the same thing twice, resolve by name on apply so the stage
-        # cards land with the operation pre-selected.
-        stages = _resolve_workstations_by_name(
-            organization=self.organization, stages=stages
-        )
+        stages = _hydrate_stages_from_psp_template(template, formulation)
         try:
             set_formulation_stages(
                 formulation=formulation,
@@ -1503,14 +1473,98 @@ class FormulationApplyStageTemplateView(APIView):
         return Response(
             {
                 "summary": {
-                    "template_id": template_id,
-                    "template_name": template.name,
+                    "template_id": template_uuid,
+                    "template_name": template.get("name") or "",
                     "stages_applied": len(stages),
                 },
                 "formulation": FormulationReadSerializer(formulation).data,
             },
             status=status.HTTP_200_OK,
         )
+
+
+def _hydrate_stages_from_psp_template(
+    template: dict[str, Any],
+    formulation: Any,
+) -> list[dict[str, Any]]:
+    """Build the ``set_formulation_stages`` payload from a PSP
+    routing-template row (as returned by
+    ``/api/integration/routing-templates``). One NPD stage per PSP
+    step; the final step becomes the ``finished_product``, prior
+    steps are ``semi_finished``. Provenance (template + step uuid)
+    is stamped on every stage so the FE can lock the right fields.
+
+    Stage name + PSP item name are composed server-side so the UI
+    can lock the inputs read-only:
+
+    * Finished step → ``"<product name>"`` (e.g. ``"Super Capsules"``).
+    * Earlier steps → ``"<product name> <step label>"`` (e.g.
+      ``"Super Capsules Weighting"``). The step label comes from the
+      template step's ``operation_description``, falling back to the
+      workstation-group name.
+    """
+
+    from apps.formulations.models import FormulationStage
+    from apps.psp.services import _human_readable_formulation_name
+
+    template_uuid = template.get("uuid") or None
+    product_name = (
+        _human_readable_formulation_name(formulation)
+        or getattr(formulation, "code", "")
+        or ""
+    ).strip()
+
+    steps = template.get("steps")
+    if not isinstance(steps, list):
+        return []
+
+    ordered = [s for s in steps if isinstance(s, dict)]
+    ordered.sort(key=lambda s: (s.get("sort_order") or 0))
+
+    hydrated: list[dict[str, Any]] = []
+    last_index = len(ordered) - 1
+    for index, step in enumerate(ordered):
+        is_last = index == last_index
+        step_label = (
+            (step.get("operation_description") or "").strip()
+            or (step.get("workstation_group_name") or "").strip()
+            or f"Stage {index + 1}"
+        )
+        composed_name = (
+            product_name
+            if is_last
+            else f"{product_name} {step_label}".strip()
+            if product_name
+            else step_label
+        )
+        hydrated.append(
+            {
+                "sort_order": index,
+                "name": composed_name[:120],
+                "stage_key": FormulationStage.StageKey.CUSTOM,
+                "workstation_group_uuid": step.get("workstation_group_uuid")
+                or None,
+                "workstation_group_name": step.get("workstation_group_name")
+                or "",
+                "operation_description": step.get("operation_description")
+                or "",
+                "setup_time_min": step.get("setup_time_min"),
+                "cycle_time_min": step.get("cycle_time_min"),
+                "fixed_cost": step.get("fixed_cost"),
+                "variable_cost": step.get("variable_cost"),
+                "capacity": step.get("capacity"),
+                "psp_item_type": (
+                    "finished_product" if is_last else "semi_finished"
+                ),
+                # Lock the PSP item name to the same composed string
+                # so the two surfaces (NPD stage card header + PSP
+                # catalog row) stay in sync.
+                "psp_item_name": composed_name[:200],
+                "source_routing_template_uuid": template_uuid,
+                "source_routing_step_uuid": step.get("uuid") or None,
+            }
+        )
+    return hydrated
 
 
 class FormulationVersionListView(APIView):
@@ -2181,6 +2235,21 @@ class FormulationItemPricesView(APIView):
             if isinstance(u, str) and str(u).strip()
         ]
 
+        # Optional qty-per-item map for tier-aware vendor pricing —
+        # the proposal "savings at scale" panel passes one qty per
+        # item at each breakpoint it renders. Backward-compatible
+        # for callers that don't send it (missing = base tier).
+        raw_qty_map = payload.get("qty_per_item")
+        qty_per_item: dict[str, str] = {}
+        if isinstance(raw_qty_map, dict):
+            for uuid, qty in raw_qty_map.items():
+                if not isinstance(uuid, str):
+                    continue
+                try:
+                    qty_per_item[uuid.strip()] = str(qty)
+                except Exception:
+                    continue
+
         if not uuids:
             return Response(
                 {"items": [], "psp_configured": True},
@@ -2202,7 +2271,9 @@ class FormulationItemPricesView(APIView):
 
         client: PspClient = _client_factory(config)
         try:
-            suggestions = client.suggest_costs(uuids)
+            suggestions = client.suggest_costs(
+                uuids, qty_per_item=qty_per_item or None
+            )
         except PspError as exc:
             return Response(
                 {"items": [], "psp_configured": True, "error": str(exc)},

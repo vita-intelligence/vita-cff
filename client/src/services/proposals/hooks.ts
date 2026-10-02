@@ -20,6 +20,7 @@ import type { RenderedSheetContext } from "@/services/specifications";
 
 import {
   addProposalLine,
+  cloneRejectedProposal,
   completeProposalRequiredFields,
   createProposal,
   createProposalBundle,
@@ -31,6 +32,7 @@ import {
   fetchProposalAttachedSpec,
   fetchProposalAudit,
   fetchProposalLines,
+  fetchProposalSavingsAtScale,
   fetchProposalTransitions,
   fetchProposalsPage,
   patchProposalLine,
@@ -50,6 +52,7 @@ import type {
   ProposalAuditDto,
   ProposalDto,
   ProposalLineDto,
+  ProposalSavingsAtScaleDto,
   ProposalStatusRequestDto,
   ProposalTransitionDto,
   UpdateProposalLineRequestDto,
@@ -156,6 +159,14 @@ export const proposalsQueryKeys = {
       orgId,
       versionId,
       margin ?? "",
+    ] as const,
+  savingsAtScale: (orgId: string, proposalId: string) =>
+    [
+      rootQueryKey,
+      "proposals",
+      orgId,
+      proposalId,
+      "savings-at-scale",
     ] as const,
   attachedSpecRender: (
     orgId: string,
@@ -359,6 +370,28 @@ export function useCostPreview(
 }
 
 
+/** Fetch the "savings at scale" progression for a proposal — one
+ *  row per quantity breakpoint, with ingredients + labour broken
+ *  out and savings-per-unit vs the quoted qty. Server computes
+ *  everything; the FE just renders the table. */
+export function useProposalSavingsAtScale(
+  orgId: string,
+  proposalId: string,
+  options: { enabled?: boolean } = {},
+): UseQueryResult<ProposalSavingsAtScaleDto, ApiError> {
+  return useQuery<ProposalSavingsAtScaleDto, ApiError>({
+    queryKey: proposalsQueryKeys.savingsAtScale(orgId, proposalId),
+    queryFn: () => fetchProposalSavingsAtScale(orgId, proposalId),
+    enabled: (options.enabled ?? true) && Boolean(orgId && proposalId),
+    //: Prices move slowly, labour rates never move mid-session.
+    //: 60 s is plenty — a scientist editing proposal lines doesn't
+    //: shift ingredient costs, and PSP tier edits are rare.
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+
 export function useCreateProposal(
   orgId: string,
 ): UseMutationResult<ProposalDto, ApiError, CreateProposalRequestDto> {
@@ -462,6 +495,27 @@ export function useDeleteProposal(
   const queryClient = useQueryClient();
   return useMutation<void, ApiError, string>({
     mutationFn: (proposalId) => deleteProposal(orgId, proposalId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: [rootQueryKey, "proposals", orgId],
+      });
+    },
+  });
+}
+
+
+/**
+ * Clone a rejected proposal into a fresh DRAFT retry.
+ * Argument: the source (rejected) proposal id.
+ * Returns the new proposal — callers typically route to its
+ * detail page on success.
+ */
+export function useCloneRejectedProposal(
+  orgId: string,
+): UseMutationResult<ProposalDto, ApiError, string> {
+  const queryClient = useQueryClient();
+  return useMutation<ProposalDto, ApiError, string>({
+    mutationFn: (proposalId) => cloneRejectedProposal(orgId, proposalId),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: [rootQueryKey, "proposals", orgId],

@@ -5,6 +5,8 @@ import {
   Loader2,
   Plus,
   PoundSterling,
+  RefreshCw,
+  ShieldAlert,
   Trash2,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -22,7 +24,9 @@ import {
 } from "@/services/formulations";
 import {
   PROPOSAL_TEMPLATE_TYPES,
+  extractRetryBlocked,
   fetchCostPreview,
+  useCloneRejectedProposal,
   useCreateProposal,
   useDeleteProposal,
   useProposalsPage,
@@ -30,6 +34,7 @@ import {
   type ProposalStatus,
   type ProposalTemplateType,
 } from "@/services/proposals";
+import { rejectionCategoryLabel } from "@/services/proposals/rejection-categories";
 import { type CustomerDto } from "@/services/customers";
 import { CustomerPicker } from "@/components/customers/customer-picker";
 import { useOrganization } from "@/services/organizations";
@@ -126,6 +131,17 @@ export function ProposalsList({
         </p>
       ) : null}
 
+      {/* Latest-rejection banner. R&D's workspace is the first
+          surface that sees new quote outcomes — if a proposal just
+          got declined, the scientist sees the reason here (so the
+          next tweak is informed) with a one-click retry. Collapsed
+          when a non-rejected proposal has landed after the latest
+          decline (sales has already moved on) or when no proposal
+          on the project has ever been rejected. */}
+      {canWrite ? (
+        <LatestRejectionBanner orgId={orgId} proposals={proposals} />
+      ) : null}
+
       {proposalsQuery.isLoading ? (
         <p className="mt-6 text-sm text-ink-500">
           {tProposals("list.loading")}
@@ -213,6 +229,127 @@ function ProposalRow({
         ) : null}
       </div>
     </li>
+  );
+}
+
+
+/**
+ * Banner that surfaces the most recent rejected proposal on this
+ * project's workspace. Hidden entirely when:
+ *   * There's no rejected proposal in the list, OR
+ *   * A newer, non-rejected proposal has landed (meaning sales
+ *     has already moved on — showing the stale decline would
+ *     confuse the scientist about "whose turn is it").
+ *
+ * Shows the customer's reason verbatim + a "Create a retry" CTA
+ * that clones the rejected row and routes to the fresh DRAFT.
+ */
+function LatestRejectionBanner({
+  orgId,
+  proposals,
+}: {
+  orgId: string;
+  proposals: readonly ProposalListItemDto[];
+}) {
+  const router = useRouter();
+  const tErrors = useTranslations("errors");
+  const cloneMutation = useCloneRejectedProposal(orgId);
+  const [error, setError] = useState<string | null>(null);
+
+  // Sort by created_at desc. If the newest row is rejected, show the
+  // banner. If a later proposal is in any other status, suppress —
+  // the team has already filed another attempt.
+  const sorted = [...proposals].sort(
+    (a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+  const newest = sorted[0];
+  if (!newest || newest.status !== "rejected") return null;
+
+  const reason = (newest.customer_rejection_reason || "").trim();
+  const handleRetry = async () => {
+    setError(null);
+    try {
+      const next = await cloneMutation.mutateAsync(newest.id);
+      router.push(`/proposals/${next.id}`);
+    } catch (err) {
+      // Retry coordination — a draft retry already exists on this
+      // project. Prompt to open it so the scientist doesn't trigger
+      // a parallel sibling via this surface.
+      const blocked = extractRetryBlocked(err);
+      if (blocked) {
+        const label =
+          blocked.code === "draft_follow_up_exists"
+            ? `A retry draft already exists on this project — ${blocked.follow_up_code}. Open it?`
+            : `A retry already exists — ${blocked.follow_up_code}. Open it?`;
+        if (window.confirm(label)) {
+          router.push(`/proposals/${blocked.follow_up_id}`);
+          return;
+        }
+        setError(
+          `${blocked.follow_up_code} is already in flight.`,
+        );
+        return;
+      }
+      setError(
+        extractApiErrorMessage(err, tErrors) ||
+          "Could not create a retry proposal.",
+      );
+    }
+  };
+
+  return (
+    <section className="mt-4 rounded-2xl border border-danger/30 bg-danger/[0.04] p-4 shadow-sm">
+      <header className="flex items-center gap-2">
+        <ShieldAlert className="h-4 w-4 text-danger" />
+        <h3 className="text-sm font-semibold text-ink-1000">
+          Customer declined {newest.code}
+        </h3>
+      </header>
+      {newest.customer_rejection_categories.length > 0 ? (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {newest.customer_rejection_categories.map((key) => (
+            <span
+              key={key}
+              className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-semibold text-danger ring-1 ring-inset ring-danger/30"
+            >
+              {rejectionCategoryLabel(key)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {reason ? (
+        <blockquote className="mt-3 whitespace-pre-wrap border-l-2 border-danger/40 bg-ink-0 px-3 py-2 text-sm italic text-ink-700 ring-1 ring-inset ring-danger/10">
+          {reason}
+        </blockquote>
+      ) : newest.customer_rejection_categories.length === 0 ? (
+        <p className="mt-3 text-sm text-ink-500">
+          No reason was given — check in with sales before resending.
+        </p>
+      ) : null}
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={handleRetry}
+          disabled={cloneMutation.isPending}
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {cloneMutation.isPending ? (
+            <RefreshCw className="h-4 w-4 animate-spin" />
+          ) : (
+            <Plus className="h-4 w-4" />
+          )}
+          Create a retry proposal
+        </button>
+        <p className="text-[11px] text-ink-500">
+          Clones lines + customer + pricing. Edit the fresh draft to
+          address the decline, then send it.
+        </p>
+      </div>
+      {error ? (
+        <p className="mt-3 text-xs text-danger">{error}</p>
+      ) : null}
+    </section>
   );
 }
 

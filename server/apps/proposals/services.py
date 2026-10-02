@@ -935,6 +935,66 @@ def create_proposal(
         unit_price=unit_price,
         display_order=0,
     )
+    # Rejection → retry coordination. Two entry points can both try
+    # to create a retry proposal on the same formulation (the
+    # "Create a new proposal" CTA on a rejected row AND the
+    # ``/signed/`` bundle flow), so this is where we keep them from
+    # fanning out parallel retries silently.
+    #
+    #   * If the formulation has a rejected proposal with an
+    #     in-flight follow-up (DRAFT / IN_REVIEW), REFUSE this
+    #     create — the operator should either open the existing
+    #     draft or delete it first. Raises :class:`DraftFollowUpExists`.
+    #   * If the formulation has a rejected proposal with NO
+    #     follow-up yet, auto-link the fresh proposal as the
+    #     retry so the "Previously rejected" banner + the rejected
+    #     row's "Retry in flight" card both wire up without a
+    #     separate clone step. ``clone_rejected_proposal`` sets the
+    #     link explicitly too; both paths converge on the same
+    #     end state.
+    #
+    # Rejections that already produced an advanced follow-up
+    # (``approved`` / ``sent`` / ``accepted`` / even a re-rejected
+    # row) do NOT block a fresh create — the retry is "done" from
+    # the system's perspective and the operator may legitimately
+    # want to raise an unrelated proposal on the same formulation.
+    unmatched_rejection = (
+        Proposal.objects
+        .filter(
+            formulation_version__formulation_id=version.formulation_id,
+            status=ProposalStatus.REJECTED.value,
+            follow_up_proposals__isnull=True,
+        )
+        .order_by("-customer_rejected_at", "-updated_at")
+        .first()
+    )
+    draft_followup = (
+        Proposal.objects
+        .filter(
+            formulation_version__formulation_id=version.formulation_id,
+            previous_rejected_proposal__status=ProposalStatus.REJECTED.value,
+            status__in=(
+                ProposalStatus.DRAFT.value,
+                ProposalStatus.IN_REVIEW.value,
+                ProposalStatus.APPROVED.value,
+                ProposalStatus.SENT.value,
+            ),
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if draft_followup is not None:
+        raise DraftFollowUpExists(
+            follow_up_id=draft_followup.id,
+            follow_up_code=draft_followup.code,
+            follow_up_status=draft_followup.status,
+        )
+    if unmatched_rejection is not None:
+        proposal.previous_rejected_proposal = unmatched_rejection
+        proposal.save(
+            update_fields=["previous_rejected_proposal", "updated_at"]
+        )
+
     record_audit(
         organization=organization,
         actor=actor,
@@ -1264,6 +1324,266 @@ def set_additional_sales_people(
 
 
 @transaction.atomic
+class ProposalNotRejected(Exception):
+    """Raised when a non-rejected proposal is passed to the retry
+    clone endpoint. The service refuses to clone from a live
+    proposal (would duplicate active commercial state); callers
+    should either reject the current one first or use the normal
+    create flow."""
+
+
+class ProposalAlreadyCloned(Exception):
+    """Raised when a rejected proposal has ALREADY been cloned into
+    a retry. One rejection should produce one follow-up, not many —
+    otherwise a sales rep can accidentally fan out N parallel
+    retries on the same dead quote. If the retry itself got
+    rejected too, clone off THAT one instead.
+
+    The exception carries the first follow-up's uuid so the FE can
+    route the operator to the existing retry instead of popping a
+    useless error toast."""
+
+    def __init__(self, follow_up_id: Any, follow_up_code: str):
+        super().__init__("proposal_already_cloned")
+        self.follow_up_id = follow_up_id
+        self.follow_up_code = follow_up_code
+
+
+class DraftFollowUpExists(Exception):
+    """Raised when a create path (``/signed/`` bundle, direct
+    create) tries to raise a fresh proposal on a formulation whose
+    last rejection already has an in-flight follow-up (DRAFT /
+    IN_REVIEW). Would otherwise fan out a parallel retry that
+    neither entry point knows about, which is exactly the
+    PROP-0003 vs PROP-0004 confusion the user hit.
+
+    The exception carries the existing follow-up's id/code so the
+    FE can offer "open the existing draft" instead of a blank
+    error toast."""
+
+    def __init__(self, follow_up_id: Any, follow_up_code: str, follow_up_status: str):
+        super().__init__("draft_follow_up_exists")
+        self.follow_up_id = follow_up_id
+        self.follow_up_code = follow_up_code
+        self.follow_up_status = follow_up_status
+
+
+def clone_rejected_proposal(
+    *,
+    proposal: Proposal,
+    actor: Any,
+) -> Proposal:
+    """Create a fresh DRAFT proposal that retries a rejected one.
+
+    Carries forward the authoring context (customer, formulation,
+    qty, pricing, cover notes) + each line's product + pricing so
+    the sales rep only has to tweak what changed. The rejection
+    reason + timestamp get surfaced on the new proposal via the
+    ``previous_rejected_proposal`` FK so the detail page can render
+    a banner.
+
+    Guard: source must be at ``status=rejected``. Everything else
+    raises :class:`ProposalNotRejected` — a live quote already
+    represents the sales team's current intent and shouldn't be
+    silently duplicated.
+
+    Carry-forward gotchas handled here:
+
+    * **Formulation version:** source may be pinned to a stale
+      version. Scientists bump ``formulation.approved_version_number``
+      independently of proposals, and ``create_proposal`` refuses to
+      quote off a non-approved version. Resolve to whatever the
+      formulation currently points at.
+    * **Proposal-level spec sheet:** FK is OneToOne, so the rejected
+      row already owns it — can't re-attach. Dropped on the clone;
+      sales can rebind on the detail page.
+    * **Per-line spec sheet:** FK but the sheet may have reverted to
+      ``draft`` / ``in_review`` after a scientist opened the
+      finalisation flow again. Skip the sheet silently in that case
+      rather than 400-ing the whole clone.
+    """
+
+    if proposal.status != ProposalStatus.REJECTED.value:
+        raise ProposalNotRejected()
+
+    # Refuse a second clone off the same rejected row. One decline
+    # → one retry; a serial-clone would silently fan out parallel
+    # follow-ups and confuse the pipeline + the dashboard chip. If
+    # the retry itself also got declined, the operator clones off
+    # THAT (newer) rejection, not this one.
+    existing_follow_up = proposal.follow_up_proposals.order_by("created_at").first()
+    if existing_follow_up is not None:
+        raise ProposalAlreadyCloned(
+            follow_up_id=existing_follow_up.id,
+            follow_up_code=existing_follow_up.code,
+        )
+
+    # Resolve the formulation's CURRENT approved version instead of
+    # trusting the rejected row's pin. ``create_proposal`` enforces
+    # ``version.version_number == formulation.approved_version_number``
+    # so a stale FK would 500 the clone the moment scientists bump
+    # the approval.
+    source_version = proposal.formulation_version
+    formulation = (
+        source_version.formulation if source_version is not None else None
+    )
+    if formulation is None or formulation.approved_version_number is None:
+        raise FormulationVersionNotApproved()
+    current_version = (
+        FormulationVersion.objects.filter(
+            formulation=formulation,
+            version_number=formulation.approved_version_number,
+        )
+        .only("id")
+        .first()
+    )
+    if current_version is None:
+        raise FormulationVersionNotApproved()
+
+    # Proposal-level spec sheet: ``create_proposal`` already frees
+    # the OneToOne slot when the previous proposal is at ``rejected``
+    # / ``accepted`` (see the ``should_pin_legacy_slot`` branch) —
+    # so we CAN carry the sheet forward on the clone when it's still
+    # quotable. ``_resolve_quotable_sheet`` enforces the status gate
+    # on its side; if the sheet reverted to DRAFT on rejection (the
+    # default auto-revert path) we skip it silently and let sales
+    # re-attach after the spec is re-approved.
+    proposal_sheet_id: Any | None = proposal.specification_sheet_id
+    if proposal_sheet_id is not None:
+        existing_sheet = SpecificationSheet.objects.filter(
+            id=proposal_sheet_id,
+            organization=proposal.organization,
+        ).first()
+        if existing_sheet is None or existing_sheet.status not in _QUOTABLE_SHEET_STATUSES:
+            proposal_sheet_id = None
+
+    new_proposal = create_proposal(
+        organization=proposal.organization,
+        actor=actor,
+        formulation_version_id=current_version.id,
+        template_type=proposal.template_type,
+        specification_sheet_id=proposal_sheet_id,
+        customer_id=proposal.customer_id,
+        customer_name=proposal.customer_name,
+        customer_email=proposal.customer_email,
+        customer_phone=proposal.customer_phone,
+        customer_company=proposal.customer_company,
+        invoice_address=proposal.invoice_address,
+        delivery_address=proposal.delivery_address,
+        dear_name=proposal.dear_name,
+        reference=proposal.reference,
+        currency=proposal.currency or "GBP",
+        quantity=proposal.quantity or 1,
+        unit_price=proposal.unit_price,
+        freight_amount=proposal.freight_amount,
+        margin_percent=proposal.margin_percent,
+        deposit_percent=proposal.deposit_percent,
+        material_cost_per_pack=proposal.material_cost_per_pack,
+        cover_notes=proposal.cover_notes or "",
+        valid_until=None,  # fresh 14-day window
+    )
+
+    new_proposal.previous_rejected_proposal = proposal
+    # Carry forward the primary + additional sales people so the
+    # new quote stays owned by whoever drafted the original.
+    new_proposal.sales_person_id = proposal.sales_person_id
+    new_proposal.save(
+        update_fields=[
+            "previous_rejected_proposal",
+            "sales_person",
+            "updated_at",
+        ]
+    )
+    if proposal.additional_sales_people.exists():
+        new_proposal.additional_sales_people.set(
+            proposal.additional_sales_people.all()
+        )
+
+    # ``create_proposal`` auto-seeds a first line from the picked
+    # version — fine for the hand-crafted "pick a formulation + add
+    # extras" flow it was built for, but on a clone every line comes
+    # from the source so the seed is a duplicate of lines[0]. Drop
+    # the seed before cloning so we don't ship twin rows (the exact
+    # bug the user hit).
+    new_proposal.lines.all().delete()
+
+    # Resolve each line's formulation version against its OWN
+    # formulation's current approved number — a multi-product proposal
+    # can pull from several formulations and each one may have
+    # independently bumped its approval.
+    for original_line in proposal.lines.order_by("display_order", "id"):
+        line_version_id = original_line.formulation_version_id
+        if original_line.formulation_version_id is not None:
+            line_src = (
+                FormulationVersion.objects.select_related("formulation")
+                .filter(id=original_line.formulation_version_id)
+                .first()
+            )
+            if line_src is not None:
+                approved_num = line_src.formulation.approved_version_number
+                if approved_num is not None and (
+                    approved_num != line_src.version_number
+                ):
+                    current_line_version = (
+                        FormulationVersion.objects.filter(
+                            formulation=line_src.formulation,
+                            version_number=approved_num,
+                        )
+                        .only("id")
+                        .first()
+                    )
+                    if current_line_version is not None:
+                        line_version_id = current_line_version.id
+
+        # Per-line spec sheet is a ForeignKey (not OneToOne) so it
+        # CAN be shared with the rejected row — but the sheet's
+        # status may have moved out of the quotable set. Try with
+        # the sheet; if ``_resolve_quotable_sheet`` refuses, retry
+        # without it so the clone still lands.
+        try:
+            add_proposal_line(
+                proposal=new_proposal,
+                actor=actor,
+                formulation_version_id=line_version_id,
+                specification_sheet_id=original_line.specification_sheet_id,
+                product_code=original_line.product_code,
+                description=original_line.description,
+                quantity=original_line.quantity,
+                unit_cost=original_line.unit_cost,
+                unit_price=original_line.unit_price,
+                display_order=original_line.display_order,
+            )
+        except (
+            SpecificationSheetNotApproved,
+            SpecificationSheetNotInOrg,
+        ):
+            add_proposal_line(
+                proposal=new_proposal,
+                actor=actor,
+                formulation_version_id=line_version_id,
+                specification_sheet_id=None,
+                product_code=original_line.product_code,
+                description=original_line.description,
+                quantity=original_line.quantity,
+                unit_cost=original_line.unit_cost,
+                unit_price=original_line.unit_price,
+                display_order=original_line.display_order,
+            )
+
+    record_audit(
+        organization=proposal.organization,
+        actor=actor,
+        action="proposal.clone_from_rejected",
+        target=new_proposal,
+        before=None,
+        after={
+            "previous_proposal_id": str(proposal.id),
+            "previous_proposal_code": proposal.code,
+        },
+    )
+    return new_proposal
+
+
 def delete_proposal(*, proposal: Proposal, actor: Any) -> None:
     _guard_mutable(proposal)
     before = snapshot(proposal)
@@ -1561,6 +1881,34 @@ def update_proposal_line(
     for key, value in changes.items():
         if key in updatable and value is not None:
             setattr(line, key, value)
+
+    # Per-tier margin overrides come through as a dict map keyed by
+    # multiplier string → margin % string. ``None`` means "leave
+    # existing untouched"; an empty dict explicitly clears every
+    # override on the line.
+    if "tier_margin_overrides" in changes:
+        raw = changes["tier_margin_overrides"]
+        if raw is not None:
+            if not isinstance(raw, dict):
+                raise ValueError(
+                    "tier_margin_overrides must be an object"
+                )
+            cleaned: dict[str, str] = {}
+            for k, v in raw.items():
+                try:
+                    key_str = str(int(k))
+                except (TypeError, ValueError):
+                    continue
+                if v is None or v == "":
+                    continue
+                try:
+                    margin = Decimal(str(v))
+                except (InvalidOperation, ValueError, TypeError):
+                    continue
+                if margin < 0 or margin >= 100:
+                    continue
+                cleaned[key_str] = str(margin.quantize(Decimal("0.0001")))
+            line.tier_margin_overrides = cleaned
 
     # Auto-fill pricing from the newly-attached spec.
     #
@@ -2716,12 +3064,21 @@ def _revert_attached_specs_after_rejection(
     """Full reset every attached spec back to ``DRAFT``.
 
     When the proposal dies, the whole compliance cycle failed —
-    the customer rejected the offering. We can't assume the
-    scientist's draft or the director's sign-off are still valid,
-    because sales may need to revise the recipe (not just re-price).
-    So we wipe both internal signatures and bounce the sheet all the
-    way back to ``DRAFT``, giving the scientist a clean slate to
-    iterate on.
+    the customer rejected the offering. Rejection almost always
+    means something about the recipe needs changing (price-only
+    objections are the exception, not the rule), so we can't
+    assume the scientist's draft or the director's sign-off are
+    still valid. Wipe both internal signatures and bounce the
+    sheet back to ``DRAFT`` so the scientist starts the rework
+    from a truly clean slate.
+
+    This is also what unblocks the "Create a new proposal" retry
+    flow: the retry should quote the REVISED spec, not the one
+    the customer just declined. Scientists re-approve on the spec
+    page, then sales attaches the fresh version via the per-line
+    picker (which lists the sheet disabled while at DRAFT /
+    IN_REVIEW, so sales SEES it exists and knows it's being
+    reworked).
 
     Downstream effect on PSP: the ``APPROVED → DRAFT`` transition
     fires the existing "spec cleared" sync (see
@@ -2790,6 +3147,23 @@ def _revert_attached_specs_after_rejection(
             .exists()
         )
         if other_live_exists:
+            continue
+
+        # Customer-signed-but-not-finalised specs stay intact. The
+        # kiosk flow is spec-sign FIRST, then proposal-sign — if the
+        # customer signed the spec and THEN declined the proposal,
+        # the decline was commercial (price / terms), not technical
+        # (recipe). Reverting the spec would force the customer,
+        # scientist, and director to re-sign a document the customer
+        # already explicitly accepted. Preserve the signatures +
+        # keep the sheet at ``SENT`` (quotable), so the retry quote
+        # bundles the same signed sheet without any re-sign dance.
+        #
+        # Note: a sheet at ``ACCEPTED`` is already filtered out by
+        # the ``resettable_statuses`` gate above. This branch catches
+        # the pre-finalise window where the sheet is ``SENT`` with a
+        # customer signature attached.
+        if sheet.customer_signed_at is not None:
             continue
 
         previous_status = sheet.status
@@ -3153,11 +3527,34 @@ def capture_customer_signature_on_attached_spec(
     return sheet
 
 
+class RejectionCategoriesRequired(Exception):
+    """Raised when the portal reject flow is called without any
+    category ticks. The portal UI enforces this on the client side
+    (Submit stays disabled); the backend guards it too so a crafted
+    request can't bypass the structured-data requirement."""
+
+    code = "rejection_categories_required"
+
+
+class RejectionCategoryInvalid(Exception):
+    """Raised when a submitted category key isn't in
+    :data:`apps.proposals.constants.PROPOSAL_REJECTION_CATEGORIES`.
+    Prevents a stale client (older build in the browser) from
+    silently writing orphan keys that analytics can't aggregate."""
+
+    code = "rejection_category_invalid"
+
+    def __init__(self, invalid_keys: list[str]):
+        super().__init__(self.code)
+        self.invalid_keys = invalid_keys
+
+
 @transaction.atomic
 def capture_customer_rejection_on_proposal(
     *,
     proposal: Proposal,
     reason: str = "",
+    categories: list[str] | None = None,
 ) -> Proposal:
     """Mark a proposal as ``rejected`` because the customer declined
     via the kiosk's "Decline" button.
@@ -3168,8 +3565,13 @@ def capture_customer_rejection_on_proposal(
     already-accepted proposal is nonsense and would corrupt the
     audit trail.
 
-    The optional ``reason`` is the free-text the customer typed in
-    the modal. Empty when they declined without explaining.
+    ``categories`` is the list of structured reason keys the
+    customer ticked (e.g. ``["price", "lead_time"]``). AT LEAST ONE
+    is required so analytics has something to aggregate; the
+    free-text ``reason`` stays optional. Every submitted key must
+    be registered in
+    :data:`apps.proposals.constants.PROPOSAL_REJECTION_CATEGORIES`
+    or the whole decline is refused.
 
     Fires an email notification to the sales person *after* the
     transaction commits (via :func:`transaction.on_commit`) so a
@@ -3181,6 +3583,27 @@ def capture_customer_rejection_on_proposal(
     if proposal.status != ProposalStatus.SENT.value:
         raise InvalidProposalTransition()
 
+    from apps.proposals.constants import PROPOSAL_REJECTION_CATEGORY_KEYS
+
+    cleaned_categories: list[str] = []
+    seen: set[str] = set()
+    invalid: list[str] = []
+    for raw in categories or []:
+        if not isinstance(raw, str):
+            continue
+        key = raw.strip()
+        if not key or key in seen:
+            continue
+        if key not in PROPOSAL_REJECTION_CATEGORY_KEYS:
+            invalid.append(key)
+            continue
+        cleaned_categories.append(key)
+        seen.add(key)
+    if invalid:
+        raise RejectionCategoryInvalid(invalid_keys=invalid)
+    if not cleaned_categories:
+        raise RejectionCategoriesRequired()
+
     cleaned_reason = (reason or "").strip()
     before = snapshot(proposal)
     from_status = proposal.status
@@ -3188,11 +3611,13 @@ def capture_customer_rejection_on_proposal(
     proposal.status = ProposalStatus.REJECTED.value
     proposal.customer_rejected_at = timezone.now()
     proposal.customer_rejection_reason = cleaned_reason
+    proposal.customer_rejection_categories = cleaned_categories
     proposal.save(
         update_fields=[
             "status",
             "customer_rejected_at",
             "customer_rejection_reason",
+            "customer_rejection_categories",
             "updated_at",
         ]
     )
@@ -3432,3 +3857,658 @@ def finalize_proposal_kiosk(*, proposal: Proposal) -> dict[str, Any]:
         ],
         "already_finalized": False,
     }
+
+
+# ---------------------------------------------------------------------------
+# Savings at scale — proposal cost progression across order sizes
+# ---------------------------------------------------------------------------
+
+#: Multiplier breakpoints applied to the quoted qty. Matches the
+#: "base × 1 / ×2 / ×5 / ×10 / ×25 / ×50" progression the sales team
+#: uses to show customers how price scales with order volume.
+_SAVINGS_MULTIPLIERS: tuple[int, ...] = (1, 2, 5, 10, 25, 50)
+
+
+def _coerce_positive_decimal(value: Any, default: Decimal) -> Decimal:
+    if value is None or value == "":
+        return default
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _coerce_nonneg_decimal(value: Any) -> Decimal:
+    if value is None or value == "":
+        return Decimal("0")
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0")
+    return parsed if parsed >= 0 else Decimal("0")
+
+
+#: Hidden convention used by the formulation builder's cost
+#: calculator — the "typical production batch" fixed costs amortise
+#: against when we need a per-unit number WITHOUT asking the user
+#: for a quantity. The spec-sheet director-approval modal uses this
+#: so costs read as "per unit at a normal run" instead of the
+#: literally-correct-but-useless £15/pack a 1-pack batch produces.
+_STANDARD_PRODUCTION_BATCH = 5000
+
+
+def _prepare_line_specs(
+    version: "FormulationVersion",
+) -> tuple[list[dict[str, Any]], int]:
+    """Resolve a formulation version's snapshot lines into the shape
+    the breakdown pricer consumes.
+
+    Returns ``(line_specs, servings_per_pack)``. Each line spec
+    carries ``psp_uuid`` (resolved via the NPD catalogue when the
+    snapshot didn't carry one), ``mg_per_pack``, ``item_name``,
+    ``item_code``. Lines without a resolvable PSP uuid or a positive
+    mg are dropped — same contract as the formulation-builder cost
+    calculator.
+    """
+
+    from apps.catalogues.models import Item as CatalogueItem
+
+    metadata = version.snapshot_metadata or {}
+    try:
+        servings_per_pack = int(metadata.get("servings_per_pack") or 1)
+    except (TypeError, ValueError):
+        servings_per_pack = 1
+    if servings_per_pack <= 0:
+        servings_per_pack = 1
+
+    raw_lines: list[dict[str, Any]] = []
+    for raw in version.snapshot_lines or []:
+        if not isinstance(raw, dict):
+            continue
+        mg_per_serving = _coerce_nonneg_decimal(raw.get("mg_per_serving"))
+        if mg_per_serving <= 0:
+            continue
+        mg_per_pack = mg_per_serving * Decimal(servings_per_pack)
+        item_name = (raw.get("item_name") or "").strip() or "Unnamed ingredient"
+        item_code = (raw.get("item_internal_code") or "").strip() or None
+        psp_uuid = raw.get("item_psp_source_uuid") or raw.get("item_psp_uuid")
+        if psp_uuid:
+            raw_lines.append(
+                {
+                    "psp_uuid": str(psp_uuid),
+                    "mg_per_pack": mg_per_pack,
+                    "item_name": item_name,
+                    "item_code": item_code,
+                }
+            )
+            continue
+        npd_item_id = raw.get("item_id")
+        if npd_item_id:
+            raw_lines.append(
+                {
+                    "npd_id": str(npd_item_id),
+                    "mg_per_pack": mg_per_pack,
+                    "item_name": item_name,
+                    "item_code": item_code,
+                }
+            )
+
+    npd_ids = [row["npd_id"] for row in raw_lines if "npd_id" in row]
+    psp_by_npd_id: dict[str, str] = {}
+    if npd_ids:
+        rows = (
+            CatalogueItem.objects.filter(id__in=npd_ids)
+            .exclude(psp_source_uuid=None)
+            .values_list("id", "psp_source_uuid")
+        )
+        psp_by_npd_id = {str(nid): str(psp) for nid, psp in rows}
+
+    line_specs: list[dict[str, Any]] = []
+    for row in raw_lines:
+        if "psp_uuid" in row:
+            line_specs.append(row)
+        else:
+            psp_uuid = psp_by_npd_id.get(row["npd_id"])
+            if psp_uuid:
+                line_specs.append(
+                    {
+                        "psp_uuid": psp_uuid,
+                        "mg_per_pack": row["mg_per_pack"],
+                        "item_name": row["item_name"],
+                        "item_code": row["item_code"],
+                    }
+                )
+
+    return line_specs, servings_per_pack
+
+
+def _prepare_stage_specs(
+    version: "FormulationVersion",
+) -> list[dict[str, Any]]:
+    """Resolve a formulation version's snapshot stages into the shape
+    the breakdown pricer consumes. Drops stages with no cost signal
+    whatsoever so the caller doesn't render empty "no data" rows."""
+
+    stage_specs: list[dict[str, Any]] = []
+    for raw in version.snapshot_stages or []:
+        if not isinstance(raw, dict):
+            continue
+        wsg = raw.get("workstation_group_uuid")
+        setup = _coerce_nonneg_decimal(raw.get("setup_time_min"))
+        cycle = _coerce_nonneg_decimal(raw.get("cycle_time_min"))
+        capacity = _coerce_positive_decimal(
+            raw.get("capacity"), Decimal("1")
+        )
+        fixed_cost = _coerce_nonneg_decimal(raw.get("fixed_cost"))
+        variable_cost = _coerce_nonneg_decimal(raw.get("variable_cost"))
+        if setup <= 0 and cycle <= 0 and fixed_cost <= 0 and variable_cost <= 0:
+            continue
+        stage_specs.append(
+            {
+                "workstation_group_uuid": str(wsg) if wsg else None,
+                "workstation_group_name": raw.get("workstation_group_name")
+                or raw.get("name")
+                or "Stage",
+                "stage_name": raw.get("name") or "Stage",
+                "setup_min": setup,
+                "cycle_min": cycle,
+                "capacity": capacity,
+                "fixed_cost": fixed_cost,
+                "variable_cost": variable_cost,
+            }
+        )
+    return stage_specs
+
+
+def _compute_tier_breakdown(
+    *,
+    line_specs: list[dict[str, Any]],
+    stage_specs: list[dict[str, Any]],
+    tier_qty: int,
+    client: Any,
+    rates_by_wsg: dict[str, dict[str, Decimal]],
+    currency_code: str,
+) -> dict[str, Any]:
+    """Compute the per-tier breakdown at a specific quantity. Shared
+    between the proposal savings-at-scale progression (6 tiers) and
+    the spec-sheet single-tier cost card.
+
+    Returns ``{ingredient_rows, labour_rows, ingredients_per_unit,
+    labour_per_unit, total_per_unit, currency_code}``. The currency
+    may be inherited from the first vendor row if the caller passed
+    an empty string.
+    """
+
+    from apps.psp.services import PspError
+
+    # --- Ingredients: tier-aware vendor pricing from PSP
+    qty_per_item: dict[str, str] = {}
+    for line in line_specs:
+        kg_needed = (line["mg_per_pack"] * Decimal(tier_qty)) / Decimal(
+            1_000_000
+        )
+        qty_per_item[line["psp_uuid"]] = str(kg_needed)
+
+    price_by_uuid: dict[str, dict[str, Any]] = {}
+    if line_specs:
+        try:
+            prices = client.suggest_costs(
+                [l["psp_uuid"] for l in line_specs],
+                qty_per_item=qty_per_item,
+            )
+        except PspError:
+            prices = []
+        price_by_uuid = {
+            str(p.get("uuid")): p
+            for p in prices
+            if isinstance(p, dict) and p.get("uuid")
+        }
+
+    ingredient_rows: list[dict[str, Any]] = []
+    ingredients_total = Decimal("0")
+    any_priced = False
+    local_currency = currency_code
+    for line in line_specs:
+        psp_uuid = line["psp_uuid"]
+        mg_per_pack = line["mg_per_pack"]
+        kg_needed = (mg_per_pack * Decimal(tier_qty)) / Decimal(1_000_000)
+        price_row = price_by_uuid.get(psp_uuid)
+
+        if price_row:
+            unit_cost = _coerce_nonneg_decimal(price_row.get("unit_cost"))
+            source = price_row.get("source") or "none"
+            vendor_name = price_row.get("vendor_name")
+            row_currency = price_row.get("currency_code") or local_currency
+            uom_symbol = price_row.get("uom_symbol")
+        else:
+            unit_cost = Decimal("0")
+            source = "none"
+            vendor_name = None
+            row_currency = local_currency
+            uom_symbol = None
+
+        if unit_cost > 0:
+            any_priced = True
+            line_cost_per_pack = (mg_per_pack * unit_cost) / Decimal(1_000_000)
+            ingredients_total += line_cost_per_pack
+            if not local_currency and row_currency:
+                local_currency = str(row_currency)
+        else:
+            line_cost_per_pack = Decimal("0")
+
+        ingredient_rows.append(
+            {
+                "item_name": line["item_name"],
+                "item_code": line["item_code"],
+                "mg_per_pack": _fmt_decimal(mg_per_pack),
+                "kg_needed": _fmt_decimal(kg_needed),
+                "unit_cost": _fmt_decimal(unit_cost if unit_cost > 0 else None),
+                "uom_symbol": uom_symbol,
+                "source": source,
+                "vendor_name": vendor_name,
+                "currency_code": row_currency,
+                "line_cost_per_unit": _fmt_decimal(line_cost_per_pack),
+            }
+        )
+
+    ingredients_per_unit: Decimal | None = (
+        ingredients_total if any_priced else None
+    )
+
+    # --- Labour / overhead
+    # Three cost dimensions on each stage, additive:
+    #   1. Routing: `fixed_cost` (flat per batch) + `variable_cost`
+    #      × qty (per unit). The operator-authored overhead.
+    #   2. Machine: WSG `machine_hourly_rate` × stage time. Used
+    #      when the WSG toggle is ON or equipment has running cost.
+    #   3. Labour: `avg_labour_hourly_rate` (session reality) OR
+    #      `fallback_labour_hourly_rate` (admin default) × stage
+    #      time. Projects wages for new groups without session
+    #      history yet.
+    labour_rows: list[dict[str, Any]] = []
+    total_labour = Decimal("0")
+    any_counted = False
+    for stage in stage_specs:
+        fixed = stage["fixed_cost"]
+        variable = stage["variable_cost"]
+        wsg_uuid = stage["workstation_group_uuid"]
+        stage_minutes = stage["setup_min"] + (
+            stage["cycle_min"] * Decimal(tier_qty) / stage["capacity"]
+        )
+        stage_hours = (
+            stage_minutes / Decimal(60) if stage_minutes > 0 else Decimal(0)
+        )
+
+        wsg_rates = rates_by_wsg.get(wsg_uuid) if wsg_uuid else None
+        machine_rate = (
+            wsg_rates.get("machine", Decimal("0"))
+            if wsg_rates
+            else Decimal("0")
+        )
+        labour_rate = (
+            wsg_rates.get("labour", Decimal("0"))
+            if wsg_rates
+            else Decimal("0")
+        )
+        labour_source = (
+            wsg_rates.get("labour_source", "none") if wsg_rates else "none"
+        )
+
+        routing_cost = (
+            fixed + variable * Decimal(tier_qty)
+            if (fixed > 0 or variable > 0)
+            else Decimal("0")
+        )
+        machine_cost = (
+            (stage_minutes * machine_rate) / Decimal(60)
+            if machine_rate > 0 and stage_minutes > 0
+            else Decimal("0")
+        )
+        wage_cost = (
+            (stage_minutes * labour_rate) / Decimal(60)
+            if labour_rate > 0 and stage_minutes > 0
+            else Decimal("0")
+        )
+
+        # Routing-authored overhead and hourly machine cost are
+        # alternatives today (operator chose one path when
+        # authoring the step). Labour wages stack independently —
+        # they're a different cost dimension (people, not
+        # consumables or equipment).
+        if routing_cost > 0:
+            stage_cost = routing_cost + wage_cost
+            basis = "routing_fixed"
+        elif machine_cost > 0 or wage_cost > 0:
+            stage_cost = machine_cost + wage_cost
+            basis = "machine_rate" if machine_cost > 0 else "labour_only"
+        else:
+            stage_cost = Decimal("0")
+            basis = "none"
+
+        if stage_cost > 0:
+            total_labour += stage_cost
+            any_counted = True
+
+        labour_rows.append(
+            {
+                "stage_name": stage["stage_name"],
+                "workstation_group_name": stage["workstation_group_name"],
+                "basis": basis,
+                "setup_time_min": _fmt_decimal(stage["setup_min"]),
+                "cycle_time_min": _fmt_decimal(stage["cycle_min"]),
+                "capacity": _fmt_decimal(stage["capacity"]),
+                "fixed_cost": _fmt_decimal(fixed if fixed > 0 else None),
+                "variable_cost": _fmt_decimal(
+                    variable if variable > 0 else None
+                ),
+                # ``hourly_rate`` kept as the MACHINE rate for
+                # backward compat with the existing FE basis chip.
+                # Labour rate rides on new fields below.
+                "hourly_rate": _fmt_decimal(
+                    machine_rate if machine_rate > 0 else None
+                ),
+                "labour_hourly_rate": _fmt_decimal(
+                    labour_rate if labour_rate > 0 else None
+                ),
+                "labour_source": labour_source,
+                "wage_cost_total": _fmt_decimal(
+                    wage_cost if wage_cost > 0 else None
+                ),
+                "labour_minutes_total": _fmt_decimal(stage_minutes),
+                "labour_hours_total": _fmt_decimal(stage_hours),
+                "stage_cost_total": _fmt_decimal(
+                    stage_cost if basis != "none" else None
+                ),
+                "cost_per_unit": _fmt_decimal(
+                    stage_cost / Decimal(tier_qty)
+                    if basis != "none" and tier_qty > 0
+                    else None
+                ),
+            }
+        )
+
+    labour_per_unit: Decimal | None = None
+    if any_counted and tier_qty > 0:
+        labour_per_unit = total_labour / Decimal(tier_qty)
+
+    total_per_unit: Decimal | None = None
+    if ingredients_per_unit is not None or labour_per_unit is not None:
+        total_per_unit = (ingredients_per_unit or Decimal("0")) + (
+            labour_per_unit or Decimal("0")
+        )
+
+    return {
+        "ingredient_rows": ingredient_rows,
+        "labour_rows": labour_rows,
+        "ingredients_per_unit": ingredients_per_unit,
+        "labour_per_unit": labour_per_unit,
+        "total_per_unit": total_per_unit,
+        "currency_code": local_currency,
+    }
+
+
+def _load_wsg_rates(
+    *, client: Any, stage_specs: list[dict[str, Any]]
+) -> tuple[dict[str, dict[str, Decimal]], str]:
+    """Fetch WSG machine + labour rates for every workstation group
+    referenced by the stages. Returns `(rates_by_wsg_uuid,
+    currency_code)` where each entry carries both
+    ``machine_hourly_rate`` and ``labour_hourly_rate``. Labour
+    resolves as avg_labour (session reality) ||
+    fallback_labour (admin default) || 0."""
+
+    from apps.psp.services import PspError
+
+    wsg_uuids = sorted(
+        {s["workstation_group_uuid"] for s in stage_specs if s["workstation_group_uuid"]}
+    )
+    rates: dict[str, dict[str, Decimal]] = {}
+    currency_code = ""
+    if not wsg_uuids:
+        return rates, currency_code
+    try:
+        wsg_rows = client.workstation_costs(wsg_uuids)
+    except PspError:
+        wsg_rows = []
+    for row in wsg_rows or []:
+        if not isinstance(row, dict):
+            continue
+        uuid_val = row.get("uuid")
+        if not uuid_val:
+            continue
+        machine = _coerce_nonneg_decimal(row.get("machine_hourly_rate"))
+        avg_labour = _coerce_nonneg_decimal(row.get("avg_labour_hourly_rate"))
+        fallback_labour = _coerce_nonneg_decimal(
+            row.get("fallback_labour_hourly_rate")
+        )
+        labour = avg_labour if avg_labour > 0 else fallback_labour
+        labour_source = (
+            "session" if avg_labour > 0 else ("fallback" if fallback_labour > 0 else "none")
+        )
+        rates[str(uuid_val)] = {
+            "machine": machine,
+            "labour": labour,
+            "labour_source": labour_source,
+        }
+        if not currency_code and row.get("currency_code"):
+            currency_code = str(row["currency_code"])
+    return rates, currency_code
+
+
+def compute_cost_breakdown_at_qty(
+    *,
+    organization: Any,
+    version: "FormulationVersion",
+    qty: int = _STANDARD_PRODUCTION_BATCH,
+) -> dict[str, Any]:
+    """Per-unit cost breakdown for a formulation version at a given
+    batch quantity. Powers the spec-sheet director approval modal
+    (uses the standard batch convention) so the director sees the
+    data behind a per-unit cost before deciding on price.
+
+    Returns a JSON-ready dict with ``ingredient_rows``,
+    ``labour_rows``, per-unit totals, and ``currency_code``. Silent-
+    degrade on PSP outage — rows that couldn't be priced come back
+    with nulls so the modal still renders.
+    """
+
+    from apps.psp.services import (
+        PspNotConfigured,
+        _client_factory,
+        get_psp_config,
+    )
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspNotConfigured:
+        return {
+            "psp_configured": False,
+            "qty": qty,
+            "currency_code": "",
+            "ingredient_rows": [],
+            "labour_rows": [],
+            "ingredients_per_unit": None,
+            "labour_per_unit": None,
+            "total_per_unit": None,
+        }
+    if not config.is_complete:
+        return {
+            "psp_configured": False,
+            "qty": qty,
+            "currency_code": "",
+            "ingredient_rows": [],
+            "labour_rows": [],
+            "ingredients_per_unit": None,
+            "labour_per_unit": None,
+            "total_per_unit": None,
+        }
+
+    client = _client_factory(config)
+
+    line_specs, _spp = _prepare_line_specs(version)
+    stage_specs = _prepare_stage_specs(version)
+
+    rates_by_wsg, currency_code = _load_wsg_rates(
+        client=client, stage_specs=stage_specs
+    )
+
+    breakdown = _compute_tier_breakdown(
+        line_specs=line_specs,
+        stage_specs=stage_specs,
+        tier_qty=max(int(qty), 1),
+        client=client,
+        rates_by_wsg=rates_by_wsg,
+        currency_code=currency_code,
+    )
+
+    return {
+        "psp_configured": True,
+        "qty": max(int(qty), 1),
+        "currency_code": breakdown["currency_code"],
+        "ingredient_rows": breakdown["ingredient_rows"],
+        "labour_rows": breakdown["labour_rows"],
+        "ingredients_per_unit": _fmt_decimal(
+            breakdown["ingredients_per_unit"]
+        ),
+        "labour_per_unit": _fmt_decimal(breakdown["labour_per_unit"]),
+        "total_per_unit": _fmt_decimal(breakdown["total_per_unit"]),
+    }
+
+
+def compute_savings_at_scale(
+    *,
+    proposal: Proposal,
+) -> dict[str, Any]:
+    """Return the "savings at scale" progression for a proposal.
+
+    Shape::
+
+        {
+          "psp_configured": bool,
+          "quoted_quantity": int,
+          "currency_code": "GBP",
+          "rows": [
+            {
+              "quantity": 1000,
+              "multiplier": 1,
+              "ingredients_per_unit": "2.1500",
+              "labour_per_unit": "0.4200",
+              "total_per_unit": "2.5700",
+              "total_cost": "2570.0000",
+              "savings_per_unit_vs_base": "0.0000",
+              "savings_total_vs_base": "0.0000"
+            }, …
+          ]
+        }
+
+    Shape is JSON-ready (strings for Decimals). Rows that can't be
+    priced (PSP down, no snapshot data) still appear with nulls so
+    the FE table doesn't gap-shift between tiers.
+    """
+
+    line = proposal.lines.order_by("display_order", "id").first()
+    if line is None or line.formulation_version is None:
+        return {
+            "psp_configured": False,
+            "quoted_quantity": 0,
+            "currency_code": "",
+            "rows": [],
+        }
+
+    version: FormulationVersion = line.formulation_version
+    quoted_qty = max(int(line.quantity or 1), 1)
+
+    from apps.psp.services import (
+        PspNotConfigured,
+        _client_factory,
+        get_psp_config,
+    )
+
+    try:
+        config = get_psp_config(organization=proposal.organization)
+    except PspNotConfigured:
+        return {
+            "psp_configured": False,
+            "quoted_quantity": quoted_qty,
+            "currency_code": "",
+            "rows": [],
+        }
+    if not config.is_complete:
+        return {
+            "psp_configured": False,
+            "quoted_quantity": quoted_qty,
+            "currency_code": "",
+            "rows": [],
+        }
+
+    client = _client_factory(config)
+    line_specs, _spp = _prepare_line_specs(version)
+    stage_specs = _prepare_stage_specs(version)
+    rates_by_wsg, currency_code = _load_wsg_rates(
+        client=client, stage_specs=stage_specs
+    )
+
+    rows: list[dict[str, Any]] = []
+    base_total_per_unit: Decimal | None = None
+
+    for mult in _SAVINGS_MULTIPLIERS:
+        tier_qty = quoted_qty * mult
+        breakdown = _compute_tier_breakdown(
+            line_specs=line_specs,
+            stage_specs=stage_specs,
+            tier_qty=tier_qty,
+            client=client,
+            rates_by_wsg=rates_by_wsg,
+            currency_code=currency_code,
+        )
+        if not currency_code and breakdown["currency_code"]:
+            currency_code = breakdown["currency_code"]
+
+        total_per_unit = breakdown["total_per_unit"]
+        if mult == 1 and total_per_unit is not None:
+            base_total_per_unit = total_per_unit
+
+        savings_per_unit = Decimal("0")
+        if base_total_per_unit is not None and total_per_unit is not None:
+            savings_per_unit = base_total_per_unit - total_per_unit
+            if savings_per_unit < 0:
+                savings_per_unit = Decimal("0")
+
+        rows.append(
+            {
+                "quantity": tier_qty,
+                "multiplier": mult,
+                "ingredients_per_unit": _fmt_decimal(
+                    breakdown["ingredients_per_unit"]
+                ),
+                "labour_per_unit": _fmt_decimal(breakdown["labour_per_unit"]),
+                "total_per_unit": _fmt_decimal(total_per_unit),
+                "total_cost": _fmt_decimal(
+                    total_per_unit * Decimal(tier_qty)
+                    if total_per_unit is not None
+                    else None
+                ),
+                "savings_per_unit_vs_base": _fmt_decimal(savings_per_unit),
+                "savings_total_vs_base": _fmt_decimal(
+                    savings_per_unit * Decimal(tier_qty)
+                    if savings_per_unit
+                    else Decimal("0")
+                ),
+                "ingredient_rows": breakdown["ingredient_rows"],
+                "labour_rows": breakdown["labour_rows"],
+            }
+        )
+
+    return {
+        "psp_configured": True,
+        "quoted_quantity": quoted_qty,
+        "currency_code": currency_code,
+        "rows": rows,
+    }
+
+
+def _fmt_decimal(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    return str(value.quantize(Decimal("0.0001")))

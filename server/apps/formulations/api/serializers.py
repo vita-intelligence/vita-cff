@@ -60,6 +60,8 @@ class FormulationStageReadSerializer(serializers.ModelSerializer):
             "psp_item_product_family_uuid",
             "psp_finished_product_spec",
             "servings_per_output_unit",
+            "source_routing_template_uuid",
+            "source_routing_step_uuid",
             "notes",
         )
         read_only_fields = fields

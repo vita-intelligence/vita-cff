@@ -24,6 +24,7 @@ import { MrpeasyItemLink } from "@/components/mrpeasy/mrpeasy-item-link";
 import { MrpeasyPriceHint } from "@/components/mrpeasy/mrpeasy-price-hint";
 import { PspPriceHint } from "@/components/psp/psp-price-hint";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
+import { SpecCostBreakdownBlock } from "./cost-breakdown-block";
 import { Link, useRouter } from "@/i18n/navigation";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
@@ -417,21 +418,38 @@ export function SpecificationSheetView({
         busy={transitionMutation.isPending}
         errorMessage={signatureError}
         canConfirm={approvalPricingValid}
+        size={signaturePending === "approved" ? "lg" : "md"}
+        dialogClassName={
+          signaturePending === "approved" ? "w-full max-w-4xl" : undefined
+        }
         extraContent={
           signaturePending === "approved" ? (
-            <ApprovalPricingForm
-              unitCost={approvalUnitCost}
-              margin={approvalMargin}
-              currency={approvalCurrency}
-              onUnitCostChange={setApprovalUnitCost}
-              onMarginChange={setApprovalMargin}
-              onCurrencyChange={setApprovalCurrency}
-              busy={transitionMutation.isPending}
-              valid={approvalPricingValid}
-              tSpecs={tSpecs}
-              orgId={orgId}
-              formulationCode={sheet.formulation_code ?? ""}
-            />
+            <div className="space-y-4">
+              <ApprovalPricingForm
+                unitCost={approvalUnitCost}
+                margin={approvalMargin}
+                currency={approvalCurrency}
+                onUnitCostChange={setApprovalUnitCost}
+                onMarginChange={setApprovalMargin}
+                onCurrencyChange={setApprovalCurrency}
+                busy={transitionMutation.isPending}
+                valid={approvalPricingValid}
+                tSpecs={tSpecs}
+                orgId={orgId}
+                formulationCode={sheet.formulation_code ?? ""}
+              />
+              <div className="rounded-xl border border-ink-100 p-4">
+                <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
+                  Cost breakdown
+                </p>
+                <SpecCostBreakdownBlock
+                  orgId={orgId}
+                  sheetId={sheet.id}
+                  enabled={signaturePending === "approved"}
+                  sheetCurrency={approvalCurrency || sheet.currency || "GBP"}
+                />
+              </div>
+            </div>
           ) : null
         }
         onConfirm={handleSignatureConfirm}

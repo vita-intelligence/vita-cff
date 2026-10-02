@@ -5,6 +5,7 @@ import {
   Loader2,
   Plus,
   PoundSterling,
+  RefreshCw,
   Search,
   Trash2,
   X,
@@ -13,10 +14,12 @@ import { useTranslations } from "next-intl";
 import { useCallback, useMemo, useState } from "react";
 import type { UseInfiniteQueryResult, InfiniteData } from "@tanstack/react-query";
 
-import { Link } from "@/i18n/navigation";
+import { Link, useRouter } from "@/i18n/navigation";
 import type { ApiError } from "@/lib/api";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
+  extractRetryBlocked,
+  useCloneRejectedProposal,
   useDeleteProposal,
   useInfiniteProposals,
   type PaginatedProposalsDto,
@@ -160,6 +163,7 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
        *  above narrows every column's server request.
        */}
       <ProposalsPipeline
+        orgId={orgId}
         stageQueries={stageQueries}
         appliedAnyActive={filters.appliedAnyActive}
         onDelete={handleDelete}
@@ -244,11 +248,13 @@ const PIPELINE_STAGES: ReadonlyArray<{
 
 
 function ProposalsPipeline({
+  orgId,
   stageQueries,
   appliedAnyActive,
   onDelete,
   deletePending,
 }: {
+  orgId: string;
   stageQueries: ReadonlyArray<StageInfiniteQuery>;
   appliedAnyActive: boolean;
   onDelete: (id: string) => void;
@@ -294,6 +300,7 @@ function ProposalsPipeline({
         return (
           <ProposalsPipelineColumn
             key={stage.key}
+            orgId={orgId}
             stage={stage}
             query={query}
             search={searchByKey[stage.key] ?? ""}
@@ -311,6 +318,7 @@ function ProposalsPipeline({
 
 
 function ProposalsPipelineColumn({
+  orgId,
   stage,
   query,
   search,
@@ -318,6 +326,7 @@ function ProposalsPipelineColumn({
   onDelete,
   deletePending,
 }: {
+  orgId: string;
   stage: (typeof PIPELINE_STAGES)[number];
   query: StageInfiniteQuery;
   search: string;
@@ -408,6 +417,7 @@ function ProposalsPipelineColumn({
             {filtered.map((proposal) => (
               <ProposalCard
                 key={proposal.id}
+                orgId={orgId}
                 proposal={proposal}
                 onDelete={onDelete}
                 deletePending={deletePending}
@@ -437,15 +447,59 @@ function ProposalsPipelineColumn({
 
 
 function ProposalCard({
+  orgId,
   proposal,
   onDelete,
   deletePending,
 }: {
+  orgId: string;
   proposal: ProposalListItemDto;
   onDelete: (id: string) => void;
   deletePending: boolean;
 }) {
   const tProposals = useTranslations("proposals");
+  const tErrors = useTranslations("errors");
+  const router = useRouter();
+  const cloneMutation = useCloneRejectedProposal(orgId);
+  // Only show the Retry chip on rejected proposals that have NO
+  // direct follow-up AND no sibling retry in flight on the same
+  // project. Direct follow-up (``follow_up_proposal``) is the
+  // literal clone of this row; sibling retry
+  // (``active_project_retry``) is a retry on the same formulation
+  // raised off a DIFFERENT rejected sibling — either case means
+  // "a retry is already in flight on this project, don't fan out".
+  const existingFollowUp =
+    proposal.follow_up_proposal ?? proposal.active_project_retry ?? null;
+  const canRetry =
+    proposal.status === "rejected" && existingFollowUp === null;
+  const handleRetry = async () => {
+    try {
+      const next = await cloneMutation.mutateAsync(proposal.id);
+      router.push(`/proposals/${next.id}`);
+    } catch (err) {
+      // Retry coordination: either this proposal was already
+      // cloned, OR another rejected sibling on the same formulation
+      // already has a draft retry. Offer to jump to the existing
+      // one so the operator doesn't fan out parallel retries.
+      const blocked = extractRetryBlocked(err);
+      if (blocked) {
+        const label =
+          blocked.code === "draft_follow_up_exists"
+            ? `A retry draft already exists on this project — ${blocked.follow_up_code}. Open it?`
+            : `A retry already exists — ${blocked.follow_up_code}. Open it?`;
+        if (window.confirm(label)) {
+          router.push(`/proposals/${blocked.follow_up_id}`);
+        }
+        return;
+      }
+      // Non-fatal — surface a lightweight alert; the detail page's
+      // deeper banner would hide a kanban-wide error anyway.
+      alert(
+        extractApiErrorMessage(err, tErrors) ||
+          "Could not create a retry.",
+      );
+    }
+  };
   const total = proposal.total_excl_vat ?? proposal.subtotal ?? null;
   const canDelete =
     proposal.status !== "approved" &&
@@ -528,17 +582,44 @@ function ProposalCard({
             : ""}
         </span>
       </div>
-      {canDelete ? (
-        <div className="mt-1.5 flex justify-end">
-          <button
-            type="button"
-            onClick={() => onDelete(proposal.id)}
-            disabled={deletePending}
-            aria-label={tProposals("list.delete")}
-            className="rounded p-1 text-ink-400 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
+      {canDelete || canRetry || existingFollowUp ? (
+        <div className="mt-1.5 flex items-center justify-end gap-1.5">
+          {canRetry ? (
+            <button
+              type="button"
+              onClick={handleRetry}
+              disabled={cloneMutation.isPending}
+              title="Create a new draft from this rejected quote"
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-primary ring-1 ring-inset ring-primary/30 hover:bg-primary/10 disabled:opacity-50"
+            >
+              {cloneMutation.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3 w-3" />
+              )}
+              Retry
+            </button>
+          ) : existingFollowUp ? (
+            <Link
+              href={`/proposals/${existingFollowUp.id}`}
+              title={`Follow-up already exists: ${existingFollowUp.code}`}
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-ink-600 ring-1 ring-inset ring-ink-300 hover:bg-ink-50"
+            >
+              <ExternalLink className="h-3 w-3" />
+              {existingFollowUp.code}
+            </Link>
+          ) : null}
+          {canDelete ? (
+            <button
+              type="button"
+              onClick={() => onDelete(proposal.id)}
+              disabled={deletePending}
+              aria-label={tProposals("list.delete")}
+              className="rounded p-1 text-ink-400 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

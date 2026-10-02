@@ -62,6 +62,7 @@ class ProposalLineReadSerializer(serializers.ModelSerializer):
             "unit_price",
             "display_order",
             "subtotal",
+            "tier_margin_overrides",
             "selected_packaging_combo_id",
             "selected_packaging_combo_name",
             "selected_packaging_combo_items",
@@ -143,6 +144,29 @@ class ProposalReadSerializer(serializers.ModelSerializer):
     #: surface (PDF footer, contract card, PSP payload, activity
     #: feed). Ordered by name so the FE doesn't have to re-sort.
     additional_sales_people = serializers.SerializerMethodField()
+    #: When this proposal was spun up as a retry of a rejected one,
+    #: carry the previous row's id/code/rejection reason/timestamp
+    #: so the detail page can render a banner reminding sales what
+    #: the customer declined last time. ``None`` when this proposal
+    #: isn't a retry.
+    previous_rejected = serializers.SerializerMethodField()
+    #: Set on a rejected proposal when sales has already clicked
+    #: "Create a new proposal" and the clone exists. Powers the
+    #: "A retry was already created — PROP-XXXX" card on the
+    #: detail page (instead of the "Create a new proposal" CTA
+    #: that would otherwise fan out parallel retries off the same
+    #: dead quote). ``None`` on any proposal that hasn't been
+    #: cloned yet.
+    follow_up_proposal = serializers.SerializerMethodField()
+    #: Project-wide retry signal. Set on a REJECTED proposal when the
+    #: SAME FORMULATION has an in-flight retry draft (DRAFT /
+    #: IN_REVIEW) stemming from ANY rejected sibling — not just this
+    #: row. Lets the UI hide the "Create a new proposal" CTA on
+    #: ``PROP-0002`` once ``PROP-0005`` has been raised as a retry of
+    #: ``PROP-0004`` on the same project, keeping the invariant "one
+    #: in-flight retry per formulation". ``None`` when either the
+    #: proposal is non-rejected OR no sibling retry is in flight.
+    active_project_retry = serializers.SerializerMethodField()
     lines = ProposalLineReadSerializer(many=True, read_only=True)
     subtotal = serializers.SerializerMethodField()
     total_excl_vat = serializers.SerializerMethodField()
@@ -206,6 +230,10 @@ class ProposalReadSerializer(serializers.ModelSerializer):
             "customer_signed_at",
             "customer_rejected_at",
             "customer_rejection_reason",
+            "customer_rejection_categories",
+            "previous_rejected",
+            "follow_up_proposal",
+            "active_project_retry",
             "created_at",
             "updated_at",
         )
@@ -250,6 +278,87 @@ class ProposalReadSerializer(serializers.ModelSerializer):
         if user is None:
             return ""
         return (user.get_full_name() or user.email or "").strip()
+
+    def get_previous_rejected(self, obj: Proposal) -> dict | None:
+        prev = obj.previous_rejected_proposal
+        if prev is None:
+            return None
+        return {
+            "id": str(prev.id),
+            "code": prev.code,
+            "status": prev.status,
+            "rejection_reason": prev.customer_rejection_reason or "",
+            "rejection_categories": (
+                prev.customer_rejection_categories or []
+            ),
+            "rejected_at": (
+                prev.customer_rejected_at.isoformat()
+                if prev.customer_rejected_at
+                else None
+            ),
+        }
+
+    def get_follow_up_proposal(self, obj: Proposal) -> dict | None:
+        follow_up = obj.follow_up_proposals.order_by("created_at").first()
+        if follow_up is None:
+            return None
+        return {
+            "id": str(follow_up.id),
+            "code": follow_up.code,
+            "status": follow_up.status,
+        }
+
+    def get_active_project_retry(self, obj: Proposal) -> dict | None:
+        # Only rejected rows need this signal — a live proposal
+        # isn't deciding whether to spawn a retry.
+        if obj.status != ProposalStatus.REJECTED.value:
+            return None
+        formulation_id = getattr(
+            getattr(obj, "formulation_version", None),
+            "formulation_id",
+            None,
+        )
+        if formulation_id is None:
+            return None
+
+        # Any non-terminal retry on this formulation — DRAFT through
+        # SENT. ``accepted`` means the deal closed on that retry
+        # (project moves forward on its own merits); ``rejected``
+        # means the retry itself got declined and becomes the new
+        # anchor for a NEW retry. Everything in between is "a retry
+        # is live, don't spawn another".
+        retry = (
+            Proposal.objects
+            .filter(
+                formulation_version__formulation_id=formulation_id,
+                previous_rejected_proposal__status=ProposalStatus.REJECTED.value,
+                status__in=(
+                    ProposalStatus.DRAFT.value,
+                    ProposalStatus.IN_REVIEW.value,
+                    ProposalStatus.APPROVED.value,
+                    ProposalStatus.SENT.value,
+                ),
+            )
+            .exclude(id=obj.id)
+            .order_by("-created_at")
+            .only("id", "code", "status", "previous_rejected_proposal_id")
+            .first()
+        )
+        if retry is None:
+            return None
+        return {
+            "id": str(retry.id),
+            "code": retry.code,
+            "status": retry.status,
+            # Which rejected row THIS retry is a follow-up of. Helps
+            # the UI label the card accurately when the retry is of
+            # a sibling, not of the proposal being viewed.
+            "replaces_id": (
+                str(retry.previous_rejected_proposal_id)
+                if retry.previous_rejected_proposal_id
+                else None
+            ),
+        }
 
     def get_formulation_display_name(self, obj: Proposal) -> str:
         formulation = getattr(
@@ -565,6 +674,14 @@ class ProposalLineWriteSerializer(serializers.Serializer):
     )
     display_order = serializers.IntegerField(
         min_value=0, required=False
+    )
+    #: Per-tier margin overrides authored on the sales savings-at-
+    #: scale panel. Shape ``{"<multiplier>": "<margin %>"}``. Empty
+    #: dict clears all overrides; omit the key entirely to leave
+    #: existing overrides untouched on PATCH. Portal payload reads
+    #: this to render the same prices sales sees.
+    tier_margin_overrides = serializers.JSONField(
+        required=False, allow_null=True
     )
 
 

@@ -1353,6 +1353,28 @@ class FormulationStage(models.Model):
         blank=True,
         db_index=True,
     )
+    #: PSP routing-template this stage was hydrated from. Set by the
+    #: builder when the scientist picks a template from PSP; threaded
+    #: through to PSP on sync so each per-stage snapshot carries
+    #: provenance back to the template it came from. Also tells the
+    #: UI which fields to lock (workstation group, step order) vs
+    #: leave editable (cycle time, setup time, SOP, names).
+    source_routing_template_uuid = models.UUIDField(
+        _("PSP routing-template UUID"),
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    #: Specific step within the template above that this stage
+    #: mirrors. Needed because a single template produces N stages
+    #: (one per step) and NPD must know which step each stage came
+    #: from to re-sync tweaks back to the matching PSP snapshot step.
+    source_routing_step_uuid = models.UUIDField(
+        _("PSP routing-template step UUID"),
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     #: Snapshot of the workstation group's display name at pick time.
     #: Rendered when PSP is unreachable so the stage strip still
     #: shows something meaningful. Refreshed on every successful push

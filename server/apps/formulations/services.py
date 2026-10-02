@@ -2985,6 +2985,17 @@ def set_formulation_stages(
                 raw.get("servings_per_output_unit"),
                 default=Decimal("1.0000"),
             ),
+            # PSP routing-template provenance. Both nullable — a stage
+            # may be free-form (no template) or template-sourced. The
+            # UI reads these to decide which fields to lock, and the
+            # sync cascade forwards them to PSP so each snapshot
+            # stamps ``source_template_id`` back to the template.
+            "source_routing_template_uuid": raw.get(
+                "source_routing_template_uuid"
+            )
+            or None,
+            "source_routing_step_uuid": raw.get("source_routing_step_uuid")
+            or None,
             "notes": raw.get("notes") or "",
         }
         if payload["psp_item_type"] not in (

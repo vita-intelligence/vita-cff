@@ -229,6 +229,69 @@ class SpecificationListCreateView(APIView):
         )
 
 
+class SpecificationCostBreakdownView(APIView):
+    """``GET`` ``/.../specifications/<id>/cost-breakdown/``.
+
+    Per-unit cost breakdown of the attached formulation version —
+    ingredients (with vendor + tier source) + labour (with routing
+    basis). Powers the spec sheet's Edit-details + director-approve
+    modals so the director sees the data behind a unit cost before
+    committing to a price.
+
+    Amortises against a standard production batch (see
+    ``_STANDARD_PRODUCTION_BATCH`` in proposals.services) so the
+    "per unit" number is realistic without exposing a qty concept
+    to the director. Silent-degrade on PSP outage — rows carry
+    nulls instead of raising.
+    """
+
+    permission_classes = (HasSpecificationsPermission,)
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        self.required_capability_any = (
+            FormulationsCapability.VIEW,
+            FormulationsCapability.VIEW_APPROVALS,
+            FormulationsCapability.VIEW_SIGNED,
+        )
+        super().initial(request, *args, **kwargs)
+
+    def get(self, request: Request, org_id: str, sheet_id: str) -> Response:
+        try:
+            sheet = get_sheet(
+                organization=self.organization, sheet_id=sheet_id
+            )
+        except SpecificationNotFound as exc:
+            raise NotFound() from exc
+
+        if sheet.formulation_version_id is None:
+            return Response(
+                {
+                    "psp_configured": False,
+                    "qty": 0,
+                    "currency_code": sheet.currency or "",
+                    "ingredient_rows": [],
+                    "labour_rows": [],
+                    "ingredients_per_unit": None,
+                    "labour_per_unit": None,
+                    "total_per_unit": None,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        from apps.proposals.services import compute_cost_breakdown_at_qty
+
+        payload = compute_cost_breakdown_at_qty(
+            organization=self.organization,
+            version=sheet.formulation_version,
+        )
+        # Fall back to the sheet's own currency when PSP didn't give
+        # us one (e.g. no priced lines at all) so the FE renders a
+        # consistent currency even for empty breakdowns.
+        if not payload.get("currency_code"):
+            payload["currency_code"] = sheet.currency or ""
+        return Response(payload, status=status.HTTP_200_OK)
+
+
 class SpecificationDetailView(APIView):
     """``GET`` / ``PATCH`` / ``DELETE`` ``/.../specifications/<id>/``."""
 

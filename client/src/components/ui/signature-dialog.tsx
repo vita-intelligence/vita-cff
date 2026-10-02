@@ -41,6 +41,15 @@ interface Props {
    *  user has drawn a signature — used to require pricing inputs
    *  to be filled before allowing approval. */
   readonly canConfirm?: boolean;
+  /** HeroUI modal size. Default ``md`` fits a pad + a few inputs;
+   *  callers that embed a wider ``extraContent`` (spec-sheet
+   *  director approval with the cost breakdown) can push to ``lg``
+   *  or ``cover``. */
+  readonly size?: "xs" | "sm" | "md" | "lg" | "cover" | "full";
+  /** Optional extra Tailwind classes on the dialog surface — used
+   *  to force a wider ``max-w`` on surfaces that embed a lot of
+   *  tabular detail (cost breakdown tables). */
+  readonly dialogClassName?: string;
   readonly onConfirm: (dataUrl: string) => Promise<void> | void;
 }
 
@@ -57,6 +66,8 @@ export function SignatureDialog({
   padLabel,
   extraContent,
   canConfirm = true,
+  size = "md",
+  dialogClassName,
   onConfirm,
 }: Props) {
   const padRef = useRef<SignaturePadHandle | null>(null);
@@ -79,8 +90,15 @@ export function SignatureDialog({
       }}
     >
       <Modal.Backdrop>
-        <Modal.Container size="md">
-          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+        <Modal.Container size={size}>
+          <Modal.Dialog
+            className={[
+              "overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200",
+              dialogClassName ?? "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
             <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
               <Modal.Heading className="text-base font-semibold text-ink-1000">
                 {title}

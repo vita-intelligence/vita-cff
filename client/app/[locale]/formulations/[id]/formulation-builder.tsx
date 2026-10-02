@@ -5317,14 +5317,15 @@ export function FormulationBuilder({
                 variant="primary"
                 size="md"
                 className="gap-1.5 rounded-lg bg-orange-500 font-medium text-ink-0 hover:bg-orange-600"
-                // Gate on the same dirty flags as Save draft — a
-                // Version snapshots the current state, so firing
-                // it with nothing dirty just clones the previous
-                // version verbatim.
-                isDisabled={
-                  isBusy ||
-                  (!metadataDirty && !linesDirty && !stagesDirty && !routingDirty)
-                }
+                // Save version stays enabled even when nothing is
+                // dirty: Save draft fires an auto-snapshot but that's
+                // an internal restore point, NOT a named version. The
+                // operator may want to pin the current state as a
+                // version right after a Save draft (or without having
+                // touched anything in this session). Trust the click —
+                // the mutation itself is cheap and idempotent on a
+                // clean state.
+                isDisabled={isBusy}
                 onClick={handleSaveVersion}
               >
                 <Save className="h-4 w-4" />

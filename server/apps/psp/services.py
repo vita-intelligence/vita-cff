@@ -634,7 +634,11 @@ class PspClient:
             return None
         return row
 
-    def suggest_costs(self, item_uuids: list[Any]) -> list[dict]:
+    def suggest_costs(
+        self,
+        item_uuids: list[Any],
+        qty_per_item: dict[str, Any] | None = None,
+    ) -> list[dict]:
         """Bulk cost lookup — powers the vita-cff builder's live cost
         calculator. Ships a POST with ``{item_uuids: [...]}`` and
         returns the ``items`` list from PSP's response.
@@ -642,6 +646,11 @@ class PspClient:
         Each entry carries ``uuid`` + ``unit_cost`` (string decimal
         or ``None``) + ``currency_code`` + ``uom_symbol`` + ``source``
         (``"po_history" | "purchase_term" | "none"``) + ``vendor_name``.
+
+        Pass ``qty_per_item`` (``{uuid: qty}``) to pull **tier-aware**
+        vendor prices — PSP picks the highest ``min_quantity ≤ qty``
+        tier per vendor-item for the proposal "savings at scale"
+        progression. Missing / omitted qty = qty 1 (base tier).
 
         Empty input short-circuits with ``[]`` so the caller doesn't
         need to gate the call site. Missing / archived uuids silently
@@ -657,10 +666,20 @@ class PspClient:
         if not cleaned:
             return []
 
+        body: dict[str, Any] = {"item_uuids": cleaned}
+        if qty_per_item:
+            # Serialise qtys as strings so Decimal precision survives
+            # the JSON round-trip; PSP's parse_decimal handles both.
+            body["qty_per_item"] = {
+                str(u): str(q)
+                for u, q in qty_per_item.items()
+                if u and q is not None
+            }
+
         response = self._request(
             "api/integration/items/suggest-costs",
             method="POST",
-            body={"item_uuids": cleaned},
+            body=body,
         )
         if not isinstance(response, dict):
             return []
@@ -1744,6 +1763,26 @@ class PspClient:
             return []
         return [row for row in rows if isinstance(row, dict)]
 
+    def list_routing_templates(self) -> list[dict[str, Any]]:
+        """Fetch PSP's routing-template catalog so NPD's stage picker
+        can render the "pick a template" dropdown. Returns the raw
+        rows PSP emits — each template carries its ordered steps
+        with workstation-group identity and routing numeric defaults
+        (cycle time, setup time, capacity, costs). Empty list on any
+        soft error — same silent-degrade contract as
+        :meth:`list_workstation_groups`.
+
+        Only active templates come back (PSP filters server-side).
+        """
+
+        payload = self._request("api/integration/routing-templates")
+        if not isinstance(payload, dict):
+            return []
+        rows = payload.get("templates")
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
     def create_item(
         self,
         *,
@@ -2114,6 +2153,7 @@ class PspClient:
         other_fixed_cost: str | None = None,
         other_variable_cost: str | None = None,
         other_variable_cost_basis: str | None = None,
+        source_template_uuid: str | None = None,
     ) -> dict | None:
         """Upsert a routing on a PSP item. PSP keys the upsert by
         ``(item_uuid, name)`` and wholesale-replaces the step list —
@@ -2121,12 +2161,20 @@ class PspClient:
 
         Steps are dicts of ``{workstation_group_uuid, sort_order?,
         operation_description?, setup_time_min?, cycle_time_min?,
-        fixed_cost?, variable_cost?, capacity?}``.
+        fixed_cost?, variable_cost?, capacity?,
+        source_routing_step_uuid?}``.
 
         The three ``other_*`` args are routing-header overhead —
         fixed + variable costs that aren't tied to a specific step.
         Nil values are dropped from the payload so a re-push that
         omits them doesn't clobber an operator-set value on PSP.
+
+        ``source_template_uuid`` + per-step
+        ``source_routing_step_uuid`` carry PSP routing-template
+        provenance when the stage was hydrated from a template on
+        NPD. PSP stamps ``routings.source_template_id`` +
+        ``routing_steps.source_routing_step_id`` so the snapshot
+        remembers which template it came from.
 
         Returns PSP's response (``{"routing": {"uuid": ...,
         "step_count": N}}``) or ``None`` on soft error.
@@ -2146,6 +2194,8 @@ class PspClient:
             body["other_variable_cost"] = other_variable_cost
         if other_variable_cost_basis is not None:
             body["other_variable_cost_basis"] = other_variable_cost_basis
+        if source_template_uuid:
+            body["source_template_uuid"] = source_template_uuid
         response = self._request(
             f"api/integration/items/{cleaned}/routing",
             method="PUT",
@@ -2708,6 +2758,33 @@ def list_psp_workstation_groups(*, organization: Any) -> list[dict[str, Any]]:
     except PspError:
         logger.exception(
             "PSP list_workstation_groups failed for org %s", organization.pk
+        )
+        return []
+
+
+def list_psp_routing_templates(*, organization: Any) -> list[dict[str, Any]]:
+    """Fetch PSP's routing templates (reusable, item-less recipes)
+    for the org. Powers the formulation builder's stage-template
+    picker. Empty list on any failure — same silent-degrade contract
+    as :func:`list_psp_workstation_groups`; the picker renders "no
+    templates yet, go set one up on PSP" either way.
+    """
+
+    if not is_psp_live(organization):
+        return []
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return []
+    try:
+        client = _client_factory(config)
+        return client.list_routing_templates()
+    except PspError:
+        logger.exception(
+            "PSP list_routing_templates failed for org %s", organization.pk
         )
         return []
 
@@ -6722,6 +6799,32 @@ def _push_staged_cascade(
                     stage.workstation_group_uuid = fresh_uuid
                     stage.save(update_fields=["workstation_group_uuid"])
                     group_uuid_str = fresh_uuid
+            source_step_uuid_str = (
+                str(stage.source_routing_step_uuid)
+                if stage.source_routing_step_uuid
+                else None
+            )
+            source_template_uuid_str = (
+                str(stage.source_routing_template_uuid)
+                if stage.source_routing_template_uuid
+                else None
+            )
+            step_payload: dict[str, Any] = {
+                "workstation_group_uuid": group_uuid_str,
+                "sort_order": 0,
+                "operation_description": (
+                    (stage.operation_description or "").strip()
+                    or stage_label
+                ),
+                "setup_time_min": _stringify_decimal(stage.setup_time_min),
+                "cycle_time_min": _stringify_decimal(stage.cycle_time_min),
+                "fixed_cost": _stringify_decimal(stage.fixed_cost),
+                "variable_cost": _stringify_decimal(stage.variable_cost),
+                "capacity": _stringify_decimal(stage.capacity),
+                "default_worker_uuids": list(stage.worker_psp_uuids or []),
+            }
+            if source_step_uuid_str:
+                step_payload["source_routing_step_uuid"] = source_step_uuid_str
             try:
               client.put_routing(
                 output_uuid,
@@ -6733,33 +6836,8 @@ def _push_staged_cascade(
                 other_variable_cost_basis=_stringify_decimal(
                     stage.other_variable_cost_basis
                 ),
-                steps=[
-                    {
-                        "workstation_group_uuid": group_uuid_str,
-                        "sort_order": 0,
-                        # Prefer the operator-authored description;
-                        # fall back to the stage label so shop-floor
-                        # cards always have something meaningful.
-                        "operation_description": (
-                            (stage.operation_description or "").strip()
-                            or stage_label
-                        ),
-                        "setup_time_min": _stringify_decimal(
-                            stage.setup_time_min
-                        ),
-                        "cycle_time_min": _stringify_decimal(
-                            stage.cycle_time_min
-                        ),
-                        "fixed_cost": _stringify_decimal(stage.fixed_cost),
-                        "variable_cost": _stringify_decimal(
-                            stage.variable_cost
-                        ),
-                        "capacity": _stringify_decimal(stage.capacity),
-                        "default_worker_uuids": list(
-                            stage.worker_psp_uuids or []
-                        ),
-                    }
-                ],
+                source_template_uuid=source_template_uuid_str,
+                steps=[step_payload],
               )
             except PspError:
                 logger.exception(

@@ -21,6 +21,7 @@ import {
   deleteSpecification,
   fetchPackagingOptions,
   fetchRenderedSpecification,
+  fetchSpecCostBreakdown,
   fetchSpecification,
   fetchSpecificationsPage,
   refreshSpecificationPricing,
@@ -41,6 +42,7 @@ import type {
   PaginatedSpecificationsDto,
   RenderedSheetContext,
   SetPackagingRequestDto,
+  SpecCostBreakdownDto,
   SpecificationSheetDto,
   TransitionStatusRequestDto,
   UpdateSpecificationRequestDto,
@@ -78,6 +80,13 @@ export const specificationsQueryKeys = {
     [...specificationsQueryKeys.all, orgId, "detail", sheetId] as const,
   render: (orgId: string, sheetId: string) =>
     [...specificationsQueryKeys.all, orgId, "render", sheetId] as const,
+  costBreakdown: (orgId: string, sheetId: string) =>
+    [
+      ...specificationsQueryKeys.all,
+      orgId,
+      "cost-breakdown",
+      sheetId,
+    ] as const,
   packagingOptions: (orgId: string, slot: string, search: string) =>
     [
       ...specificationsQueryKeys.all,
@@ -144,12 +153,19 @@ export function useInfiniteSpecifications(
 export function useSpecification(
   orgId: string,
   sheetId: string,
-  options: { readonly initialData?: SpecificationSheetDto } = {},
+  options: {
+    readonly initialData?: SpecificationSheetDto;
+    /** Skip the fetch when the caller doesn't yet have a sheet
+     *  id (e.g. the proposal panel only pulls when its line is
+     *  linked to a spec). Defaults to true for backward-compat. */
+    readonly enabled?: boolean;
+  } = {},
 ): UseQueryResult<SpecificationSheetDto, ApiError> {
   return useQuery<SpecificationSheetDto, ApiError>({
     queryKey: specificationsQueryKeys.detail(orgId, sheetId),
     queryFn: () => fetchSpecification(orgId, sheetId),
     initialData: options.initialData,
+    enabled: (options.enabled ?? true) && Boolean(sheetId),
   });
 }
 
@@ -162,6 +178,26 @@ export function useRenderedSpecification(
     queryKey: specificationsQueryKeys.render(orgId, sheetId),
     queryFn: () => fetchRenderedSpecification(orgId, sheetId),
     initialData: options.initialData,
+  });
+}
+
+/** Fetch the per-unit ingredient + labour cost breakdown for a
+ *  spec sheet. Shown inside the Edit-details + director-approve
+ *  modals so the director sees the data behind the quoted cost
+ *  before committing to a price. Only fires when ``enabled`` is
+ *  true (modal open) so a closed sheet detail page doesn't ping
+ *  PSP for breakdown data it won't use. */
+export function useSpecCostBreakdown(
+  orgId: string,
+  sheetId: string,
+  options: { readonly enabled?: boolean } = {},
+): UseQueryResult<SpecCostBreakdownDto, ApiError> {
+  return useQuery<SpecCostBreakdownDto, ApiError>({
+    queryKey: specificationsQueryKeys.costBreakdown(orgId, sheetId),
+    queryFn: () => fetchSpecCostBreakdown(orgId, sheetId),
+    enabled: options.enabled ?? true,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 }
 

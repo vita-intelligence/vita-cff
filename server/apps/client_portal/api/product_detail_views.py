@@ -39,7 +39,7 @@ from apps.label_design.models import LabelDesign, LabelDesignTransition
 from apps.payments.constants import PaymentKind, PaymentStatus
 from apps.payments.models import Payment
 from apps.product_validation.models import ProductValidation, ValidationStatus
-from apps.proposals.models import Proposal, ProposalStatusTransition
+from apps.proposals.models import Proposal, ProposalStatus, ProposalStatusTransition
 from apps.specifications.models import (
     SpecificationDocumentKind,
     SpecificationSheet,
@@ -140,10 +140,16 @@ def _first_declined_proposal(proposals: list[Proposal]) -> Proposal | None:
 
     Returns the row with the most recent ``customer_rejected_at`` so
     stale early declines don't outrank a fresher decline on the same
-    formulation. Callers should still guard with ``no signed proposal
-    exists`` before treating the whole roadmap as cancelled — a
-    superseding signed proposal after the decline means the project
-    is alive again.
+    formulation.
+
+    Returns ``None`` when a non-rejected proposal has been raised
+    AFTER the newest decline — i.e. sales already shipped a retry.
+    A fresh DRAFT / IN_REVIEW / APPROVED / SENT / ACCEPTED on the
+    same formulation means the deal is alive again, so the portal
+    must stop showing the decline as the dominant state (banner +
+    cancelled roadmap). Callers used to also guard with ``no signed
+    proposal exists``; that gate is subsumed by this one because a
+    signed row is non-rejected by definition.
     """
 
     rejected = [
@@ -152,7 +158,21 @@ def _first_declined_proposal(proposals: list[Proposal]) -> Proposal | None:
     ]
     if not rejected:
         return None
-    return max(rejected, key=lambda p: p.customer_rejected_at)
+    newest_decline = max(rejected, key=lambda p: p.customer_rejected_at)
+    newest_at = newest_decline.customer_rejected_at
+    # Any live (= non-rejected) proposal created after the decline
+    # overrides it. ``created_at`` is a safe comparison surface — a
+    # retry raised seconds after the decline still beats it, which
+    # matches the "clone immediately" UX.
+    for p in proposals:
+        if p.status == ProposalStatus.REJECTED.value:
+            continue
+        created_at = getattr(p, "created_at", None)
+        if created_at is None:
+            continue
+        if created_at > newest_at:
+            return None
+    return newest_decline
 
 
 def _apply_declined_cancellation(
@@ -254,6 +274,13 @@ def _apply_declined_cancellation(
                 "detail": reason_detail,
             })
             continue
+        # On the decline path, pre-``proposal`` stages keep their
+        # natural state. The attached spec auto-reverts to DRAFT (see
+        # ``_revert_attached_specs_after_rejection``) which makes
+        # "Draft specification in progress" legitimately ``current``
+        # again — scientists ARE back on the recipe. The downstream
+        # customer-view fairly reads "we're reworking the recipe
+        # before resending", not "the whole project paused".
         out.append(stage)
     return out
 
@@ -2712,18 +2739,18 @@ def _build_cancellation(
     ``!== null`` gate the banner cheaply.
     """
 
-    rejected = next(
-        (
-            p
-            for p in proposals
-            if getattr(p, "customer_rejected_at", None) is not None
-        ),
-        None,
-    )
+    # Reuse the same "newest decline survives?" guard that drives
+    # the roadmap. If sales has already raised a retry, the decline
+    # banner must go away — the deal is alive on a newer proposal
+    # and the roadmap flows forward against that one. Without this,
+    # the customer sees a red "YOU DECLINED" banner on the product
+    # page even after they clicked the new quote on their dashboard.
+    rejected = _first_declined_proposal(proposals)
     if rejected is not None:
         return {
             "source": "proposal_declined",
             "reason": (rejected.customer_rejection_reason or "").strip(),
+            "categories": list(rejected.customer_rejection_categories or []),
             "at": _iso(rejected.customer_rejected_at),
             "reference_code": rejected.code,
         }

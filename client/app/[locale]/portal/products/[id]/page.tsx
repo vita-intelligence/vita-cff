@@ -17,6 +17,7 @@ import {
   PortalShell,
 } from "@/components/portal/brutalist";
 import { env } from "@/config/env";
+import { rejectionCategoryLabel } from "@/services/proposals/rejection-categories";
 
 import { SampleSelectionCard } from "./sample-selection-card";
 import { TrialBatchCycleCard } from "./trial-batch-cycle-card";
@@ -69,6 +70,10 @@ interface TimelineEntry {
 interface Cancellation {
   readonly source: "proposal_declined" | "payment_voided";
   readonly reason: string;
+  //: Structured category ticks the customer selected on the
+  //: decline form. Only populated for ``source=proposal_declined``.
+  //: Rendered as chips above the free-text reason.
+  readonly categories?: readonly string[];
   readonly at: string | null;
   readonly reference_code: string;
   readonly payment_kind?: string;
@@ -697,17 +702,29 @@ function CancellationBanner({ cancellation }: { cancellation: Cancellation }) {
         {amountLine ? (
           <p className="mt-1 text-xs font-bold text-red-900">{amountLine}</p>
         ) : null}
+        {cancellation.categories && cancellation.categories.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {cancellation.categories.map((key) => (
+              <span
+                key={key}
+                className="border-2 border-red-700 bg-white px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-red-900"
+              >
+                {rejectionCategoryLabel(key)}
+              </span>
+            ))}
+          </div>
+        ) : null}
         {cancellation.reason ? (
-          <p className="mt-1 whitespace-pre-wrap text-sm text-red-900">
+          <p className="mt-2 whitespace-pre-wrap text-sm text-red-900">
             {cancellation.reason}
           </p>
-        ) : (
+        ) : (!cancellation.categories || cancellation.categories.length === 0) ? (
           <p className="mt-1 text-sm italic text-red-800/80">
             {cancellation.source === "payment_voided"
               ? "No void reason recorded — please get in touch and we'll clarify."
               : "No reason recorded."}
           </p>
-        )}
+        ) : null}
         {cancellation.at ? (
           <p className="mt-1.5 text-[11px] text-red-800/70">
             {new Date(cancellation.at).toLocaleString("en-GB", {

@@ -36,6 +36,11 @@ export interface ProposalLineDto {
   readonly unit_price: string | null;
   readonly display_order: number;
   readonly subtotal: string | null;
+  /** Per-tier margin % overrides authored on the savings-at-scale
+   *  panel. Shape ``{"<multiplier>": "<margin % as string>"}``.
+   *  Example: ``{"2": "35.00", "10": "40.00"}``. Missing keys fall
+   *  back to the line's derived margin. */
+  readonly tier_margin_overrides?: Readonly<Record<string, string>>;
 }
 
 export interface CreateProposalLineRequestDto {
@@ -47,6 +52,7 @@ export interface CreateProposalLineRequestDto {
   readonly unit_cost?: string | null;
   readonly unit_price?: string | null;
   readonly display_order?: number;
+  readonly tier_margin_overrides?: Record<string, string> | null;
 }
 
 export type UpdateProposalLineRequestDto = Partial<CreateProposalLineRequestDto>;
@@ -146,8 +152,58 @@ export interface ProposalDto {
   //: modal (empty string if they declined without explaining).
   readonly customer_rejected_at: string | null;
   readonly customer_rejection_reason: string;
+  //: Structured category ticks the customer selected on the portal
+  //: decline form (e.g. ``["price", "lead_time"]``). Required on
+  //: the portal flow, empty on operator-driven status changes.
+  readonly customer_rejection_categories: readonly string[];
+  //: Set when this proposal is a DRAFT clone of a rejected row.
+  //: Powers the "Previously rejected" banner on the detail page so
+  //: sales sees the customer's prior objection while editing the
+  //: retry. ``null`` means this proposal wasn't cloned from
+  //: another one.
+  readonly previous_rejected: ProposalPreviousRejectedDto | null;
+  //: Set on a rejected proposal once sales has already cloned it
+  //: into a retry. Powers the "Retry already created — PROP-XXXX"
+  //: card that replaces the "Create a new proposal" CTA, so
+  //: a serial clone can't fan out parallel retries off one dead
+  //: quote.
+  readonly follow_up_proposal: ProposalFollowUpDto | null;
+  //: Project-wide retry signal. Set on a rejected proposal when
+  //: ANY sibling rejected row on the same formulation already has
+  //: a retry proposal in flight (DRAFT → SENT). The UI uses this
+  //: to hide the "Create a new proposal" CTA on PROP-0002 once
+  //: PROP-0005 is in flight as the retry of PROP-0004 — keeps
+  //: the invariant "one in-flight retry per formulation". ``null``
+  //: when either the proposal is non-rejected OR no sibling retry
+  //: is in flight.
+  readonly active_project_retry: ProposalActiveRetryDto | null;
   readonly created_at: string;
   readonly updated_at: string;
+}
+
+export interface ProposalPreviousRejectedDto {
+  readonly id: string;
+  readonly code: string;
+  readonly status: ProposalStatus;
+  readonly rejection_reason: string;
+  readonly rejection_categories: readonly string[];
+  readonly rejected_at: string | null;
+}
+
+export interface ProposalFollowUpDto {
+  readonly id: string;
+  readonly code: string;
+  readonly status: ProposalStatus;
+}
+
+export interface ProposalActiveRetryDto {
+  readonly id: string;
+  readonly code: string;
+  readonly status: ProposalStatus;
+  //: UUID of the rejected sibling THIS retry is a follow-up of.
+  //: Lets the UI label the "already in flight" card as "retry of
+  //: PROP-0004" when the operator is looking at PROP-0002.
+  readonly replaces_id: string | null;
 }
 
 /**
@@ -250,6 +306,83 @@ export interface ProposalStatusRequestDto {
   readonly customer_name?: string;
   readonly customer_email?: string;
   readonly customer_company?: string;
+}
+
+export interface ProposalSavingsIngredientRowDto {
+  readonly item_name: string;
+  readonly item_code: string | null;
+  readonly mg_per_pack: string | null;
+  readonly kg_needed: string | null;
+  readonly unit_cost: string | null;
+  readonly uom_symbol: string | null;
+  /** One of ``po_history``, ``purchase_term``, ``bom_rollup``,
+   *  ``bom_rollup_partial``, ``none``. Mirrors PSP's suggest-costs
+   *  shape so the FE renders a consistent source badge. */
+  readonly source: string;
+  readonly vendor_name: string | null;
+  readonly currency_code: string | null;
+  readonly line_cost_per_unit: string | null;
+}
+
+export interface ProposalSavingsLabourRowDto {
+  readonly stage_name: string;
+  readonly workstation_group_name: string;
+  /** ``routing_fixed`` when the stage uses its own
+   *  fixed_cost/variable_cost; ``machine_rate`` when it uses WSG
+   *  hourly machine rate × time; ``labour_only`` when only wages
+   *  contribute; ``none`` when no signal is present. Labour wages
+   *  can stack on top of either routing or machine basis. */
+  readonly basis:
+    | "routing_fixed"
+    | "machine_rate"
+    | "labour_only"
+    | "none"
+    | string;
+  readonly setup_time_min: string | null;
+  readonly cycle_time_min: string | null;
+  readonly capacity: string | null;
+  readonly fixed_cost: string | null;
+  readonly variable_cost: string | null;
+  /** Machine running cost per hour. */
+  readonly hourly_rate: string | null;
+  /** Operator wage per hour used in this stage. */
+  readonly labour_hourly_rate: string | null;
+  /** Where the labour rate came from: ``session`` (HR reality),
+   *  ``fallback`` (WSG admin default), or ``none``. */
+  readonly labour_source: "session" | "fallback" | "none" | string;
+  readonly wage_cost_total: string | null;
+  readonly labour_minutes_total: string | null;
+  readonly labour_hours_total: string | null;
+  readonly stage_cost_total: string | null;
+  readonly cost_per_unit: string | null;
+}
+
+/** One row of the proposal "savings at scale" progression. Decimals
+ *  are stringified so the FE can pass them through
+ *  ``formatCompanyMoney`` without precision loss. ``null`` for any
+ *  per-unit column means PSP couldn't price it at this tier — the
+ *  table still renders the row with em-dashes so breakpoints stay
+ *  aligned. ``savings_per_unit_vs_base`` is always ≥ 0 (we treat
+ *  negative savings as 0 so a tier that happens to be pricier
+ *  doesn't surface as "savings"). */
+export interface ProposalSavingsAtScaleRowDto {
+  readonly quantity: number;
+  readonly multiplier: number;
+  readonly ingredients_per_unit: string | null;
+  readonly labour_per_unit: string | null;
+  readonly total_per_unit: string | null;
+  readonly total_cost: string | null;
+  readonly savings_per_unit_vs_base: string | null;
+  readonly savings_total_vs_base: string | null;
+  readonly ingredient_rows: readonly ProposalSavingsIngredientRowDto[];
+  readonly labour_rows: readonly ProposalSavingsLabourRowDto[];
+}
+
+export interface ProposalSavingsAtScaleDto {
+  readonly psp_configured: boolean;
+  readonly quoted_quantity: number;
+  readonly currency_code: string;
+  readonly rows: readonly ProposalSavingsAtScaleRowDto[];
 }
 
 export interface CostPreviewDto {

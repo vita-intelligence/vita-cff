@@ -45,6 +45,7 @@ import { PortalSignatureDialog } from "@/components/portal/portal-signature-dial
 import { ProposalChatPanel } from "@/components/portal/proposal-chat-panel";
 import { apiClient } from "@/lib/api";
 import { portalErrorMessage } from "@/services/portal/errors";
+import { rejectionCategoryLabel } from "@/services/proposals/rejection-categories";
 
 
 const READ_THRESHOLD = 0.98;
@@ -58,6 +59,34 @@ interface SpecRecord {
   readonly formulation_version_number: number | null;
   readonly has_signature: boolean;
   readonly customer_signed_at: string | null;
+}
+
+
+/** Customer-facing line summary. Portal only surfaces the three
+ *  numbers that matter to the signer — qty, price per unit, total.
+ *  Internal cost / margin / savings data NEVER crosses this
+ *  boundary. */
+interface PortalLineRow {
+  readonly id: string;
+  readonly product_code: string;
+  readonly description: string;
+  readonly quantity: number;
+  readonly unit_price: string | null;
+  readonly subtotal: string | null;
+}
+
+
+/** Customer-facing volume progression. One row per breakpoint
+ *  (quoted qty × 1 / 2 / 5 / 10 / 25 / 50). Shows the customer
+ *  how price scales with order size — NO cost / margin /
+ *  ingredient / labour data crosses the portal boundary. */
+interface PortalPriceStep {
+  readonly quantity: number;
+  readonly multiplier: number | null;
+  readonly price_per_unit: string | null;
+  readonly total_price: string | null;
+  readonly savings_per_unit_vs_quoted: string | null;
+  readonly savings_total_vs_quoted: string | null;
 }
 
 
@@ -78,16 +107,57 @@ interface PortalProposalDto {
   readonly formulation_id: string | null;
   readonly has_signature: boolean;
   readonly customer_signed_at: string | null;
+  //: Set when the customer declined via the kiosk's Decline button.
+  //: ``customer_rejection_reason`` is their own typed note — echoed
+  //: back on the Declined state so they confirm what they
+  //: submitted.
+  readonly customer_rejected_at: string | null;
+  readonly customer_rejection_reason: string;
+  //: Structured category ticks selected on the decline form, echoed
+  //: back on the Declined view so the customer sees what they
+  //: submitted. Keys match
+  //: ``server/apps/proposals/constants.PROPOSAL_REJECTION_CATEGORIES``.
+  readonly customer_rejection_categories: readonly string[];
   readonly ack_spec_signing: boolean;
   readonly ack_lead_times: boolean;
   readonly ack_terms: boolean;
   readonly ack_rd_terms: boolean;
   readonly attached_specs: ReadonlyArray<SpecRecord>;
+  //: Customer-facing pricing lines. Qty + unit_price + subtotal
+  //: only — no cost, margin, or savings data (those stay internal).
+  readonly lines: ReadonlyArray<PortalLineRow>;
+  //: Volume progression — "how much would I save if I order more".
+  //: Server strips every cost / breakdown field; only
+  //: qty + price + savings crosses this boundary.
+  readonly price_progression?: ReadonlyArray<PortalPriceStep>;
+  readonly currency: string;
+  readonly subtotal: string | null;
+  readonly total_excl_vat: string | null;
   //: Reorder proposals ride the CUSTOM template_type but skip R&D
   //: entirely (spec reused from the source). Header eyebrow reads
   //: "Reorder PROP-XXXX" instead of "Proposal PROP-XXXX" when true.
   readonly is_reorder?: boolean;
   readonly reorder_sequence?: number | null;
+}
+
+
+/** Format a decimal-as-string into a currency display. Keeps the
+ *  portal's reading consistent across both NPD and web-site: 2
+ *  decimal places, Intl.NumberFormat for locale-aware separators. */
+function fmtPortalMoney(value: string | null, currency: string): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  try {
+    return new Intl.NumberFormat("en-GB", {
+      style: "currency",
+      currency: currency || "GBP",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(n);
+  } catch {
+    return `${n.toFixed(2)} ${currency || ""}`.trim();
+  }
 }
 
 
@@ -174,6 +244,26 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
     proposal?.has_signature
     && proposal.attached_specs.every((s) => s.has_signature),
   );
+
+  //: Standalone finalize — re-posts after the auto-chained finalize
+  //: in :func:`onSign` failed. Signature capture already succeeded
+  //: in that case, so this button is the customer's retry path.
+  async function onFinalize() {
+    setActionError(null);
+    setBusy(true);
+    try {
+      await apiClient.post(
+        `/api/portal/proposals/${proposalId}/finalize/`,
+        {},
+      );
+      setFinalized(true);
+      await load();
+    } catch (err: unknown) {
+      setActionError(portalErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function onSign(dataUrl: string) {
     setActionError(null);
@@ -327,6 +417,50 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
               done={isDone}
             />
           </ol>
+        </Card>
+      ) : null}
+
+      {/* Pricing summary — the three numbers the customer actually
+          decides on: qty, price per unit, and total. Internal cost /
+          margin / savings data stays strictly internal. Shown above
+          the full proposal preview so the signer sees the headline
+          numbers before diving into terms. */}
+      {proposal.lines.length > 0 ? (
+        <Card>
+          <div className="mb-4">
+            <Eyebrow>Pricing</Eyebrow>
+            <h2 className="mt-1 text-xl font-black uppercase tracking-tight">
+              What you&apos;ll pay
+            </h2>
+          </div>
+          <PortalPricingTable
+            lines={proposal.lines}
+            currency={proposal.currency || "GBP"}
+            orderTotal={proposal.total_excl_vat ?? proposal.subtotal}
+          />
+        </Card>
+      ) : null}
+
+      {/* Volume progression — "if I order more, how much do I save?"
+          Only renders when the backend returned a progression (needs
+          a formulation + routing linked to the proposal line). */}
+      {proposal.price_progression && proposal.price_progression.length > 0 ? (
+        <Card>
+          <div className="mb-4">
+            <Eyebrow>Order more, save more</Eyebrow>
+            <h2 className="mt-1 text-xl font-black uppercase tracking-tight">
+              Price at larger order sizes
+            </h2>
+            <p className="mt-2 text-sm text-neutral-700">
+              Price per unit drops as volume grows — bigger runs
+              amortise setup time and unlock bulk ingredient
+              pricing.
+            </p>
+          </div>
+          <PortalPriceProgressionTable
+            steps={proposal.price_progression}
+            currency={proposal.currency || "GBP"}
+          />
         </Card>
       ) : null}
 
@@ -589,6 +723,28 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
               <XCircle className="mr-2 inline h-4 w-4" />
               Vita has been notified.
             </div>
+            {proposal.customer_rejection_categories.length > 0 ? (
+              <div className="mt-4 flex flex-wrap gap-1.5">
+                {proposal.customer_rejection_categories.map((key) => (
+                  <span
+                    key={key}
+                    className="border-2 border-black bg-white px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-neutral-900"
+                  >
+                    {rejectionCategoryLabel(key)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {proposal.customer_rejection_reason ? (
+              <blockquote className="mt-4 whitespace-pre-wrap border-l-2 border-red-700 bg-red-50 px-3 py-2 text-sm italic text-neutral-700">
+                {proposal.customer_rejection_reason}
+              </blockquote>
+            ) : null}
+            <p className="mt-4 max-w-prose text-sm leading-relaxed text-neutral-700">
+              Changed your mind, or want us to adjust the numbers?
+              Drop a message in the chat below — we can put a fresh
+              proposal together without starting from scratch.
+            </p>
           </>
         ) : proposal.has_signature ? (
           <>
@@ -604,12 +760,12 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
             <div className="flex flex-col gap-3 sm:flex-row">
               <PortalButton
                 type="button"
-                disabled={!allSigned || finalizing}
-                onClick={onAccept}
+                disabled={!allSigned || busy}
+                onClick={onFinalize}
                 className="flex-1"
               >
                 <Sparkles className="h-4 w-4" />
-                {finalizing ? "Finalising…" : "Retry finalising"}
+                {busy ? "Finalising…" : "Retry finalising"}
               </PortalButton>
             </div>
           </>
@@ -657,6 +813,180 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         errorMessage={actionError}
         onConfirm={onSign}
       />
+    </div>
+  );
+}
+
+
+/** Portal pricing table — the only numbers the customer sees:
+ *  qty + price per unit + line total per row, plus an order total
+ *  footer. Nothing about cost, margin, or savings crosses this
+ *  boundary; that stays internal to Vita. */
+function PortalPricingTable({
+  lines,
+  currency,
+  orderTotal,
+}: {
+  readonly lines: ReadonlyArray<PortalLineRow>;
+  readonly currency: string;
+  readonly orderTotal: string | null;
+}) {
+  return (
+    <div className="overflow-hidden border-2 border-black">
+      <table className="w-full text-sm">
+        <thead className="bg-black text-white">
+          <tr>
+            <th className="px-3 py-2 text-left text-[11px] font-bold uppercase tracking-widest">
+              Product
+            </th>
+            <th className="px-3 py-2 text-right text-[11px] font-bold uppercase tracking-widest">
+              Qty
+            </th>
+            <th className="px-3 py-2 text-right text-[11px] font-bold uppercase tracking-widest">
+              Price / unit
+            </th>
+            <th className="px-3 py-2 text-right text-[11px] font-bold uppercase tracking-widest">
+              Line total
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y-2 divide-black">
+          {lines.map((line) => (
+            <tr key={line.id} className="bg-white">
+              <td className="px-3 py-3">
+                <p className="font-black uppercase tracking-tight">
+                  {line.description || line.product_code || "Product"}
+                </p>
+                {line.product_code && line.description ? (
+                  <p className="mt-0.5 font-mono text-[11px] text-neutral-600">
+                    {line.product_code}
+                  </p>
+                ) : null}
+              </td>
+              <td className="whitespace-nowrap px-3 py-3 text-right font-mono tabular-nums">
+                {new Intl.NumberFormat("en-GB").format(line.quantity)}
+              </td>
+              <td className="whitespace-nowrap px-3 py-3 text-right font-mono tabular-nums">
+                {fmtPortalMoney(line.unit_price, currency)}
+              </td>
+              <td className="whitespace-nowrap px-3 py-3 text-right font-mono tabular-nums font-black">
+                {fmtPortalMoney(line.subtotal, currency)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+        {orderTotal !== null ? (
+          <tfoot className="border-t-2 border-black bg-paper">
+            <tr>
+              <td
+                colSpan={3}
+                className="px-3 py-3 text-right text-[11px] font-bold uppercase tracking-widest"
+              >
+                Total
+              </td>
+              <td className="whitespace-nowrap px-3 py-3 text-right font-mono tabular-nums text-base font-black">
+                {fmtPortalMoney(orderTotal, currency)}
+              </td>
+            </tr>
+          </tfoot>
+        ) : null}
+      </table>
+    </div>
+  );
+}
+
+
+/** Volume savings progression — one row per quantity breakpoint.
+ *  Customer sees: qty, price per unit at that qty, total price,
+ *  and the per-unit saving vs the quoted tier. The underlying
+ *  math (cost + margin) stays entirely on Vita's side; the
+ *  portal only receives finished prices. */
+function PortalPriceProgressionTable({
+  steps,
+  currency,
+}: {
+  readonly steps: ReadonlyArray<PortalPriceStep>;
+  readonly currency: string;
+}) {
+  return (
+    <div className="overflow-x-auto border-2 border-black">
+      <table className="w-full text-sm">
+        <thead className="bg-black text-white">
+          <tr>
+            <th className="px-3 py-2 text-left text-[11px] font-bold uppercase tracking-widest">
+              Order qty
+            </th>
+            <th className="px-3 py-2 text-right text-[11px] font-bold uppercase tracking-widest">
+              Price / unit
+            </th>
+            <th className="px-3 py-2 text-right text-[11px] font-bold uppercase tracking-widest">
+              Order total
+            </th>
+            <th className="hidden px-3 py-2 text-right text-[11px] font-bold uppercase tracking-widest sm:table-cell">
+              You save / unit
+            </th>
+            <th className="hidden px-3 py-2 text-right text-[11px] font-bold uppercase tracking-widest sm:table-cell">
+              Total saving
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y-2 divide-black">
+          {steps.map((step) => {
+            const isBase = step.multiplier === 1;
+            const savingsUnit = step.savings_per_unit_vs_quoted
+              ? Number(step.savings_per_unit_vs_quoted)
+              : 0;
+            const showSavings = !isBase && savingsUnit > 0;
+            return (
+              <tr
+                key={`${step.quantity}-${step.multiplier ?? "x"}`}
+                className={isBase ? "bg-yellow-100" : "bg-white"}
+              >
+                <td className="whitespace-nowrap px-3 py-3">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono tabular-nums font-black">
+                      {new Intl.NumberFormat("en-GB").format(step.quantity)}
+                    </span>
+                    {isBase ? (
+                      <span className="border-2 border-black bg-black px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white">
+                        Quoted
+                      </span>
+                    ) : step.multiplier ? (
+                      <span className="text-[11px] text-neutral-600">
+                        ×{step.multiplier}
+                      </span>
+                    ) : null}
+                  </div>
+                </td>
+                <td className="whitespace-nowrap px-3 py-3 text-right font-mono tabular-nums">
+                  {fmtPortalMoney(step.price_per_unit, currency)}
+                </td>
+                <td className="whitespace-nowrap px-3 py-3 text-right font-mono tabular-nums font-black">
+                  {fmtPortalMoney(step.total_price, currency)}
+                </td>
+                <td className="hidden whitespace-nowrap px-3 py-3 text-right font-mono tabular-nums sm:table-cell">
+                  {showSavings ? (
+                    <span className="font-bold text-emerald-700">
+                      {fmtPortalMoney(step.savings_per_unit_vs_quoted, currency)}
+                    </span>
+                  ) : (
+                    <span className="text-neutral-400">—</span>
+                  )}
+                </td>
+                <td className="hidden whitespace-nowrap px-3 py-3 text-right font-mono tabular-nums sm:table-cell">
+                  {showSavings ? (
+                    <span className="font-bold text-emerald-700">
+                      {fmtPortalMoney(step.savings_total_vs_quoted, currency)}
+                    </span>
+                  ) : (
+                    <span className="text-neutral-400">—</span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
