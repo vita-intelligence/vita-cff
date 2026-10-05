@@ -591,6 +591,9 @@ export function useAddProposalLine(
       queryClient.invalidateQueries({
         queryKey: proposalsQueryKeys.detail(orgId, proposalId),
       });
+      queryClient.invalidateQueries({
+        queryKey: proposalsQueryKeys.savingsAtScale(orgId, proposalId),
+      });
     },
   });
 }
@@ -619,6 +622,15 @@ export function usePatchProposalLine(
       queryClient.invalidateQueries({
         queryKey: proposalsQueryKeys.detail(orgId, proposalId),
       });
+      // Quantity, cost, and formulation-version edits all shift the
+      // server-computed tier breakdown (``tier_qty = quoted_qty * mult``),
+      // so the savings-at-scale cache must refetch. Margin edits are
+      // applied client-side on top of the cached rows and don't need
+      // this — but we always invalidate because the panel is cheap
+      // to recompute and callers patch multiple fields together.
+      queryClient.invalidateQueries({
+        queryKey: proposalsQueryKeys.savingsAtScale(orgId, proposalId),
+      });
     },
   });
 }
@@ -638,6 +650,9 @@ export function useDeleteProposalLine(
       });
       queryClient.invalidateQueries({
         queryKey: proposalsQueryKeys.detail(orgId, proposalId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: proposalsQueryKeys.savingsAtScale(orgId, proposalId),
       });
     },
   });
