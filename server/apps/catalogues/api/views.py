@@ -58,7 +58,7 @@ from apps.psp.services import (
     PspError,
     PspNotConfigured,
     PspDecryptionFailed,
-    list_psp_items_strict,
+    list_psp_items_strict_page,
 )
 
 # Catalogues whose CANONICAL data lives on PSP once the org's PSP
@@ -126,6 +126,41 @@ def _psp_item_to_read_shape(item) -> dict:
         "created_at": None,
         "updated_at": None,
     }
+
+
+#: Default + cap for the picker's PSP page size. Mirrors PSP's own
+#: ``@items_default_limit`` / ``@items_max_limit`` so a request
+#: beyond PSP's cap gets silently clamped here rather than at the
+#: PSP boundary (keeps the ``next`` URL honest).
+_PSP_PAGE_SIZE_DEFAULT = 50
+_PSP_PAGE_SIZE_MAX = 200
+
+
+def _parse_psp_page_size(raw: str | None) -> int:
+    if not raw:
+        return _PSP_PAGE_SIZE_DEFAULT
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _PSP_PAGE_SIZE_DEFAULT
+    if value <= 0:
+        return _PSP_PAGE_SIZE_DEFAULT
+    return min(value, _PSP_PAGE_SIZE_MAX)
+
+
+def _build_next_url(request, next_cursor: str) -> str:
+    """Shape the DRF-style ``next`` URL by swapping the ``cursor``
+    param on the current request. The frontend already follows
+    ``next`` for local-catalogue pagination; a URL (not just a bare
+    cursor string) keeps the two code paths identical.
+    """
+
+    from urllib.parse import urlencode
+
+    params = request.query_params.copy()
+    params["cursor"] = next_cursor
+    base = request.build_absolute_uri(request.path)
+    return f"{base}?{urlencode(params, doseq=True)}"
 
 
 # ---------------------------------------------------------------------------
@@ -286,26 +321,47 @@ class ItemListCreateView(APIView):
         # psp_mirror pickers read live from PSP. No fallback to the
         # local table — a disconnected PSP surfaces as 503 so the
         # picker's error banner renders.
+        #
+        # Pagination is delegated to PSP (keyset cursor) so a 1.5 k
+        # row catalog doesn't force a 5 s / 1.5 MB response on every
+        # picker open. The ``?use_as=a&use_as=b`` multi-filter mode
+        # is single-page-only on PSP's side, so when the FE asks for
+        # more than one use_as value we fall back to a single call
+        # with no filter (the client-side filter still narrows it)
+        # — multi-use_as pickers are rare and small, this keeps the
+        # common single-use_as path paginated.
         if self.catalogue.slug in _PSP_BACKED_CATALOGUE_SLUGS:
             item_types = _PSP_ITEM_TYPE_BY_SLUG.get(self.catalogue.slug)
-            use_as_values = list(use_as_in) if use_as_in else [None]
+            raw_order = request.query_params.get("ordering", "name")
+            descending = raw_order.startswith("-")
+            field = raw_order.lstrip("-").lower()
+            if field not in {"name", "internal_code"}:
+                field = "name"
+                descending = False
+
+            page_size = _parse_psp_page_size(
+                request.query_params.get("page_size")
+            )
+            cursor = request.query_params.get("cursor") or None
+
+            # PSP only accepts a single ``use_as``. Pick the first
+            # when the caller sent a set — the rare multi-use_as
+            # picker already filters client-side after the fetch.
+            psp_use_as: str | None = None
+            if use_as_in:
+                canonical = next(iter(use_as_in), None)
+                if canonical:
+                    psp_use_as = _psp_use_as_snake_to_title(canonical)
+
             try:
-                collected: dict[str, object] = {}
-                for canonical in use_as_values:
-                    psp_use_as = (
-                        _psp_use_as_snake_to_title(canonical)
-                        if canonical
-                        else None
-                    )
-                    for item in list_psp_items_strict(
-                        organization=self.organization,
-                        search=search,
-                        item_types=item_types,
-                        use_as=psp_use_as,
-                    ):
-                        if not include_archived and not item.is_active:
-                            continue
-                        collected.setdefault(item.uuid, item)
+                page = list_psp_items_strict_page(
+                    organization=self.organization,
+                    search=search,
+                    item_types=item_types,
+                    use_as=psp_use_as,
+                    limit=page_size,
+                    cursor=cursor,
+                )
             except PspNotConfigured:
                 return Response(
                     {
@@ -323,26 +379,28 @@ class ItemListCreateView(APIView):
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
 
-            raw_order = request.query_params.get("ordering", "name")
-            descending = raw_order.startswith("-")
-            field = raw_order.lstrip("-").lower()
-            if field not in {"name", "internal_code"}:
-                field = "name"
-                descending = False
-            results = sorted(
-                collected.values(),
-                key=lambda x: (
-                    (x.name or "").lower()
-                    if field == "name"
-                    else (x.code or x.external_sku or "").lower()
-                ),
-                reverse=descending,
-            )
+            items = [
+                it
+                for it in page.items
+                if include_archived or it.is_active
+            ]
+
+            # PSP already returns ``name ASC, id ASC``. Honour a
+            # descending request by reversing the page locally —
+            # fine because within a single page the sort is stable
+            # on the (name, id) tuple PSP ordered by.
+            if descending:
+                items = list(reversed(items))
+
+            next_url: str | None = None
+            if page.next_cursor:
+                next_url = _build_next_url(request, page.next_cursor)
+
             return Response(
                 {
-                    "next": None,
+                    "next": next_url,
                     "previous": None,
-                    "results": [_psp_item_to_read_shape(x) for x in results],
+                    "results": [_psp_item_to_read_shape(x) for x in items],
                 }
             )
 

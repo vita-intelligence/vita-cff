@@ -50,6 +50,7 @@ import secrets
 import urllib.parse
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from collections.abc import Iterator
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -133,6 +134,20 @@ class PspItem:
     stock_uom_uuid: str | None = None
     stock_uom_symbol: str | None = None
     stock_uom_dimension: str | None = None
+
+
+@dataclass(frozen=True)
+class PspItemsPage:
+    """One page of items returned by :meth:`PspClient.list_items`.
+
+    ``next_cursor`` is ``None`` on the last page; otherwise the
+    caller passes it back verbatim as ``cursor=`` to fetch the next
+    slice. Opaque to NPD — PSP owns the encoding so the shape can
+    evolve without breaking callers.
+    """
+
+    items: list[PspItem]
+    next_cursor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -308,7 +323,23 @@ class PspDecryptionFailed(Exception):
 #: from 4 s → 2 s because a slow PSP that pins Django workers for
 #: 4 s each cascades into pool saturation under load. Matches the
 #: MRPEasy ceiling for consistency.
-_PSP_TIMEOUT_SECONDS = 2.0
+#:
+#: Overridable at runtime via ``PSP_HTTP_TIMEOUT_SECONDS`` so a
+#: sandbox hitting a cold-start / un-paginated PSP (where /items
+#: alone takes ~5 s for a ~1.5 k row catalogue) can relax the ceiling
+#: without a code change. Falls back to 2.0 when unset / unparseable.
+def _resolve_psp_timeout() -> float:
+    raw = os.environ.get("PSP_HTTP_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return 2.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 2.0
+    return value if value > 0 else 2.0
+
+
+_PSP_TIMEOUT_SECONDS = _resolve_psp_timeout()
 
 #: Circuit-breaker window. When PSP times out N times in a row the
 #: client trips open and returns cached "unreachable" for the next
@@ -560,13 +591,27 @@ class PspClient:
         search: str | None = None,
         item_types: list[str] | None = None,
         use_as: str | None = None,
-    ) -> list[PspItem]:
-        """List PSP items. Server-side filters via query string.
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> PspItemsPage:
+        """Fetch one page of PSP items. Server-side filters via query
+        string.
 
-        Empty result set (any of "no PSP items", "search matched
-        nothing", "typed exception") is normalised to an empty list
-        — the caller renders "no matches" identically for every
-        empty-list source.
+        PSP returns ``{"items": [...], "next_cursor": "..." | null}``
+        — we project each row into a :class:`PspItem` and surface
+        ``next_cursor`` on the returned :class:`PspItemsPage` so
+        callers can loop paginated pickers or stop at the first
+        page. See :meth:`iter_items` for the exhaust-all helper.
+
+        Omitting ``limit`` means PSP applies its default page size
+        (currently 50, capped at 200). Callers that need the whole
+        catalog should use :meth:`iter_items`, not pass a huge
+        limit — PSP caps and the ``_PSP_TIMEOUT_SECONDS`` ceiling
+        bites first anyway.
+
+        Empty / malformed response ⇒ empty :class:`PspItemsPage`.
+        Soft-degrade keeps the picker renderable instead of 500ing
+        on a transient PSP hiccup.
         """
 
         query: dict[str, str] = {}
@@ -576,13 +621,63 @@ class PspClient:
             query["item_types"] = ",".join(item_types)
         if use_as:
             query["use_as"] = use_as
+        if limit is not None and limit > 0:
+            query["limit"] = str(limit)
+        if cursor:
+            query["cursor"] = cursor
         payload = self._request("api/integration/items", query=query)
         if not isinstance(payload, dict):
-            return []
+            return PspItemsPage(items=[], next_cursor=None)
         rows = payload.get("items")
         if not isinstance(rows, list):
-            return []
-        return [_project_item(row) for row in rows if isinstance(row, dict)]
+            return PspItemsPage(items=[], next_cursor=None)
+        next_cursor_raw = payload.get("next_cursor")
+        next_cursor = (
+            next_cursor_raw if isinstance(next_cursor_raw, str) and next_cursor_raw else None
+        )
+        return PspItemsPage(
+            items=[_project_item(row) for row in rows if isinstance(row, dict)],
+            next_cursor=next_cursor,
+        )
+
+    def iter_items(
+        self,
+        *,
+        search: str | None = None,
+        item_types: list[str] | None = None,
+        use_as: str | None = None,
+        page_size: int = 200,
+    ) -> Iterator[PspItem]:
+        """Yield every PSP item matching the filters, transparently
+        paging through PSP's cursor until exhausted.
+
+        For callers that genuinely need the whole catalog
+        (import / sync / auto-pick jobs) — a single ``list_items``
+        call now returns only one page since PSP enforces pagination
+        server-side. Picker code paths that only need the first page
+        for a search dropdown should call :meth:`list_items` and
+        surface ``next_cursor`` as a "load more" affordance instead
+        of exhausting the generator.
+
+        A soft failure mid-iteration (empty page from PSP) halts the
+        loop silently; callers see a short list rather than a raise
+        so the auto-pick jobs degrade gracefully under a flaky PSP.
+        """
+
+        cursor: str | None = None
+        while True:
+            page = self.list_items(
+                search=search,
+                item_types=item_types,
+                use_as=use_as,
+                limit=page_size,
+                cursor=cursor,
+            )
+            for item in page.items:
+                yield item
+            if not page.next_cursor:
+                return
+            cursor = page.next_cursor
 
     def get_item(self, uuid: Any) -> PspItem | None:
         """Look up a single PSP item by UUID. ``None`` when PSP has
@@ -2574,8 +2669,15 @@ def list_psp_items(
     item_types: list[str] | None = None,
     use_as: str | None = None,
 ) -> list[PspItem]:
-    """List PSP items for the org. Empty list on any failure —
-    the picker's UX never blocks on an integration outage."""
+    """List every PSP item matching the filters for the org, paging
+    through PSP's cursor transparently. Empty list on any failure —
+    the picker's UX never blocks on an integration outage.
+
+    PSP now enforces server-side pagination, so this helper loops
+    through pages until exhausted. Callers that only need the first
+    page should prefer :func:`list_psp_items_page` to avoid the
+    multi-round-trip latency.
+    """
 
     if not is_psp_live(organization):
         return []
@@ -2588,8 +2690,10 @@ def list_psp_items(
         return []
     try:
         client = _client_factory(config)
-        return client.list_items(
-            search=search, item_types=item_types, use_as=use_as
+        return list(
+            client.iter_items(
+                search=search, item_types=item_types, use_as=use_as
+            )
         )
     except PspError:
         logger.exception(
@@ -2608,14 +2712,87 @@ def list_psp_items_strict(
     """Strict variant of :func:`list_psp_items` — raises instead of
     silently returning ``[]``. Used by the user-facing pickers that
     now treat PSP as the sole source of truth: they need to render a
-    "PSP not connected" error banner instead of an empty list."""
+    "PSP not connected" error banner instead of an empty list.
+
+    Exhausts PSP's cursor, so a caller that only needs the first
+    page should prefer :func:`list_psp_items_strict_page` — a
+    1437-row catalogue costs ~N × 1 s otherwise.
+    """
+
+    if not is_psp_live(organization):
+        raise PspNotConfigured("PSP integration not connected for this org.")
+    config = get_psp_config(organization=organization)
+    client = _client_factory(config)
+    return list(
+        client.iter_items(
+            search=search, item_types=item_types, use_as=use_as
+        )
+    )
+
+
+def list_psp_items_page(
+    *,
+    organization: Any,
+    search: str | None = None,
+    item_types: list[str] | None = None,
+    use_as: str | None = None,
+    limit: int | None = None,
+    cursor: str | None = None,
+) -> PspItemsPage:
+    """Single-page sibling of :func:`list_psp_items` — silent-
+    degrading. Returns an empty :class:`PspItemsPage` on any failure
+    so a flaky integration can't 500 the picker.
+    """
+
+    if not is_psp_live(organization):
+        return PspItemsPage(items=[], next_cursor=None)
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return PspItemsPage(items=[], next_cursor=None)
+    try:
+        client = _client_factory(config)
+        return client.list_items(
+            search=search,
+            item_types=item_types,
+            use_as=use_as,
+            limit=limit,
+            cursor=cursor,
+        )
+    except PspError:
+        logger.exception(
+            "PSP list_items (page) failed for org %s", organization.pk
+        )
+        return PspItemsPage(items=[], next_cursor=None)
+
+
+def list_psp_items_strict_page(
+    *,
+    organization: Any,
+    search: str | None = None,
+    item_types: list[str] | None = None,
+    use_as: str | None = None,
+    limit: int | None = None,
+    cursor: str | None = None,
+) -> PspItemsPage:
+    """Strict single-page variant. Used by the user-facing pickers
+    that want to surface PSP outages as a 503 rather than render an
+    incorrectly-empty catalog.
+    """
 
     if not is_psp_live(organization):
         raise PspNotConfigured("PSP integration not connected for this org.")
     config = get_psp_config(organization=organization)
     client = _client_factory(config)
     return client.list_items(
-        search=search, item_types=item_types, use_as=use_as
+        search=search,
+        item_types=item_types,
+        use_as=use_as,
+        limit=limit,
+        cursor=cursor,
     )
 
 
