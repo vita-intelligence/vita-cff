@@ -18,7 +18,15 @@ function createApiClient(): AxiosInstance {
   const instance = axios.create({
     baseURL: "",
     withCredentials: true,
-    timeout: 15_000,
+    // Bumped from 15 s to 60 s because any endpoint that triggers
+    // the synchronous PSP push cascade (save-version, stage
+    // upsert, line replace with routing changes) can legitimately
+    // run 20–40 s against a cold-start / un-paginated PSP, and
+    // the shared default was aborting them with the "Network error"
+    // toast while the backend quietly committed. Per-call overrides
+    // (e.g. ``saveFormulationVersion``'s 120 s) remain in place for
+    // the slowest cascades; this value protects every other mutation.
+    timeout: 60_000,
     headers: {
       Accept: "application/json",
     },
