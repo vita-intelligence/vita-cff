@@ -3133,43 +3133,60 @@ def set_formulation_stages(
     # regardless. Deferred to ``on_commit`` so the HTTP round-trip
     # doesn't hold the DB write lock — and so failed PSP calls can't
     # roll back the successful stage upsert.
+    #
+    # The actual push + semi-cleanup are then dispatched onto a
+    # daemon thread from inside the ``on_commit`` callback. Without
+    # that, the whole cascade (20–60 s against a cold-start PSP
+    # with 7 stages × multiple round-trips) blocks the ``PUT
+    # /stages/`` response: ``on_commit`` runs after the DB commit
+    # but still synchronously on the request worker's stack,
+    # before DRF ships the response bytes. Operators saw the
+    # Save-version chain hang on the stages step for a full minute
+    # while PSP mirrored every stage, even though the DB was
+    # already up-to-date. Thread is daemonised so container
+    # shutdown doesn't wait on an in-flight push.
     def _sync_to_psp() -> None:
-        from apps.psp.services import delete_psp_item, push_bom_to_psp
+        import threading
 
-        try:
-            push_bom_to_psp(formulation=formulation)
-        except Exception:
-            import logging
+        def _work() -> None:
+            from apps.psp.services import delete_psp_item, push_bom_to_psp
 
-            logging.getLogger(__name__).exception(
-                "set_formulation_stages: PSP push failed for %s (org %s)",
-                formulation.pk,
-                formulation.organization_id,
-            )
+            try:
+                push_bom_to_psp(formulation=formulation)
+            except Exception:
+                import logging
 
-        # Clean up PSP semi-finished items for stages the operator
-        # just removed from this formulation. delete_psp_item is
-        # silent-degrade and safety-gated on the PSP side (refuses
-        # when the item is referenced in another BOM, has history,
-        # or its external_sku doesn't match the NPD pattern), so a
-        # skipped delete is expected and just gets logged.
-        if departing_semi_uuids:
-            import logging
-
-            log = logging.getLogger(__name__)
-            organization = formulation.organization
-            for uuid in departing_semi_uuids:
-                result = delete_psp_item(
-                    organization=organization, uuid=uuid
+                logging.getLogger(__name__).exception(
+                    "set_formulation_stages: PSP push failed for %s (org %s)",
+                    formulation.pk,
+                    formulation.organization_id,
                 )
-                if not result.get("deleted"):
-                    log.info(
-                        "set_formulation_stages: skipped PSP delete for"
-                        " item %s (org %s) — reason %s",
-                        uuid,
-                        organization.pk,
-                        result.get("reason"),
+
+            # Clean up PSP semi-finished items for stages the operator
+            # just removed from this formulation. delete_psp_item is
+            # silent-degrade and safety-gated on the PSP side (refuses
+            # when the item is referenced in another BOM, has history,
+            # or its external_sku doesn't match the NPD pattern), so a
+            # skipped delete is expected and just gets logged.
+            if departing_semi_uuids:
+                import logging
+
+                log = logging.getLogger(__name__)
+                organization = formulation.organization
+                for uuid in departing_semi_uuids:
+                    result = delete_psp_item(
+                        organization=organization, uuid=uuid
                     )
+                    if not result.get("deleted"):
+                        log.info(
+                            "set_formulation_stages: skipped PSP delete for"
+                            " item %s (org %s) — reason %s",
+                            uuid,
+                            organization.pk,
+                            result.get("reason"),
+                        )
+
+        threading.Thread(target=_work, daemon=True).start()
 
     transaction.on_commit(_sync_to_psp)
 
