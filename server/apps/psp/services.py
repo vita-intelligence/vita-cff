@@ -6331,21 +6331,56 @@ def _persist_auto_derived_spou(stage: Any, derived: Decimal) -> None:
         )
 
 
+#: Dosage forms where the bulk material is filled DIRECTLY into
+#: the retail pack (no "individual piece" intermediate) — fill-
+#: into-bottle flows for powders, liquids, and generic solids.
+#: Every ``pcs`` stage in the contiguous tail of the chain is a
+#: packed-unit stage, so SPOU = ``servings_per_pack`` on every one
+#: of them. Capsules / tablets / gummies DELIBERATELY stay out of
+#: this set because their pre-bottling stage (encapsulation /
+#: pressing / moulding) outputs individual pieces at SPOU=1 and
+#: only the final Bottling step is the pack-equivalent.
+_BULK_FILL_DOSAGE_FORMS: frozenset[str] = frozenset(
+    {"powder", "liquid", "other_solid"}
+)
+
+
 def _is_pack_equivalent_semi(
     stage: Any,
     stages: list[Any] | None,
     finished_stage: Any | None,
+    formulation: Any | None = None,
 ) -> bool:
-    """True when ``stage`` is the semi-finished stage that produces
-    what the finished stage will label — i.e. its stock UoM matches
-    the finished stage's AND no later semi in the chain also shares
-    that UoM. In the classic capsules-in-a-bottle flow this identifies
-    the Bottling stage (bottles) sitting just before a Labelling
-    finished stage (bottles), while leaving the earlier Encapsulation
-    stage (also stocked in ``pcs`` but per-capsule) at SPOU=1.
+    """True when ``stage`` produces what the finished stage will
+    label — i.e. 1 stock unit at this stage already equals one
+    retail pack. Drives the SPOU auto-derive for count-stocked
+    semis: pack-equivalent ⇒ SPOU = ``servings_per_pack``, otherwise
+    SPOU = 1 (per-piece).
 
-    Returns False when the chain isn't available (defensive path used
-    by legacy callers that don't pass ``stages`` / ``finished_stage``).
+    Two selection rules, picked by the formulation's dosage form:
+
+    * **Bulk-fill forms** (``powder`` / ``liquid`` / ``other_solid``):
+      every semi in the contiguous tail of same-UoM stages before
+      finished is pack-equivalent. The whole fill→cap→label chain
+      is already working with the retail bottle, so SPOU=30 on all
+      three — a 30-serving bottle is 30 servings whether it's
+      been labelled or not. This fixes "Auger Filling says 30 pcs"
+      drift for powder-in-bottle recipes.
+
+    * **Piece-making forms** (``capsule`` / ``tablet`` / ``gummy``,
+      the historical default): only the last same-UoM semi before
+      finished is pack-equivalent. Encapsulation output is at the
+      per-capsule level (SPOU=1); Bottling aggregates those into
+      the final bottle (SPOU=30).
+
+    Returns False when the chain can't be analysed (defensive path
+    used by legacy callers that don't pass ``stages`` /
+    ``finished_stage``).
+
+    ``formulation`` is optional for backward compatibility — when
+    None the function falls back to the piece-making rule (the
+    pre-change behaviour) so callers that haven't been updated
+    don't regress their SPOU math.
     """
 
     if not stages or finished_stage is None:
@@ -6364,9 +6399,32 @@ def _is_pack_equivalent_semi(
         # Only stages *before* the finished stage can be pack-equivalents.
         return False
 
-    # Any OTHER semi with the same UoM that sits between this stage and
-    # the finished stage? If yes, that later one is the real pack-
-    # equivalent — this one is an earlier, per-unit stage.
+    dosage_form = str(getattr(formulation, "dosage_form", "") or "").lower()
+
+    if dosage_form in _BULK_FILL_DOSAGE_FORMS:
+        # Walk every stage strictly between this stage and the
+        # finished stage; any semi whose UoM diverges breaks the
+        # "contiguous tail" assumption and signals this stage sits
+        # BEFORE the pack-fill transition (so it still produces
+        # loose material, not packs).
+        for other in stages:
+            other_sort = getattr(other, "sort_order", None)
+            if other_sort is None:
+                continue
+            if not (stage_sort < other_sort < finished_sort):
+                continue
+            if getattr(other, "psp_item_type", None) != "semi_finished":
+                continue
+            other_uom = str(getattr(other, "psp_item_stock_uom_uuid", "") or "")
+            if other_uom != finished_uom:
+                return False
+        return True
+
+    # Piece-making forms (capsule / tablet / gummy) + fallback for
+    # unknown / missing dosage forms: only the LAST same-UoM semi
+    # before finished is pack-equivalent. An earlier same-UoM semi
+    # is an individual-piece output stage (encapsulation, pressing,
+    # moulding) and stays at SPOU=1.
     for other in stages:
         if getattr(other, "id", None) == getattr(stage, "id", None):
             continue
@@ -6477,7 +6535,9 @@ def _semi_stage_servings(
     dimension = str(unit_info.get("dimension") or "").strip().lower()
 
     if dimension == "count":
-        if _is_pack_equivalent_semi(stage, stages, finished_stage):
+        if _is_pack_equivalent_semi(
+            stage, stages, finished_stage, formulation
+        ):
             derived = _finished_stage_servings(formulation)
         else:
             derived = Decimal("1")
