@@ -1243,10 +1243,18 @@ def _psp_template_to_payload(row: dict[str, Any]) -> dict[str, Any]:
         for step in steps:
             if not isinstance(step, dict):
                 continue
+            # Prefer the short workstation-group name ("Weighing",
+            # "Splitting") over the long ``operation_description``
+            # — PSP stores free-text cycle / cleaning notes there
+            # ("WS 4. P25 cycle: 1.10 min/kg. Cleaning per MO: 15
+            # min.") which were eating the stage card width when
+            # used as the display label. The full description is
+            # still carried separately on ``operation_description``
+            # so the detail panel can render it.
             stages.append(
                 {
-                    "name": (step.get("operation_description") or "").strip()
-                    or (step.get("workstation_group_name") or "").strip()
+                    "name": (step.get("workstation_group_name") or "").strip()
+                    or (step.get("operation_description") or "").strip()
                     or "Stage",
                     "stage_key": "custom",
                     "workstation_group_uuid": step.get(
@@ -1499,9 +1507,13 @@ def _hydrate_stages_from_psp_template(
 
     * Finished step → ``"<product name>"`` (e.g. ``"Super Capsules"``).
     * Earlier steps → ``"<product name> <step label>"`` (e.g.
-      ``"Super Capsules Weighting"``). The step label comes from the
-      template step's ``operation_description``, falling back to the
-      workstation-group name.
+      ``"Super Capsules Weighing"``). The step label comes from the
+      template step's ``workstation_group_name`` (short, picker-
+      vocabulary — "Weighing", "Blending", …), falling back to
+      ``operation_description`` only when the WSG is unset. PSP's
+      ``operation_description`` is free-text cycle / cleaning notes
+      ("WS 4. P25 cycle: 1.10 min/kg …") and was overflowing the
+      stage card width when used as the primary label.
     """
 
     from apps.formulations.models import FormulationStage
@@ -1526,8 +1538,8 @@ def _hydrate_stages_from_psp_template(
     for index, step in enumerate(ordered):
         is_last = index == last_index
         step_label = (
-            (step.get("operation_description") or "").strip()
-            or (step.get("workstation_group_name") or "").strip()
+            (step.get("workstation_group_name") or "").strip()
+            or (step.get("operation_description") or "").strip()
             or f"Stage {index + 1}"
         )
         composed_name = (
