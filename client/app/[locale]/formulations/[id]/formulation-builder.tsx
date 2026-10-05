@@ -8794,7 +8794,7 @@ const RoutingTabBody = memo(function RoutingTabBody({
 
   const bandChip = (band: string) =>
     band === "active" ? null : (
-      <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-600">
+      <span className="shrink-0 whitespace-nowrap rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-600">
         {band.replace(/_/g, " ")}
       </span>
     );
@@ -9295,20 +9295,32 @@ const RoutingTabBody = memo(function RoutingTabBody({
                             aria-label={`Select ${row.label}`}
                           />
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
+                            {/* Name sits on its own row so a long raw-
+                                material name like "Vitamin K2 (MK-7)
+                                1,000 ppm oil …" isn't truncated to a
+                                single letter by a wrapped use-as chip
+                                beside it. The chip + code + mg drop
+                                into a second, lower-contrast line
+                                where the ``whitespace-nowrap`` chip
+                                keeps itself to one line. */}
+                            <span
+                              className="block truncate font-medium text-ink-1000"
+                              title={row.label}
+                            >
+                              {row.label}
+                            </span>
+                            <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-ink-500">
                               {bandChip(row.band)}
-                              <span className="truncate font-medium text-ink-1000">
-                                {row.label}
+                              <span className="truncate">
+                                {/* Pharma display convention — mass
+                                    values land at fixed 5 decimals
+                                    with trailing zeros. Same rule as
+                                    the trial-batch BOM sheet so
+                                    numbers read the same across
+                                    surfaces. */}
+                                {row.code || "—"} · {row.mg.toFixed(5)} mg
                               </span>
                             </div>
-                            <span className="mt-0.5 block text-[11px] text-ink-500">
-                              {/* Pharma display convention — mass values
-                                  land at fixed 5 decimals with trailing
-                                  zeros. Same rule as the trial-batch
-                                  BOM sheet so numbers read the same
-                                  across surfaces. */}
-                              {row.code || "—"} · {row.mg.toFixed(5)} mg
-                            </span>
                           </div>
                           <select
                             value={assigned ?? ""}
