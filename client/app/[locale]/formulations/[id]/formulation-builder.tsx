@@ -5175,6 +5175,36 @@ export function FormulationBuilder({
 
   return (
     <div className="mt-6 flex flex-col gap-6">
+      {/* Full-screen busy overlay. Save-version chains together
+          handleSaveMetadata → handleSaveLines → stagesSave →
+          handleSaveRouting → saveVersionMutation, and the final
+          mutation drives a synchronous PSP push cascade that
+          routinely runs 20–60 s on a cold-start sandbox. Without
+          an overlay the page looks frozen and operators either
+          double-click (firing a second mutation chain against a
+          now-stale local state) or navigate away mid-cascade and
+          see partial writes land. Blocks clicks + narrates what
+          the backend is doing so the long wait reads as "working"
+          instead of "broken". */}
+      {saveVersionMutation.isPending ? (
+        <div
+          aria-live="polite"
+          aria-busy="true"
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-ink-1000/40 backdrop-blur-sm"
+        >
+          <div className="flex flex-col items-center gap-3 rounded-2xl bg-ink-0 px-6 py-5 shadow-xl ring-1 ring-ink-200">
+            <Loader2 className="h-8 w-8 animate-spin text-orange-500" />
+            <p className="text-sm font-semibold text-ink-1000">
+              Saving version…
+            </p>
+            <p className="max-w-xs text-center text-[11px] text-ink-500">
+              Pushing BOM + routing to PSP. This can take 30 s to a
+              minute while PSP mirrors every stage — please don&apos;t
+              close the tab.
+            </p>
+          </div>
+        </div>
+      ) : null}
       {/* ------------------------------------------------------------ */}
       {/* Action bar — the project shell above already renders the     */}
       {/* code + name + status pills, so we don't repeat them here.    */}
@@ -5334,8 +5364,14 @@ export function FormulationBuilder({
                 isDisabled={isBusy}
                 onClick={handleSaveVersion}
               >
-                <Save className="h-4 w-4" />
-                {tFormulations("builder.save_version")}
+                {saveVersionMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+                {saveVersionMutation.isPending
+                  ? "Saving…"
+                  : tFormulations("builder.save_version")}
               </Button>
           </div>
         </section>
