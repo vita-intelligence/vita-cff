@@ -111,6 +111,18 @@ function normaliseBandKey(prefix: string): string {
       return "gummy_base";
     case "gummy-water":
       return "gummy_water";
+    case "carrier":
+      // Powder-flow BOM emits the carrier remainder with slug
+      // ``"carrier"`` (see ``emitPowderBand("carrier", …)`` in
+      // ``math.ts``), but the backend's ``FormulationLine
+      // .BAND_KEY_CHOICES`` only recognises ``powder_carrier``.
+      // Without this mapping, ``save_wizard_routing`` silently
+      // drops the band assignment (``if band_key not in
+      // valid_band_keys: continue``), and the carrier line reverts
+      // to Unassigned on the next refresh — same class of bug as
+      // the "Erythritol / Deionised Water" regression the file-
+      // level comment above warns about.
+      return "powder_carrier";
     case "mcc":
     case "dcp":
       return prefix;
