@@ -341,6 +341,17 @@ export async function saveFormulationVersion(
   const { data } = await apiClient.post<FormulationVersionDto>(
     formulationsEndpoints.versions(orgId, formulationId),
     payload,
+    // Save version triggers the synchronous auto-push cascade:
+    // ``save_version`` → ``_push_staged_cascade`` iterates every
+    // stage and fires ``put_bom`` + ``put_routing`` + file pushes
+    // against PSP. Seven stages × ~5 s each in the worst case
+    // (PSP cold-start, un-paginated items endpoint) easily blows
+    // past the shared client's 15 s default and the operator sees
+    // a "network error" toast while the backend quietly keeps
+    // committing. 120 s covers the slow path with headroom; the
+    // request still gets a hard ceiling so a truly stuck PSP
+    // doesn't pin the browser forever.
+    { timeout: 120_000 },
   );
   return data;
 }
