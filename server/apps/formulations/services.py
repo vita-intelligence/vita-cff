@@ -6329,20 +6329,20 @@ def save_version(
     # Push the fresh BOM snapshot to PSP if the formulation is
     # linked to a finished product. Silent-degrade — the push
     # service already swallows every PspError and logs it, so a
-    # PSP outage doesn't block the version save. Called outside
-    # any transaction on purpose: the local save is authoritative;
-    # PSP eventually catches up on the next successful push.
+    # PSP outage doesn't block the version save.
     #
-    # Fired in a daemon thread so the view returns the moment the
-    # DB-side version is committed. ``push_bom_to_psp`` + the
-    # customer-order mirror cascade routinely take 20–60 s on a
-    # cold-start sandbox (7 stages × multiple PSP round-trips),
-    # which was blocking the ``POST /versions/`` response and
-    # tripping the FE's 120 s timeout + leaving the operator
-    # staring at a frozen "Saving…" overlay. Local save is
-    # authoritative; PSP reconciles asynchronously. Thread is
-    # daemonised so container shutdown doesn't wait on an
-    # in-flight push.
+    # ``transaction.on_commit`` is load-bearing. ``save_version`` runs
+    # inside an ``@transaction.atomic`` block, so starting the daemon
+    # thread directly would race the commit: the daemon uses a
+    # SEPARATE DB connection and would see the pre-save state, pushing
+    # a stale (often empty) BOM to PSP — concretely, PSP's MO would
+    # show the prior-stage semi link with the correct qty but zero
+    # raw-material lines, because the current save's line/stage
+    # upserts hadn't landed yet. Firing on commit also lets the thread
+    # itself be daemonised so container shutdown doesn't block on an
+    # in-flight push; the cascade can legitimately run 20–60 s on a
+    # cold-start sandbox (7 stages × multiple PSP round-trips) and we
+    # don't want to tie the HTTP response to it.
     from apps.psp.services import (
         push_bom_to_psp,
         sync_customer_order_to_psp,
@@ -6385,7 +6385,11 @@ def save_version(
                 formulation.pk,
             )
 
-    threading.Thread(target=_push_to_psp_async, daemon=True).start()
+    transaction.on_commit(
+        lambda: threading.Thread(
+            target=_push_to_psp_async, daemon=True
+        ).start()
+    )
     return version
 
 
