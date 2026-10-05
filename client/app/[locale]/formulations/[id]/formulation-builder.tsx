@@ -4289,10 +4289,16 @@ export function FormulationBuilder({
       });
     }
 
+    // ``emptyStages.length === 0`` used to gate completion here, but
+    // linear flows (powder fill → cap → label) legitimately leave
+    // downstream stages with no scientist-added lines — they only
+    // inherit the prior semi auto-injected on push. The list is
+    // still returned below so the readiness panel can render each
+    // entry as a warning, but it no longer blocks Save version /
+    // Spec sheet creation.
     const isComplete =
       hasStages &&
       hasLines &&
-      emptyStages.length === 0 &&
       orphanLineCount === 0 &&
       hasPackaging &&
       stagesWithBadType.length === 0 &&
@@ -9274,7 +9280,11 @@ const RoutingTabBody = memo(function RoutingTabBody({
                               : "border-orange-300 bg-orange-50/50"
                         }`}
                       >
-                        <div className="flex items-center justify-between gap-2">
+                        {/* Row 1 — identity + remove. Keeps the
+                            checkbox, name/meta, and the trash icon
+                            on the top line so the operator can scan
+                            the inventory vertically. */}
+                        <div className="flex items-start justify-between gap-2">
                           <input
                             type="checkbox"
                             checked={isChecked}
@@ -9291,18 +9301,18 @@ const RoutingTabBody = memo(function RoutingTabBody({
                               toggleInvSelection(row.routingKey);
                             }}
                             disabled={!canWrite || isSaving}
-                            className="h-4 w-4 shrink-0 accent-orange-500"
+                            className="mt-0.5 h-4 w-4 shrink-0 accent-orange-500"
                             aria-label={`Select ${row.label}`}
                           />
                           <div className="min-w-0 flex-1">
-                            {/* Name sits on its own row so a long raw-
-                                material name like "Vitamin K2 (MK-7)
-                                1,000 ppm oil …" isn't truncated to a
-                                single letter by a wrapped use-as chip
-                                beside it. The chip + code + mg drop
-                                into a second, lower-contrast line
-                                where the ``whitespace-nowrap`` chip
-                                keeps itself to one line. */}
+                            {/* Name gets the whole inventory-column
+                                width to truncate against; the chip +
+                                code + mg drop into a second, lower-
+                                contrast line so a long raw-material
+                                name ("Vitamin K2 (MK-7) 1,000 ppm
+                                oil …") doesn't collapse to a single
+                                letter the way it did when a wrapped
+                                use-as chip was sharing the line. */}
                             <span
                               className="block truncate font-medium text-ink-1000"
                               title={row.label}
@@ -9322,25 +9332,6 @@ const RoutingTabBody = memo(function RoutingTabBody({
                               </span>
                             </div>
                           </div>
-                          <select
-                            value={assigned ?? ""}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) =>
-                              setStageForRow(
-                                row.routingKey,
-                                e.target.value || null,
-                              )
-                            }
-                            disabled={!canWrite || isSaving}
-                            className="min-w-[140px] rounded-md bg-ink-0 px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-50"
-                          >
-                            <option value="">Unassigned</option>
-                            {stages.map((s) => (
-                              <option key={s.id} value={s.id}>
-                                Stage {s.sort_order + 1} · {s.name}
-                              </option>
-                            ))}
-                          </select>
                           {canRemove ? (
                             <button
                               type="button"
@@ -9357,6 +9348,31 @@ const RoutingTabBody = memo(function RoutingTabBody({
                             </button>
                           ) : null}
                         </div>
+                        {/* Row 2 — stage picker gets its own full-
+                            width line underneath so the inventory
+                            column reads as a vertical stack (name /
+                            meta / stage) instead of three fields
+                            fighting horizontally for the same ~250 px
+                            of column width. */}
+                        <select
+                          value={assigned ?? ""}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) =>
+                            setStageForRow(
+                              row.routingKey,
+                              e.target.value || null,
+                            )
+                          }
+                          disabled={!canWrite || isSaving}
+                          className="w-full rounded-md bg-ink-0 px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-50"
+                        >
+                          <option value="">Unassigned</option>
+                          {stages.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              Stage {s.sort_order + 1} · {s.name}
+                            </option>
+                          ))}
+                        </select>
                         {manualLine && lineKey ? (
                           <div
                             onClick={(e) => e.stopPropagation()}

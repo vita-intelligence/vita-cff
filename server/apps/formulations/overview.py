@@ -1050,16 +1050,26 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
         and has_markets
     )
 
+    # ``all_stages_have_lines`` was previously part of this AND and
+    # hard-blocked Save-version / Spec-sheet creation when any stage
+    # had no scientist-added lines. Legitimate linear flows (powder
+    # fill → cap → label where the downstream stages only inherit
+    # the prior semi auto-injected by ``_push_staged_cascade``) kept
+    # tripping it. The signal is still computed + surfaced on the
+    # readiness panel so the scientist sees "Stage X has no
+    # ingredients" as a warning, but it no longer gates completion.
     builder_complete = (
         has_stages
         and has_lines
         and all_lines_assigned
-        and all_stages_have_lines
         and has_packaging
         and stage_types_ok
         and stage_semis_ok
         and setup_spec_ok
     )
+    # Keep the variable referenced so a future refactor to a
+    # structured gate breakdown doesn't lose the signal.
+    _ = all_stages_have_lines
 
     # RTG projects skip the customer-signature gates — they can move
     # into proposals + trial batches as soon as Builder has an
