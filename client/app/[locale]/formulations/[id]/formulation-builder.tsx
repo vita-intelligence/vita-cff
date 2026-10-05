@@ -4857,8 +4857,18 @@ export function FormulationBuilder({
     }
   }, [lines, routingByKey, replaceLinesMutation, tErrors]);
 
+  //: True from the moment the operator clicks Save version until
+  //: the whole chain (metadata → lines → stages → routing → version)
+  //: either resolves or throws. Drives the full-screen overlay +
+  //: button spinner without waiting for the final mutation to flip
+  //: ``isPending`` — the earlier PATCH / PUT steps take 2–5 s on
+  //: their own and the user needs instant feedback that the click
+  //: landed.
+  const [isSavingVersion, setIsSavingVersion] = useState(false);
+
   const handleSaveVersion = useCallback(async () => {
     setErrorMessage(null);
+    setIsSavingVersion(true);
     try {
       await handleSaveMetadata();
       // Lines fires unconditionally when routing is dirty too —
@@ -4957,6 +4967,8 @@ export function FormulationBuilder({
       setRoutingByKey(new Map());
     } catch (err) {
       setErrorMessage(extractApiErrorMessage(err, tErrors));
+    } finally {
+      setIsSavingVersion(false);
     }
   }, [
     handleSaveMetadata,
@@ -5197,8 +5209,16 @@ export function FormulationBuilder({
           now-stale local state) or navigate away mid-cascade and
           see partial writes land. Blocks clicks + narrates what
           the backend is doing so the long wait reads as "working"
-          instead of "broken". */}
-      {saveVersionMutation.isPending ? (
+          instead of "broken".
+
+          Reads from ``isSavingVersion`` (local) rather than the
+          react-query mutation flag so the overlay flips the
+          moment the button is clicked, not 2–5 s later once the
+          first PATCH + PUT round-trip hands off to the final
+          mutation. ``saveVersionMutation.isPending`` is OR-ed in
+          as a safety net in case the state hook is skipped for
+          any reason. */}
+      {isSavingVersion || saveVersionMutation.isPending ? (
         <div
           aria-live="polite"
           aria-busy="true"
@@ -5376,12 +5396,12 @@ export function FormulationBuilder({
                 isDisabled={isBusy}
                 onClick={handleSaveVersion}
               >
-                {saveVersionMutation.isPending ? (
+                {isSavingVersion || saveVersionMutation.isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <Save className="h-4 w-4" />
                 )}
-                {saveVersionMutation.isPending
+                {isSavingVersion || saveVersionMutation.isPending
                   ? "Saving…"
                   : tFormulations("builder.save_version")}
               </Button>

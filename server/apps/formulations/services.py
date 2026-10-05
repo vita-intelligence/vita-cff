@@ -6315,44 +6315,60 @@ def save_version(
     # PSP outage doesn't block the version save. Called outside
     # any transaction on purpose: the local save is authoritative;
     # PSP eventually catches up on the next successful push.
+    #
+    # Fired in a daemon thread so the view returns the moment the
+    # DB-side version is committed. ``push_bom_to_psp`` + the
+    # customer-order mirror cascade routinely take 20–60 s on a
+    # cold-start sandbox (7 stages × multiple PSP round-trips),
+    # which was blocking the ``POST /versions/`` response and
+    # tripping the FE's 120 s timeout + leaving the operator
+    # staring at a frozen "Saving…" overlay. Local save is
+    # authoritative; PSP reconciles asynchronously. Thread is
+    # daemonised so container shutdown doesn't wait on an
+    # in-flight push.
     from apps.psp.services import (
         push_bom_to_psp,
         sync_customer_order_to_psp,
     )
+    import threading
 
-    try:
-        # Use the FE-computed per-stage snapshot as the PSP push
-        # override so each stage's PSP BOM matches what NPD's stage
-        # card holds (actives + excipient bands + prior-semi link).
-        # Falls back to the ORM-line derivation for stages the FE
-        # didn't include (or when the payload is empty).
-        push_bom_to_psp(
-            formulation=formulation,
-            stage_bom_overrides=normalised_stage_boms or None,
-        )
-    except Exception:
-        # Defensive belt-and-braces — the service should already
-        # swallow everything, but if something slips through we
-        # don't want the save flow to inherit the failure.
-        logger.exception(
-            "push_bom_to_psp bubbled an unexpected exception for "
-            "formulation %s",
-            formulation.pk,
-        )
+    def _push_to_psp_async() -> None:
+        try:
+            # Use the FE-computed per-stage snapshot as the PSP push
+            # override so each stage's PSP BOM matches what NPD's stage
+            # card holds (actives + excipient bands + prior-semi link).
+            # Falls back to the ORM-line derivation for stages the FE
+            # didn't include (or when the payload is empty).
+            push_bom_to_psp(
+                formulation=formulation,
+                stage_bom_overrides=normalised_stage_boms or None,
+            )
+        except Exception:
+            # Defensive belt-and-braces — the service should already
+            # swallow everything, but if something slips through we
+            # don't want the save flow to inherit the failure.
+            logger.exception(
+                "push_bom_to_psp bubbled an unexpected exception for "
+                "formulation %s",
+                formulation.pk,
+            )
 
-    # Mirror the formulation as a CustomerOrder on PSP. Every project
-    # on NPD = a customer order on PSP, keyed by the same UUID so the
-    # `/projects/<uuid>` URL resolves on both sides. First named save
-    # bootstraps a draft CO; subsequent named saves refresh identity
-    # fields only. Silent-degrade for the same reason as the BOM push.
-    try:
-        sync_customer_order_to_psp(formulation=formulation)
-    except Exception:
-        logger.exception(
-            "sync_customer_order_to_psp bubbled an unexpected exception for "
-            "formulation %s",
-            formulation.pk,
-        )
+        # Mirror the formulation as a CustomerOrder on PSP. Every
+        # project on NPD = a customer order on PSP, keyed by the
+        # same UUID so the `/projects/<uuid>` URL resolves on both
+        # sides. First named save bootstraps a draft CO; subsequent
+        # named saves refresh identity fields only. Silent-degrade
+        # for the same reason as the BOM push.
+        try:
+            sync_customer_order_to_psp(formulation=formulation)
+        except Exception:
+            logger.exception(
+                "sync_customer_order_to_psp bubbled an unexpected exception for "
+                "formulation %s",
+                formulation.pk,
+            )
+
+    threading.Thread(target=_push_to_psp_async, daemon=True).start()
     return version
 
 
