@@ -1131,10 +1131,19 @@ def _compute_marginal_routing_cost_per_unit(formulation) -> Decimal | None:
     * ``other_fixed_cost / ASSUMED_BATCH_SIZE`` — per-batch routing-
       header fixed, amortised.
 
-    Cycle time prefers PSP-derived history when the workstation group
-    has session data (avg_seconds_per_unit from vita-performance
-    kiosk writebacks, avg_labour_hourly_rate from HR wages); falls back
-    to the stage's own ``cycle_time_min`` × ``workstation_group.hourly_rate``.
+    Cycle time uses the ROUTING-planned ``stage.cycle_time_min`` as the
+    primary source — matches the other three cost surfaces (builder
+    calculator, savings-at-scale, projects wizard) and keeps quoted
+    prices stable against shop-floor speed variation. PSP's observed
+    ``avg_seconds_per_unit`` only kicks in as a fallback for legacy
+    stages that have no routing authored. Rationale: including actual
+    tablet-measured throughput here means a slow operator silently
+    drags up every price we quote — the costing engine should price
+    at the SOP target, and manage speed via workstation reports, not
+    via the sticker price. Labour rate stays as the PSP-observed
+    ``avg_labour_hourly_rate`` because rate is a $/hour constant;
+    only cycle time amplifies slowness.
+
     Amortisation uses ``_ASSUMED_BATCH_SIZE`` so a proposal for that
     quantity multiplies back to the real batch cost.
 
@@ -1199,13 +1208,18 @@ def _compute_marginal_routing_cost_per_unit(formulation) -> Decimal | None:
         labour_hourly = _dec(rate_row.get("avg_labour_hourly_rate")) if rate_row else Decimal("0")
         hourly = machine_hourly + labour_hourly
 
-        # Cycle time — prefer measured throughput, fall back to the
-        # stage's declared cycle_time_min.
+        # Cycle time — ROUTING-planned ``stage.cycle_time_min`` wins so
+        # the spec-sheet cost tracks the SOP target, not the shop
+        # floor's actual throughput. Observed ``avg_seconds_per_unit``
+        # only kicks in as a fallback for legacy stages with no cycle
+        # authored. See the function docstring for rationale (short
+        # version: letting a slow operator inflate every quote is a
+        # pricing bug — manage speed via reports, not sticker price).
         cycle_seconds: Decimal | None = None
-        if rate_row and rate_row.get("avg_seconds_per_unit") is not None:
-            cycle_seconds = _dec(rate_row.get("avg_seconds_per_unit"))
-        elif stage.cycle_time_min is not None:
+        if stage.cycle_time_min is not None:
             cycle_seconds = Decimal(str(stage.cycle_time_min)) * Decimal("60")
+        elif rate_row and rate_row.get("avg_seconds_per_unit") is not None:
+            cycle_seconds = _dec(rate_row.get("avg_seconds_per_unit"))
 
         cycle_cost = Decimal("0")
         if cycle_seconds and cycle_seconds > 0 and hourly > 0:
