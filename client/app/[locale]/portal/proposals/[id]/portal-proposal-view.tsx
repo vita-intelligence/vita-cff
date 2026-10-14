@@ -610,7 +610,7 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
               onChange={(v) => setAcks((s) => ({ ...s, spec: v }))}
               text={
                 isRtg
-                  ? "I understand that before label printing, Production Specification Sheets must be signed, and label designs must be reviewed and approved. Placing an order initiates the development phase, during which Product Specification Sheets are finalized, and label guidelines are provided to facilitate label design, review, and approval."
+                  ? "I understand that before label printing, Production Specification Sheets must be signed, and label designs must be reviewed and approved. Placing an order initiates the development phase, during which Product Specification Sheets are finalized. Label design guidelines are provided after the development phase to facilitate design, review and approval."
                   : "I will sign each attached specification sheet."
               }
             />

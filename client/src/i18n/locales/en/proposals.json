@@ -389,7 +389,7 @@
     "acceptance": {
       "title": "Acceptance",
       "intro": "Please complete this form to agree to the Terms & Conditions and confirm the above:",
-      "item_1": "I understand that before label printing, Production Specification Sheets must be signed, and label designs must be reviewed and approved. Placing an order initiates the development phase, during which Product Specification Sheets are finalized, and label guidelines are provided to facilitate label design, review, and approval.",
+      "item_1": "I understand that before label printing, Production Specification Sheets must be signed, and label designs must be reviewed and approved. Placing an order initiates the development phase, during which Product Specification Sheets are finalized. Label design guidelines are provided after the development phase to facilitate design, review and approval.",
       "item_2": "I understand that manufacturing lead times commence once the Product Specification Sheet(s) are signed and not before.",
       "item_3": "I have read the terms and Conditions which can be found below."
     },
@@ -442,7 +442,7 @@
       "signed_on": "Signed on {date}",
       "spec_comments_cta": "Chat about this spec",
       "ack_heading": "Please confirm before signing",
-      "ack_spec_signing": "I understand that before label printing, Production Specification Sheets must be signed, and label designs must be reviewed and approved. Placing an order initiates the development phase, during which Product Specification Sheets are finalized, and label guidelines are provided to facilitate label design, review, and approval.",
+      "ack_spec_signing": "I understand that before label printing, Production Specification Sheets must be signed, and label designs must be reviewed and approved. Placing an order initiates the development phase, during which Product Specification Sheets are finalized. Label design guidelines are provided after the development phase to facilitate design, review and approval.",
       "ack_lead_times_custom": "I understand that manufacturing lead times commence once the Product Specification Sheet(s) are signed with packaging approved and not before.",
       "ack_lead_times_ready": "I understand that manufacturing lead times commence once the Product Specification Sheet(s) are signed and not before.",
       "ack_rd_terms": "I understand that R&D, sample preparation, flavour development, reformulation, and additional iterations are governed by Vita Manufacture's Research & Development, Sampling and Formulation Terms. I understand that complimentary R&D is limited to the stated allowance, and that additional R&D samples, reformulations, flavour trials, or iterations may be chargeable.",
@@ -498,7 +498,7 @@
           "validate": "Validate your formulation and its manufacturing process",
           "samples": "Prepare some samples for your visual approval",
           "register": "Register your product in our production database",
-          "labels": "Validate and regulatory review of your label(s)"
+          "labels": "Provision of Product Specification Sheets"
         },
         "custom_deposit": "A deposit of at least more than {percent}% is required to commence this process.",
         "ready_no_dev": "This formula does not require a laboratory development phase, as its manufacturing process has been validated."
