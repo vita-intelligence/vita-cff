@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { Check, ChevronDown, ChevronRight, FileText, Truck } from "lucide-react";
 import { DispatchPhotoLightbox } from "@/components/portal/dispatch-photo-lightbox";
 import { Eyebrow } from "@/components/portal/brutalist";
@@ -184,9 +184,11 @@ function PickupEventBlock({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [signatory, setSignatory] = useState("");
   const [notes, setNotes] = useState("");
-  const [pending, setPending] = useState(false);
+  const [posting, setPosting] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const router = useRouter();
+  const [isRefreshing, startRefresh] = useTransition();
+  const pending = posting || isRefreshing;
 
   const delivered = Boolean(event.delivered_at);
   const hasPhotos = event.photos && event.photos.length > 0;
@@ -211,7 +213,7 @@ function PickupEventBlock({
       setConfirmError("Please enter who signed for the delivery.");
       return;
     }
-    setPending(true);
+    setPosting(true);
     setConfirmError(null);
     try {
       const res = await fetch(
@@ -233,12 +235,19 @@ function PickupEventBlock({
         );
         return;
       }
+      // Keep the modal mounted until the fresh RSC payload lands so
+      // the "In transit" → "Received" chip flips in one frame instead
+      // of waiting for a manual page refresh. React treats the
+      // transition as pending until router.refresh() has rehydrated
+      // the server component, then we close the modal.
+      startRefresh(() => {
+        router.refresh();
+      });
       setConfirmOpen(false);
-      router.refresh();
     } catch {
       setConfirmError("Network error — please try again.");
     } finally {
-      setPending(false);
+      setPosting(false);
     }
   };
 
